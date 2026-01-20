@@ -1,0 +1,12 @@
+[workspace]
+members = [ "mars_boot" ]
+resolver = "3"
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
+
+[profile.test]
+panic = "abort"

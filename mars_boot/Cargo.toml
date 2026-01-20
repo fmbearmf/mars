@@ -1,0 +1,17 @@
+[package]
+name = "mars_boot"
+version = "0.0.1"
+edition = "2024"
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+aarch64-cpu = "11.2.0"
+aarch64-cpu-ext = "0.1.4"
+bitflags = "2.10.0"
+lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
+semihosting = { version = "0.1.24", features = ["stdio", "panic-handler"] }
+tock-registers = "0.10.1"
