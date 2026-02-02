@@ -1,0 +1,9 @@
+[build]
+target = "aarch64-unknown-none"
+rustflags = [
+    "-C", "relocation-model=pic",
+    "-C", "code-model=small"
+]
+
+[target.aarch64-unknown-none]
+runner = "./qemu-arm.sh"
