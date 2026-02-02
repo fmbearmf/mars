@@ -51,7 +51,7 @@ fn main() -> Result<()> {
     let esp_dir = tmp.path();
 
     fs::create_dir_all(esp_dir.join("EFI/BOOT"))?;
-    std::os::unix::fs::symlink(kernel_path, esp_dir.join("mars_kernel"))?;
+    std::os::unix::fs::symlink(kernel_path, esp_dir.join("kernel.elf"))?;
     std::os::unix::fs::symlink(boot_path, esp_dir.join("EFI/BOOT/BOOTAA64.EFI"))?;
 
     let code_path = env::var("OVMF_CODE_PATH").context("missing OVMF_CODE_PATH")?;

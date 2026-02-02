@@ -5,10 +5,13 @@ use core::time::Duration;
 
 use log::{error, info};
 use uefi::{
-    Status,
+    CStr16, Status,
     boot::{self, get_image_file_system},
     entry,
-    proto::media::fs::SimpleFileSystem,
+    proto::media::{
+        file::{File, FileAttribute, FileMode},
+        fs::SimpleFileSystem,
+    },
 };
 
 const PT_LOAD: u32 = 1;
@@ -73,10 +76,29 @@ fn main() -> Status {
 
     info!("Loader starting...");
 
-    let sfs_prot = match boot::get_image_file_system(boot::image_handle()) {
+    let mut sfs_prot = match boot::get_image_file_system(boot::image_handle()) {
         Ok(s) => s,
         Err(e) => {
             error!("get_image_file_system failed: {:?}", e);
+            return Status::NOT_FOUND;
+        }
+    };
+
+    let mut root_dir = match sfs_prot.open_volume() {
+        Ok(d) => d,
+        Err(e) => {
+            error!("Couldn't open the root directory! {:?}", e);
+            return Status::NOT_FOUND;
+        }
+    };
+
+    let mut buf = [0u16; 12];
+    let kpath = CStr16::from_str_with_buf("\\kernel.elf", &mut buf).expect("didnt fit");
+
+    let fh = match root_dir.open(kpath, FileMode::Read, FileAttribute::empty()) {
+        Ok(h) => h,
+        Err(e) => {
+            error!("Couldn't open \\kernel.elf: {:?}", e);
             return Status::NOT_FOUND;
         }
     };

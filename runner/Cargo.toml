@@ -1,7 +1,10 @@
+cargo-features = [ "per-package-target" ]
+
 [package]
 name = "runner"
 version = "0.0.1"
 edition = "2024"
+default-target = "aarch64-apple-darwin"
 
 [dependencies]
 anyhow = "1.0.100"

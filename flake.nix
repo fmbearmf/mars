@@ -37,6 +37,7 @@
             };
 
             targets = [
+              "aarch64-apple-darwin"
               "aarch64-unknown-none"
               "aarch64-unknown-uefi"
             ];
@@ -113,7 +114,6 @@
         mkShell {
           nativeBuildInputs = [
             toolchain
-            pkgs.gdb
             pkgs.dtc
           ];
 
