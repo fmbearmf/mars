@@ -10,7 +10,8 @@ use crate::busy_loop;
 
 pub const MAX_TABLES: usize = 64;
 
-static NEXT_TABLE: AtomicUsize = AtomicUsize::new(0);
+// not threadsafe. doesnt matter since this wont be used outside early boot
+static mut NEXT_TABLE: usize = 0;
 unsafe extern "C" {
     static __pt_pool_start: u8;
     static __pt_pool_end: u8;
@@ -18,7 +19,7 @@ unsafe extern "C" {
 
 #[inline]
 pub fn alloc_table(base: &mut [TTable<TABLE_ENTRIES>]) -> Option<&mut TTable<TABLE_ENTRIES>> {
-    let i = NEXT_TABLE.fetch_add(1, Ordering::Relaxed);
+    let i = unsafe { NEXT_TABLE } + 1;
 
     if i >= MAX_TABLES {
         return None;

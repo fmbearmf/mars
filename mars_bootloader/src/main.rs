@@ -32,13 +32,6 @@ const PAGE_SIZE: usize = 16384;
 static ALLOC: Allocator = Allocator;
 
 const PT_LOAD: u32 = 1;
-const PT_DYNAMIC: u32 = 2;
-const DT_NULL: i64 = 0;
-const DT_RELA: i64 = 7;
-const DT_RELASZ: i64 = 8;
-const DT_RELAENT: i64 = 0;
-
-const R_AARCH64_RELATIVE: u32 = 1027;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -189,8 +182,8 @@ fn main() -> Status {
 
     let ehdr = unsafe { &*(elf_bytes.as_ptr() as *const Elf64Ehdr) };
 
-    if &ehdr.e_ident[0..4] != b"\x7FELF" {
-        error!("Kernel isn't an ELF!");
+    if &ehdr.e_ident[0..4] != b"\x7FELF" || ehdr.e_ident[4] != 2 || ehdr.e_ident[5] != 1 {
+        error!("Kernel isn't a 64-bit little endian ELF!");
         return Status::LOAD_ERROR;
     }
 
@@ -230,8 +223,11 @@ fn main() -> Status {
         return Status::LOAD_ERROR;
     }
 
+    let load_span = max_vaddr - min_vaddr;
+    info!("load span: {:#x} bytes", load_span);
+
     const UEFI_PS: u64 = UEFI_PAGE_SIZE as u64;
-    let load_size = ((elf_bytes.len() as u64 + UEFI_PS - 1) / UEFI_PS) * UEFI_PS;
+    let load_size = ((load_span + UEFI_PS - 1) / UEFI_PS) * UEFI_PS;
     let pages = (load_size / UEFI_PS) as usize;
     let extra = PAGE_SIZE / UEFI_PAGE_SIZE;
 
@@ -240,17 +236,20 @@ fn main() -> Status {
         MemoryType::LOADER_CODE,
         pages + extra,
     );
-    let base_phys = match alloc_result {
-        Ok(ptr) => ((ptr.as_ptr() as u64) + (PAGE_SIZE as u64) - 1) & !(PAGE_SIZE as u64 - 1),
+    let alloc_ptr = match alloc_result {
+        //Ok(ptr) => ((ptr.as_ptr() as u64) + (PAGE_SIZE as u64) - 1) & !(PAGE_SIZE as u64 - 1),
+        Ok(ptr) => ptr.as_ptr() as u64,
         Err(e) => {
             error!("page allocation failed: {:?}", e);
             return Status::OUT_OF_RESOURCES;
         }
     };
 
+    let base_phys = (alloc_ptr + (PAGE_SIZE as u64) - 1) & !(PAGE_SIZE as u64 - 1);
+
     //let load_base = base_phys.wrapping_sub(min_vaddr);
     info!(
-        "allocated {} pages ({} bytes) at {:#x}",
+        "allocated {} UEFI pages ({} bytes) at {:#x}",
         pages, load_size, base_phys
     );
 
@@ -261,7 +260,7 @@ fn main() -> Status {
         }
     }
 
-    let mut p_vaddr = 0u64;
+    //let mut p_vaddr = 0u64;
 
     for i in 0..phnum {
         let ph = unsafe { &*(elf_bytes.as_ptr().add(phoff + i * phentsize) as *const Elf64Phdr) };
@@ -269,63 +268,65 @@ fn main() -> Status {
             continue;
         }
 
-        let file_off = ph.p_offset;
-        let filesz = ph.p_filesz;
-        let memsz = ph.p_memsz;
-        p_vaddr = ph.p_vaddr;
+        let file_off = ph.p_offset as usize;
+        let filesz = ph.p_filesz as usize;
+        let memsz = ph.p_memsz as usize;
+        let vaddr = ph.p_vaddr;
 
         info!(
-            "file_off={:#x}, filesz={:#x}, memsz={:#x}, vaddr={:#x}",
-            file_off, filesz, memsz, p_vaddr
+            "PT_LOAD vaddr={:#x} file_off={:#x} filesz={:#x} memsz={:#x}",
+            vaddr, file_off, filesz, memsz
         );
 
-        if file_off
-            .checked_add(filesz)
-            .map_or(true, |x| x > elf_bytes.len() as u64)
-        {
+        if file_off + filesz > elf_bytes.len() {
             error!("Segment file data out of bounds!");
             return Status::LOAD_ERROR;
         }
 
-        let offset = (p_vaddr - min_vaddr) as usize;
+        let offset = (vaddr - min_vaddr) as usize;
         let dst = (base_phys as usize + offset) as *mut u8;
-        let src = unsafe { elf_bytes.as_ptr().add(file_off as usize) };
+        let src = unsafe { elf_bytes.as_ptr().add(file_off) };
 
         info!(
-            "COPYING: src={:#x} dst={:#x} size={}",
-            elf_bytes.as_ptr() as u64,
-            base_phys,
-            elf_bytes.len()
+            "COPYING segment: src={:#x} dst={:#x} filesz={}",
+            src as u64, dst as u64, filesz
         );
 
         unsafe {
             if filesz > 0 {
-                copy_nonoverlapping(src, dst, filesz as usize);
+                copy_nonoverlapping(src, dst, filesz);
             }
 
             if memsz > filesz {
-                let tail = dst.add(filesz as usize);
+                let tail = dst.add(filesz);
                 for j in 0..(memsz - filesz) {
-                    write_volatile(tail.add(j as usize), 0);
+                    write_volatile(tail.add(j), 0);
                 }
             }
         }
-
-        info!(
-            "Loaded PT_LOAD offset={:#x} filesz={} memsz={}",
-            offset, filesz, memsz
-        );
     }
 
-    let entry_offset = ehdr.e_entry - min_vaddr;
-    let entry_addr = base_phys + entry_offset;
-    let entry_fn: fn(boot_info: BootInfo) -> ! = unsafe { transmute(entry_addr) };
+    let entry_vaddr = ehdr.e_entry;
+    if entry_vaddr < min_vaddr || entry_vaddr >= max_vaddr {
+        error!(
+            "entrypoint {:#x} not in load span {:#x}..{:#x}",
+            entry_vaddr, min_vaddr, max_vaddr
+        );
+        return Status::LOAD_ERROR;
+    }
 
-    info!("entry {:#x} at offset {:#x}", entry_addr, entry_offset);
+    let entry_offset = (entry_vaddr - min_vaddr) as usize;
+    let entry_addr = base_phys + entry_offset as u64;
 
+    info!(
+        "entry at physical {:#x} (offset {:#x})",
+        entry_addr, entry_offset
+    );
+
+    let entry_fn: fn(boot_info: &BootInfo) -> ! = unsafe { transmute(entry_addr) };
     let mem_map = unsafe { boot::exit_boot_services(None) };
 
-    entry_fn(BootInfo {
+    entry_fn(&BootInfo {
         memory_map: mem_map,
         kernel_size: load_size as usize,
         kernel_load_physical_address: base_phys as usize,
