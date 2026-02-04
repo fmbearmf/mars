@@ -1,5 +1,5 @@
 [workspace]
-members = [ "mars_bootloader", "mars_kernel" , "runner" ]
+members = [ "mars_bootloader", "mars_kernel", "mars_protocol", "runner" ]
 resolver = "3"
 
 [workspace.dependencies]

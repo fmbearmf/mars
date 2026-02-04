@@ -8,4 +8,6 @@ default-target = "aarch64-unknown-uefi"
 
 [dependencies]
 log = "0.4.29"
-uefi = { version = "0.36.1", features = ["logger", "panic_handler"] }
+uefi = { version = "0.36.1", features = ["logger", "panic_handler", "alloc"] }
+mars_protocol = { path = "../mars_protocol" }
+#mars_kernel = { path = "../mars_kernel" }

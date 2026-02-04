@@ -49,7 +49,7 @@
               combine (
                 [
                   minimal.cargo
-                  minimal.rustc
+                  latest.rustc
                   latest.rust-analyzer
                   latest.rust-src
                 ]
@@ -115,6 +115,7 @@
           nativeBuildInputs = [
             toolchain
             pkgs.dtc
+            (pkgs.callPackage ./gdb/package.nix { })
           ];
 
           shellHook = ''

@@ -3,6 +3,8 @@ use core::{fmt::Write, ptr::NonNull};
 use mars_kernel::vm::mmio_addr_to_iomap;
 use spin::Mutex;
 
+use crate::busy_loop;
+
 const UART_ADDRESS: *mut PL011Registers = (mmio_addr_to_iomap(0x0900_0000)) as *mut PL011Registers;
 
 pub static EARLYCON: Mutex<Option<EarlyCon>> = Mutex::new(None);

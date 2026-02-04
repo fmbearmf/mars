@@ -14,9 +14,18 @@ pub type TTENATIVE = TTE16K48;
 pub const TABLE_ENTRIES: usize =
     aarch64_cpu_ext::structures::tte::block_sizes::granule_16k::LEVEL3_PAGE_SIZE / 8usize;
 
+#[derive(Copy, Clone)]
 #[repr(C, align(16384))]
 pub struct TTable<const N: usize> {
     pub entries: [TTENATIVE; N],
+}
+
+impl<const N: usize> TTable<N> {
+    pub const fn new() -> Self {
+        Self {
+            entries: [TTENATIVE::invalid(); N],
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

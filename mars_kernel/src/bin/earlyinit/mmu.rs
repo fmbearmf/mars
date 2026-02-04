@@ -3,56 +3,19 @@ use aarch64_cpu::{
     registers::{MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1},
 };
 use aarch64_cpu_ext::structures::tte::AccessPermission;
-use core::{arch::asm, mem::transmute};
+use core::{arch::asm, mem::transmute, slice::from_raw_parts_mut};
 use mars_kernel::vm::{TABLE_ENTRIES, TTENATIVE, TTable};
 use tock_registers::interfaces::*;
+use uefi::mem::memory_map::MemoryMapOwned;
+
+use crate::{busy_loop, earlyinit::earlymem::alloc_table};
 
 unsafe extern "C" {
-    pub static KERNEL_OFFSET: u64;
-    pub static KERNEL_LOAD_PHYS_RAW: u64;
-    //pub static KERNEL_LOAD_VIRT_RAW: u64;
+    static __pt_pool_start: usize;
+    static __pt_pool_end: usize;
 }
 
-// static mut IS vulnerable to race conditions, but these are only accessed from a single core
-// LOW meaning TTBR0, the lower part of the address space
-// L0 only has 2 entries
-#[unsafe(link_section = ".reclaimable.tables")]
-static mut LOW_L0: TTable<2> = TTable {
-    entries: [TTENATIVE::invalid(); 2],
-};
-
-#[unsafe(link_section = ".reclaimable.tables")]
-static mut LOW_L1: TTable<TABLE_ENTRIES> = TTable {
-    entries: [TTENATIVE::invalid(); TABLE_ENTRIES],
-};
-
-#[unsafe(link_section = ".reclaimable.tables")]
-static mut LOW_L2: TTable<TABLE_ENTRIES> = TTable {
-    entries: [TTENATIVE::invalid(); TABLE_ENTRIES],
-};
-
-// conversely HIGH refers to TTBR1
-#[unsafe(link_section = ".reclaimable.tables")]
-static mut HIGH_L0: TTable<2> = TTable {
-    entries: [TTENATIVE::invalid(); 2],
-};
-
-#[unsafe(link_section = ".reclaimable.tables")]
-static mut HIGH_L1: TTable<TABLE_ENTRIES> = TTable {
-    entries: [TTENATIVE::invalid(); TABLE_ENTRIES],
-};
-
-#[unsafe(link_section = ".reclaimable.tables")]
-static mut HIGH_L2: TTable<TABLE_ENTRIES> = TTable {
-    entries: [TTENATIVE::invalid(); TABLE_ENTRIES],
-};
-
-#[unsafe(link_section = ".reclaimable.tables")]
-static mut HIGH_L2_MMIO: TTable<TABLE_ENTRIES> = TTable {
-    entries: [TTENATIVE::invalid(); TABLE_ENTRIES],
-};
-
-pub extern "C" fn init_mmu(load_addr: u64, offset: u64) -> ! {
+pub extern "C" fn init_mmu(load_addr: usize, offset: usize, mmap: &MemoryMapOwned) -> ! {
     // attr0=device, attr1=normal
     MAIR_EL1.write(
         MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck
@@ -60,9 +23,7 @@ pub extern "C" fn init_mmu(load_addr: u64, offset: u64) -> ! {
             + MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc,
     );
 
-    unsafe {
-        setup_tables(load_addr);
-    }
+    let (LOW_L0, HIGH_L0) = unsafe { setup_tables(load_addr, offset) };
 
     TCR_EL1.write(
         TCR_EL1::TBI1::Ignored
@@ -82,8 +43,8 @@ pub extern "C" fn init_mmu(load_addr: u64, offset: u64) -> ! {
             + TCR_EL1::T0SZ.val(16),
     );
 
-    TTBR0_EL1.set(&raw mut LOW_L0 as *const _ as u64);
-    TTBR1_EL1.set(&raw mut HIGH_L0 as *const _ as u64);
+    TTBR0_EL1.set(LOW_L0 as *const _ as u64);
+    TTBR1_EL1.set(HIGH_L0 as *const _ as u64);
     SCTLR_EL1.modify(SCTLR_EL1::M::Enable + SCTLR_EL1::C::Cacheable + SCTLR_EL1::I::Cacheable);
 
     asm::barrier::isb(asm::barrier::SY);
@@ -106,21 +67,39 @@ pub extern "C" fn init_mmu(load_addr: u64, offset: u64) -> ! {
     init_virt()
 }
 
-unsafe fn setup_tables(load_addr: u64) {
+unsafe fn setup_tables(
+    load_addr: usize,
+    offset: usize,
+) -> (
+    &'static TTable<TABLE_ENTRIES>,
+    &'static TTable<TABLE_ENTRIES>,
+) {
+    let start = unsafe { &(__pt_pool_start) } as *const usize;
+    let end = unsafe { &(__pt_pool_end) } as *const usize;
+    let len = unsafe { end.offset_from(start) } as usize;
+    let slice = unsafe { from_raw_parts_mut(start as *mut TTable<TABLE_ENTRIES>, len) };
+
+    let LOW_L0 = alloc_table(slice).unwrap();
+    let LOW_L1 = alloc_table(slice).unwrap();
+    let LOW_L2 = alloc_table(slice).unwrap();
+    let HIGH_L0 = alloc_table(slice).unwrap();
+    let HIGH_L1 = alloc_table(slice).unwrap();
+    let HIGH_L2 = alloc_table(slice).unwrap();
+    let HIGH_L2_MMIO = alloc_table(slice).unwrap();
+
+    busy_loop();
+
     unsafe {
         // [0] -> L1
-        LOW_L0.entries[0] = TTENATIVE::new_table(&raw mut LOW_L1 as *const _ as u64);
+        LOW_L0.entries[0] = TTENATIVE::new_table(LOW_L1 as *const _ as u64);
         // [0] -> L2
-        LOW_L1.entries[0] = TTENATIVE::new_table(&raw mut LOW_L2 as *const _ as u64);
+        LOW_L1.entries[0] = TTENATIVE::new_table(LOW_L2 as *const _ as u64);
     }
 
-    // align down to 32mib
-    let mut phys_base = load_addr - (load_addr % (32 * 1024 * 1024));
-
-    let index = (phys_base >> 25) as usize;
+    let index = (load_addr >> 25) as usize;
 
     unsafe {
-        let mut block = TTENATIVE::new_block(phys_base);
+        let mut block = TTENATIVE::new_block(load_addr as u64);
         block.set_attr_index(1);
         block.set_access_permission(
             aarch64_cpu_ext::structures::tte::AccessPermission::PrivilegedReadWrite,
@@ -133,16 +112,16 @@ unsafe fn setup_tables(load_addr: u64) {
 
     unsafe {
         // L0[1] -> L1
-        HIGH_L0.entries[1] = TTENATIVE::new_table(&raw mut HIGH_L1 as *const _ as u64);
+        HIGH_L0.entries[1] = TTENATIVE::new_table(HIGH_L1 as *const _ as u64);
         // L1[0] -> L2
-        HIGH_L1.entries[0] = TTENATIVE::new_table(&raw mut HIGH_L2 as *const _ as u64);
+        HIGH_L1.entries[0] = TTENATIVE::new_table(HIGH_L2 as *const _ as u64);
         // L1[1] -> MMIO L2
-        HIGH_L1.entries[1] = TTENATIVE::new_table(&raw mut HIGH_L2_MMIO as *const _ as u64);
+        HIGH_L1.entries[1] = TTENATIVE::new_table(HIGH_L2_MMIO as *const _ as u64);
     }
 
     for i in 0..4 {
-        let block_phys = phys_base + (i * 32 * 1024 * 1024);
-        let mut block = TTENATIVE::new_block(block_phys);
+        let block_phys = load_addr + (i * 32 * 1024 * 1024);
+        let mut block = TTENATIVE::new_block(block_phys as u64);
         block.set_attr_index(1);
         block.set_access_permission(AccessPermission::PrivilegedReadWrite);
         block.set_executable(false);
@@ -177,4 +156,6 @@ unsafe fn setup_tables(load_addr: u64) {
             HIGH_L2_MMIO.entries[i as usize] = block;
         }
     }
+
+    (LOW_L0, HIGH_L0)
 }

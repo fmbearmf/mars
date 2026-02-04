@@ -246,6 +246,7 @@ name = "mars_bootloader"
 version = "0.0.1"
 dependencies = [
  "log",
+ "mars_protocol",
  "uefi",
 ]
 
@@ -256,8 +257,17 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
  "arm-pl011-uart",
+ "mars_protocol",
  "spin",
  "tock-registers 0.10.1",
+ "uefi",
+]
+
+[[package]]
+name = "mars_protocol"
+version = "0.0.1"
+dependencies = [
+ "uefi",
 ]
 
 [[package]]

@@ -18,6 +18,8 @@ fn workspace_root() -> PathBuf {
 }
 
 fn main() -> Result<()> {
+    let root = workspace_root();
+
     let kernel_status = Command::new("cargo")
         .args(["build", "--package", "mars_kernel"])
         .status()
@@ -35,8 +37,6 @@ fn main() -> Result<()> {
     if !boot_status.success() {
         anyhow::bail!("Bootloader build failed.");
     }
-
-    let root = workspace_root();
 
     let kernel_path = root
         .join("target/aarch64-unknown-none/debug/mars_kernel")
@@ -63,7 +63,7 @@ fn main() -> Result<()> {
             "-accel",
             "hvf",
             "-cpu",
-            "host",
+            "max",
             "-boot",
             "menu=on,order=c,splash-time=0",
             "-m",
@@ -76,6 +76,8 @@ fn main() -> Result<()> {
             "mon:stdio",
             "-device",
             "virtio-gpu-pci",
+            "-S",
+            "-s",
         ])
         .status()
         .context("QEMU failed.")?;
