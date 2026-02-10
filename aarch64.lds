@@ -15,6 +15,8 @@ ENTRY(_start)
 SECTIONS {
     . = __KBASE;
 
+    PROVIDE(__KBASE = __KBASE);
+
     .text : ALIGN(16K)
     {
         *(.text .text.*)
@@ -46,27 +48,14 @@ SECTIONS {
         . = ALIGN(16K);
     }
 
-    .got : ALIGN(16K)
-    {
-        *(.got*)
-        . = ALIGN(16K);
-    }
-
-    . = ALIGN(16K);
-    __boot_stack_bottom = .;
-    . += 0x8000; /* 32k */
-    __boot_stack_top = .;
-
     .reclaimable (NOLOAD) : ALIGN(16K)
     {
         __reclaimable_start = .;
         *(.reclaimable .reclaimable.*)
-        __pt_pool_start = .;
-        . += 0x100000; /* 1mib */
-        __pt_pool_end = .;
         . = ALIGN(16K);
         __reclaimable_end = .;
     }
 
-    __kend = .;
+    . = ALIGN(16K);
+    __KEND = .;
 }

@@ -1,11 +1,12 @@
 use arm_pl011_uart::{LineConfig, PL011Registers, Uart, UniqueMmioPointer};
 use core::{fmt::Write, ptr::NonNull};
-use mars_kernel::vm::mmio_addr_to_iomap;
+use mars_klib::vm::dmap_addr_to_virt;
 use spin::Mutex;
 
 use crate::busy_loop;
 
-const UART_ADDRESS: *mut PL011Registers = (mmio_addr_to_iomap(0x0900_0000)) as *mut PL011Registers;
+const UART_ADDRESS: *mut PL011Registers =
+    (dmap_addr_to_virt(0x0900_0000_u64)) as *mut PL011Registers;
 
 pub static EARLYCON: Mutex<Option<EarlyCon>> = Mutex::new(None);
 

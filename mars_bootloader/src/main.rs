@@ -4,17 +4,19 @@
 
 extern crate alloc;
 
+mod page;
+
 use core::{
     alloc::Layout,
-    arch::aarch64::__wfe,
-    mem::transmute,
+    arch::{aarch64::__wfe, asm},
+    mem::{MaybeUninit, transmute},
     ptr::{self, NonNull, copy_nonoverlapping, write_bytes, write_volatile},
     slice::from_raw_parts_mut,
     time::Duration,
 };
 
-use alloc::vec::Vec;
 use alloc::{alloc::alloc, vec};
+use alloc::{boxed::Box, vec::Vec};
 use log::{error, info};
 use mars_protocol::BootInfo;
 use uefi::{
@@ -22,9 +24,14 @@ use uefi::{
     allocator::Allocator,
     boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE, get_image_file_system},
     entry,
-    mem::{AlignedBuffer, memory_map::MemoryMap},
+    mem::{
+        AlignedBuffer,
+        memory_map::{MemoryMap, MemoryMapMut, MemoryMapOwned},
+    },
     proto::media::file::{File, FileAttribute, FileInfo, FileMode},
 };
+
+use crate::page::mmu_init;
 
 const PAGE_SIZE: usize = 16384;
 
@@ -80,7 +87,8 @@ struct Elf64Rela {
     r_addend: i64,
 }
 
-fn busy_loop() -> ! {
+#[inline(always)]
+fn busy_loop_ret() {
     loop {
         unsafe { __wfe() };
     }
@@ -91,6 +99,8 @@ fn main() -> Status {
     uefi::helpers::init().unwrap();
 
     info!("Loader starting...");
+
+    busy_loop_ret();
 
     let mut sfs_prot = match boot::get_image_file_system(boot::image_handle()) {
         Ok(s) => s,
@@ -227,8 +237,11 @@ fn main() -> Status {
     info!("load span: {:#x} bytes", load_span);
 
     const UEFI_PS: u64 = UEFI_PAGE_SIZE as u64;
+
     let load_size = ((load_span + UEFI_PS - 1) / UEFI_PS) * UEFI_PS;
     let pages = (load_size / UEFI_PS) as usize;
+
+    // allocate extra page(s) so rounding up is safe
     let extra = PAGE_SIZE / UEFI_PAGE_SIZE;
 
     let alloc_result = boot::allocate_pages(
@@ -247,7 +260,6 @@ fn main() -> Status {
 
     let base_phys = (alloc_ptr + (PAGE_SIZE as u64) - 1) & !(PAGE_SIZE as u64 - 1);
 
-    //let load_base = base_phys.wrapping_sub(min_vaddr);
     info!(
         "allocated {} UEFI pages ({} bytes) at {:#x}",
         pages, load_size, base_phys
@@ -261,6 +273,8 @@ fn main() -> Status {
     }
 
     //let mut p_vaddr = 0u64;
+
+    mmu_init();
 
     for i in 0..phnum {
         let ph = unsafe { &*(elf_bytes.as_ptr().add(phoff + i * phentsize) as *const Elf64Phdr) };
@@ -323,13 +337,12 @@ fn main() -> Status {
         entry_addr, entry_offset
     );
 
-    let entry_fn: fn(boot_info: &BootInfo) -> ! = unsafe { transmute(entry_addr) };
-    let mem_map = unsafe { boot::exit_boot_services(None) };
+    let entry_fn: fn(boot_info_ptr: *mut BootInfo) -> ! = unsafe { transmute(entry_addr) };
+    let mut mem_map = unsafe { boot::exit_boot_services(None) };
 
-    entry_fn(&BootInfo {
-        memory_map: mem_map,
-        kernel_size: load_size as usize,
+    entry_fn(&mut BootInfo {
         kernel_load_physical_address: base_phys as usize,
-    })
-    //Status::SUCCESS
+        kernel_size: load_size as usize,
+        memory_map: mem_map,
+    });
 }

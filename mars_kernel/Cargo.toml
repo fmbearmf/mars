@@ -4,7 +4,7 @@ cargo-features = [ "per-package-target" ]
 name = "mars_kernel"
 version = "0.0.1"
 edition = "2024"
-default-target = "aarch64-unknown-none"
+forced-target = "aarch64-unknown-none"
 
 [[bin]]
 name = "mars_kernel"
@@ -15,7 +15,8 @@ test = false
 aarch64-cpu = { workspace = true }
 aarch64-cpu-ext = { workspace = true }
 arm-pl011-uart = { version = "0.4.0", default-features = false }
-spin = "0.10.0"
+spin = { workspace = true }
 tock-registers = { workspace = true }
 mars_protocol = { path = "../mars_protocol" }
-uefi = { version = "0.36.1" }
+uefi = { workspace = true }
+mars_klib = { path = "../mars_klib" }

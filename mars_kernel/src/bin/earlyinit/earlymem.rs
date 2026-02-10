@@ -1,29 +1,31 @@
-use core::{
-    slice::from_raw_parts_mut,
-    sync::atomic::{AtomicUsize, Ordering},
-    usize::MAX,
-};
+use core::ptr::write_volatile;
 
-use mars_kernel::vm::{TABLE_ENTRIES, TTable};
+use mars_klib::vm::{TTENATIVE, TTable};
 
-use crate::busy_loop;
-
-pub const MAX_TABLES: usize = 64;
+pub const MAX_TABLES: usize = 512;
 
 // not threadsafe. doesnt matter since this wont be used outside early boot
 static mut NEXT_TABLE: usize = 0;
-unsafe extern "C" {
-    static __pt_pool_start: u8;
-    static __pt_pool_end: u8;
-}
 
 #[inline]
-pub fn alloc_table(base: &mut [TTable<TABLE_ENTRIES>]) -> Option<&mut TTable<TABLE_ENTRIES>> {
-    let i = unsafe { NEXT_TABLE } + 1;
+pub fn alloc_table<const N: usize>(base: *const [TTable<N>]) -> Option<*mut TTable<N>> {
+    let i = unsafe { NEXT_TABLE.checked_add(1).unwrap_or(usize::MAX) };
 
     if i >= MAX_TABLES {
         return None;
     }
 
-    unsafe { Some(&mut base[i]) }
+    debug_assert!(!base.is_empty());
+    debug_assert!(i < MAX_TABLES);
+
+    let ptr = unsafe { (base as *const () as usize).wrapping_add(i * size_of::<TTable<N>>()) };
+    let table = &mut unsafe { *(ptr as *mut TTable<N>) };
+
+    for j in 0..N {
+        unsafe { write_volatile(&mut table.entries[j], TTENATIVE::invalid()) };
+    }
+
+    unsafe { NEXT_TABLE = i };
+
+    unsafe { Some(ptr as *mut TTable<N>) }
 }

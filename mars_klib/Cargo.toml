@@ -1,0 +1,11 @@
+[package]
+name = "mars_klib"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+aarch64-cpu = { workspace = true }
+aarch64-cpu-ext = { workspace = true }
+arm-pl011-uart = { version = "0.4.0", default-features = false }
+tock-registers = { workspace = true }
+spin = { workspace = true }

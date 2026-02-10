@@ -10,4 +10,8 @@ default-target = "aarch64-unknown-uefi"
 log = "0.4.29"
 uefi = { version = "0.36.1", features = ["logger", "panic_handler", "alloc"] }
 mars_protocol = { path = "../mars_protocol" }
-#mars_kernel = { path = "../mars_kernel" }
+mars_klib = { path = "../mars_klib" }
+
+aarch64-cpu = { workspace = true }
+aarch64-cpu-ext = { workspace = true }
+tock-registers = { workspace = true }

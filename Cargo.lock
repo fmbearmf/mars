@@ -245,8 +245,12 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 name = "mars_bootloader"
 version = "0.0.1"
 dependencies = [
+ "aarch64-cpu 11.2.0",
+ "aarch64-cpu-ext",
  "log",
+ "mars_klib",
  "mars_protocol",
+ "tock-registers 0.10.1",
  "uefi",
 ]
 
@@ -257,10 +261,22 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
  "arm-pl011-uart",
+ "mars_klib",
  "mars_protocol",
  "spin",
  "tock-registers 0.10.1",
  "uefi",
+]
+
+[[package]]
+name = "mars_klib"
+version = "0.0.1"
+dependencies = [
+ "aarch64-cpu 11.2.0",
+ "aarch64-cpu-ext",
+ "arm-pl011-uart",
+ "spin",
+ "tock-registers 0.10.1",
 ]
 
 [[package]]

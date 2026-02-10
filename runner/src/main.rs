@@ -76,6 +76,10 @@ fn main() -> Result<()> {
             "mon:stdio",
             "-device",
             "virtio-gpu-pci",
+            "-D",
+            "qemu.log",
+            "-d",
+            "int",
             "-S",
             "-s",
         ])

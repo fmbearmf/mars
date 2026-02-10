@@ -1,6 +1,6 @@
 #![no_std]
 
-use uefi::mem::memory_map::MemoryMapOwned;
+use uefi::mem::memory_map::{MemoryMapIter, MemoryMapMeta, MemoryMapMut, MemoryMapOwned};
 
 #[derive(Debug)]
 pub struct BootInfo {
