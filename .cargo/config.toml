@@ -1,8 +1,12 @@
 [target.aarch64-unknown-none]
-runner = "./qemu-arm.sh"
-
-[target.'cfg(target_os = "none")']
 rustflags = [
     "-C", "link-arg=-static",
+    "-C", "relocation-model=static",
+]
+runner = "./qemu-arm.sh"
+
+[target.aarch64-unknown-uefi]
+rustflags = [
+    "-C", "link-arg=-pie",
     "-C", "relocation-model=pie",
 ]

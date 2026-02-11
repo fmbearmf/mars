@@ -107,7 +107,7 @@ impl<'a> Fdt<'a> {
         })
     }
 
-    pub unsafe fn from_addr(addr: usize) -> Result<Self> {
+    pub unsafe fn from_addr(addr: usize) -> Result<Self> { unsafe {
         let ptr = addr as *const u8;
         let magic = u32::from_be(*(ptr as *const u32));
         if magic != FDT_MAGIC {
@@ -118,7 +118,7 @@ impl<'a> Fdt<'a> {
         let dtb_bytes: &[u8] = core::slice::from_raw_parts(ptr, total_size);
 
         Fdt::new(dtb_bytes)
-    }
+    }}
 
     pub fn mem_reserve_map(&self, out: &mut [MemoryRegion]) -> Result<usize> {
         let offset = self.header.offset_mem_rsvmap as usize;
@@ -403,7 +403,7 @@ fn sub_reserved_info(
                 continue;
             }
 
-            let mut new_count = frag_count;
+            let _new_count = frag_count;
             let mut temp: [MemoryRegion; MAX_FRAGS_PER_REGION] =
                 [MemoryRegion { base: 0, size: 0 }; MAX_FRAGS_PER_REGION];
 

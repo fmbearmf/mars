@@ -1,6 +1,6 @@
 use core::{
     mem,
-    ptr::{self, NonNull},
+    ptr::{self},
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 

@@ -3,6 +3,11 @@ name = "mars_klib"
 version = "0.0.1"
 edition = "2024"
 
+[lib]
+name = "mars_klib"
+plugin = false
+crate-type = [ "rlib" ]
+
 [dependencies]
 aarch64-cpu = { workspace = true }
 aarch64-cpu-ext = { workspace = true }

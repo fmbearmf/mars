@@ -8,30 +8,28 @@ mod page;
 
 use core::{
     alloc::Layout,
-    arch::{aarch64::__wfe, asm},
-    mem::{MaybeUninit, transmute},
-    ptr::{self, NonNull, copy_nonoverlapping, write_bytes, write_volatile},
+    arch::aarch64::__wfe,
+    mem::transmute,
+    ops::Div,
+    ptr::{NonNull, copy_nonoverlapping, write_volatile},
     slice::from_raw_parts_mut,
-    time::Duration,
 };
 
-use alloc::{alloc::alloc, vec};
-use alloc::{boxed::Box, vec::Vec};
+use aarch64_cpu::asm::nop;
+use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
+use alloc::{alloc::alloc, boxed::Box};
 use log::{error, info};
+use mars_klib::vm::{MAIR_NORMAL_INDEX, TABLE_ENTRIES, TTENATIVE, TTable};
 use mars_protocol::BootInfo;
 use uefi::{
     CStr16, Status,
     allocator::Allocator,
-    boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE, get_image_file_system},
+    boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE},
     entry,
-    mem::{
-        AlignedBuffer,
-        memory_map::{MemoryMap, MemoryMapMut, MemoryMapOwned},
-    },
     proto::media::file::{File, FileAttribute, FileInfo, FileMode},
 };
 
-use crate::page::mmu_init;
+use crate::page::{alloc_table, cpu_init, map_region, mmu_init, uefi_addr_to_paddr};
 
 const PAGE_SIZE: usize = 16384;
 
@@ -72,19 +70,12 @@ struct Elf64Phdr {
     p_align: u64,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64Dyn {
-    d_tag: i64,
-    d_un: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64Rela {
-    r_offset: u64,
-    r_info: u64,
-    r_addend: i64,
+bitflags::bitflags! {
+    struct PhdrFlags: u32 {
+        const EXEC = 0x1;
+        const WRITE = 0x2;
+        const READ = 0x4;
+    }
 }
 
 #[inline(always)]
@@ -98,9 +89,9 @@ fn busy_loop_ret() {
 fn main() -> Status {
     uefi::helpers::init().unwrap();
 
+    //cpu_init();
     info!("Loader starting...");
-
-    busy_loop_ret();
+    let mut root_table = alloc_table();
 
     let mut sfs_prot = match boot::get_image_file_system(boot::image_handle()) {
         Ok(s) => s,
@@ -159,7 +150,7 @@ fn main() -> Status {
     let ptr = unsafe { alloc(layout) };
     let nn_ptr = NonNull::new(ptr).expect("alloc FAIL");
 
-    let mut elf_bytes: &mut [u8] = unsafe { from_raw_parts_mut(nn_ptr.as_ptr(), file_size) };
+    let elf_bytes: &mut [u8] = unsafe { from_raw_parts_mut(nn_ptr.as_ptr(), file_size) };
 
     if let Err(e) = kernel.set_position(0) {
         error!("set position failed: {:?}", e);
@@ -274,8 +265,6 @@ fn main() -> Status {
 
     //let mut p_vaddr = 0u64;
 
-    mmu_init();
-
     for i in 0..phnum {
         let ph = unsafe { &*(elf_bytes.as_ptr().add(phoff + i * phentsize) as *const Elf64Phdr) };
         if ph.p_type != PT_LOAD {
@@ -285,21 +274,41 @@ fn main() -> Status {
         let file_off = ph.p_offset as usize;
         let filesz = ph.p_filesz as usize;
         let memsz = ph.p_memsz as usize;
-        let vaddr = ph.p_vaddr;
+        let vaddr = TTENATIVE::align_down(ph.p_vaddr);
+
+        let pages = TTENATIVE::align_up(memsz as u64).div(PAGE_SIZE as u64);
 
         info!(
             "PT_LOAD vaddr={:#x} file_off={:#x} filesz={:#x} memsz={:#x}",
             vaddr, file_off, filesz, memsz
         );
 
+        let flags = PhdrFlags::from_bits_truncate(ph.p_flags);
+
+        let r = flags.contains(PhdrFlags::READ);
+        let w = flags.contains(PhdrFlags::WRITE);
+        let x = flags.contains(PhdrFlags::EXEC);
+
+        info!(
+            "Perm: {}{}{}",
+            if r { 'R' } else { '-' },
+            if w { 'W' } else { '-' },
+            if x { 'X' } else { '-' }
+        );
+
+        if w && x {
+            panic!("Kernel must be W^X (because I said so). Bad news for JIT fans...");
+        }
+
         if file_off + filesz > elf_bytes.len() {
             error!("Segment file data out of bounds!");
             return Status::LOAD_ERROR;
         }
 
-        let offset = (vaddr - min_vaddr) as usize;
-        let dst = (base_phys as usize + offset) as *mut u8;
-        let src = unsafe { elf_bytes.as_ptr().add(file_off) };
+        let offset = TTENATIVE::align_up(vaddr - min_vaddr) as usize;
+        let dst = TTENATIVE::align_down(base_phys + offset as u64) as *mut u8;
+        let src =
+            TTENATIVE::align_down(unsafe { elf_bytes.as_ptr().add(file_off) } as u64) as *mut u8;
 
         info!(
             "COPYING segment: src={:#x} dst={:#x} filesz={}",
@@ -318,6 +327,30 @@ fn main() -> Status {
                 }
             }
         }
+
+        info!(
+            "MAPPING segment: phys={:#x} virt={:#x} pages={}",
+            dst as u64, vaddr, pages
+        );
+
+        let ap = if w {
+            AccessPermission::PrivilegedReadWrite
+        } else {
+            assert!(r && !w);
+            AccessPermission::PrivilegedReadOnly
+        };
+
+        map_region(
+            unsafe { root_table.as_mut() },
+            dst as usize,
+            vaddr as usize,
+            pages as usize * PAGE_SIZE,
+            ap,
+            Shareability::InnerShareable,
+            true,
+            !x,
+            MAIR_NORMAL_INDEX,
+        );
     }
 
     let entry_vaddr = ehdr.e_entry;
@@ -332,13 +365,19 @@ fn main() -> Status {
     let entry_offset = (entry_vaddr - min_vaddr) as usize;
     let entry_addr = base_phys + entry_offset as u64;
 
+    mmu_init(root_table.as_ptr());
+
     info!(
         "entry at physical {:#x} (offset {:#x})",
         entry_addr, entry_offset
     );
 
+    uefi_addr_to_paddr(entry_addr as usize);
+
+    busy_loop_ret();
+
     let entry_fn: fn(boot_info_ptr: *mut BootInfo) -> ! = unsafe { transmute(entry_addr) };
-    let mut mem_map = unsafe { boot::exit_boot_services(None) };
+    let mem_map = unsafe { boot::exit_boot_services(None) };
 
     entry_fn(&mut BootInfo {
         kernel_load_physical_address: base_phys as usize,

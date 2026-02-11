@@ -1,13 +1,17 @@
 OUTPUT_ARCH(aarch64)
 
+FLAG_R = 4;
+FLAG_W = 2;
+FLAG_X = 1;
+
 PHDRS
 {
-    text PT_LOAD;
+    text PT_LOAD FLAGS(4 | 1);
     rodata PT_LOAD FLAGS (4);
-    data PT_LOAD;
+    data PT_LOAD FLAGS(4 | 2);
 }
 
-__ALIGN = 0x2000000;
+__ALIGN = 0x4000;
 __KBASE = 0xFFFF800000000000;
 
 ENTRY(_start)
@@ -17,45 +21,43 @@ SECTIONS {
 
     PROVIDE(__KBASE = __KBASE);
 
-    .text : ALIGN(16K)
+    .text : ALIGN(__ALIGN)
     {
         *(.text .text.*)
-        . = ALIGN(16K);
-    }
+    } :text
 
-    .rodata : ALIGN(16K)
+    . = ALIGN(__ALIGN);
+
+    .rodata : ALIGN(__ALIGN)
     {
         *(.rodata .rodata.*)
-        . = ALIGN(16K);
-    }
+    } :rodata
 
-    .data : ALIGN(16K)
+    .eh_frame :
+    {
+        *(.eh_frame*)
+    } :rodata
+
+    . = ALIGN(__ALIGN);
+
+    .data : ALIGN(__ALIGN)
     {
         *(.data .data.*)
-        . = ALIGN(16K);
-    }
+    } :data
 
-    .bss (NOLOAD) : ALIGN(16K)
+    .bss (NOLOAD) :
     {
         *(.bss .bss.*)
         *(COMMON)
-        . = ALIGN(16K);
-    }
+    } :data
 
-    .eh_frame : ALIGN(16K)
-    {
-        *(.eh_frame*)
-        . = ALIGN(16K);
-    }
-
-    .reclaimable (NOLOAD) : ALIGN(16K)
+    .reclaimable (NOLOAD) :
     {
         __reclaimable_start = .;
         *(.reclaimable .reclaimable.*)
-        . = ALIGN(16K);
         __reclaimable_end = .;
-    }
+    } :data
 
-    . = ALIGN(16K);
+    . = ALIGN(__ALIGN);
     __KEND = .;
 }

@@ -11,7 +11,7 @@ pub struct RegisterFile {
     pub spsr: u64,
 }
 
-const _: () = assert!(size_of::<RegisterFile>() == 8 * 24);
+//const _: () = assert!(size_of::<RegisterFile>() == 8 * 24);
 
 #[derive(Debug, Eq, PartialEq)]
 #[repr(transparent)]

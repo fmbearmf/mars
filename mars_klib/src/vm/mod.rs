@@ -1,6 +1,3 @@
-use core::ops::{Add, BitAnd, Not, Sub};
-
-use aarch64_cpu::registers::TTBR0_EL1;
 use aarch64_cpu_ext::structures::tte::TTE16K48;
 use spin::Mutex;
 
@@ -59,11 +56,6 @@ pub struct MemoryRegion {
     pub base: usize,
     pub size: usize,
 }
-
-// L0
-pub static ROOT_TTBR1_TABLE: Mutex<TTable<2>> = Mutex::new(TTable {
-    entries: [TTENATIVE::invalid(); 2],
-});
 
 pub const fn dmap_addr_to_virt(dmap_addr: u64) -> u64 {
     DMAP_START as u64 + dmap_addr

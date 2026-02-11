@@ -247,6 +247,7 @@ version = "0.0.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
+ "bitflags 2.10.0",
  "log",
  "mars_klib",
  "mars_protocol",
