@@ -5,8 +5,7 @@ use spin::Mutex;
 
 use crate::busy_loop;
 
-const UART_ADDRESS: *mut PL011Registers =
-    (dmap_addr_to_virt(0x0900_0000_u64)) as *mut PL011Registers;
+const UART_ADDRESS: *mut PL011Registers = (0x0900_0000_u64) as *mut PL011Registers;
 
 pub static EARLYCON: Mutex<Option<EarlyCon>> = Mutex::new(None);
 

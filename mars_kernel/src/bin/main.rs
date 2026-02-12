@@ -12,6 +12,7 @@ use aarch64_cpu::{
 };
 use core::{
     arch::{asm, naked_asm},
+    fmt::Write,
     panic::PanicInfo,
     ptr,
 };
@@ -96,6 +97,13 @@ fn kentry(boot_info_ref: &mut BootInfo) -> ! {
 
     let kbase = unsafe { &__KBASE as *const _ as usize };
     let offset = kbase - boot_info_ref.kernel_load_physical_address;
+
+    {
+        let mut lock = EARLYCON.lock();
+        *lock = Some(EarlyCon::new());
+    }
+
+    earlycon_writeln!("g");
 
     let mut mmap = unsafe { ptr::read(&boot_info_ref.memory_map) };
 

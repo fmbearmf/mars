@@ -1,10 +1,11 @@
-use aarch64_cpu_ext::structures::tte::TTE16K48;
+use aarch64_cpu_ext::structures::tte::{TTE4K48, TTE16K48};
 use spin::Mutex;
 
 pub mod page;
 pub mod slab;
 
 pub type TTENATIVE = TTE16K48;
+pub type TTEUEFI = TTE4K48;
 
 pub const DMAP_START: usize = 0xFFFF << 48;
 
@@ -33,6 +34,12 @@ pub const MAIR_DEVICE_INDEX: u64 = 0;
 #[repr(C, align(16384))]
 pub struct TTable<const N: usize> {
     pub entries: [TTENATIVE; N],
+}
+
+#[derive(Copy, Clone)]
+#[repr(C, align(4096))]
+pub struct TTableUEFI {
+    pub entries: [TTEUEFI; 512],
 }
 
 pub const fn align_down(addr: usize, align: usize) -> usize {

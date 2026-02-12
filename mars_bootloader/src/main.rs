@@ -85,6 +85,12 @@ fn busy_loop_ret() {
     }
 }
 
+fn busy_loop_noret() -> ! {
+    loop {
+        unsafe { __wfe() }
+    }
+}
+
 #[entry]
 fn main() -> Status {
     uefi::helpers::init().unwrap();
@@ -340,9 +346,15 @@ fn main() -> Status {
             AccessPermission::PrivilegedReadOnly
         };
 
+        info!(
+            "VADDR dst {:#x} -> PADDR dst {:#x}",
+            dst as usize,
+            uefi_addr_to_paddr(dst as usize)
+        );
+
         map_region(
             unsafe { root_table.as_mut() },
-            dst as usize,
+            uefi_addr_to_paddr(dst as usize),
             vaddr as usize,
             pages as usize * PAGE_SIZE,
             ap,
@@ -371,10 +383,6 @@ fn main() -> Status {
         "entry at physical {:#x} (offset {:#x})",
         entry_addr, entry_offset
     );
-
-    uefi_addr_to_paddr(entry_addr as usize);
-
-    busy_loop_ret();
 
     let entry_fn: fn(boot_info_ptr: *mut BootInfo) -> ! = unsafe { transmute(entry_addr) };
     let mem_map = unsafe { boot::exit_boot_services(None) };

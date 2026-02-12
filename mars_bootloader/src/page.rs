@@ -12,12 +12,12 @@ use alloc::boxed::Box;
 use log::info;
 use mars_klib::vm::{
     L2_BLOCK_MASK, L2_BLOCK_SHIFT, MAIR_DEVICE_INDEX, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE,
-    TABLE_ENTRIES, TTENATIVE, TTable,
+    TABLE_ENTRIES, TTENATIVE, TTable, TTableUEFI,
 };
 use tock_registers::interfaces::*;
 use uefi::boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PS};
 
-use crate::busy_loop_ret;
+use crate::{busy_loop_noret, busy_loop_ret};
 
 pub fn cpu_init() {
     MAIR_EL1.modify(
@@ -233,7 +233,9 @@ fn map_page(
     let l3_entry = &mut (l3_table.entries[i3]);
 
     l3_entry.set_is_valid(true);
-    l3_entry.set_is_block();
+    // the block/table bit acts counterintuitively at L3.
+    // an L3 PTE must be marked as a table for the MMU to treat it as a PTE
+    l3_entry.set_is_table();
     l3_entry.set_address(pa as u64);
     l3_entry.set_access();
     l3_entry.set_access_permission(access);
@@ -250,8 +252,6 @@ fn map_page(
 }
 
 pub fn alloc_table() -> NonNull<TTable<TABLE_ENTRIES>> {
-    info!("xyz");
-    busy_loop_ret();
     const SIZE: usize = size_of::<TTable<TABLE_ENTRIES>>() + PAGE_SIZE;
 
     let table_result = boot::allocate_pages(
@@ -279,14 +279,11 @@ pub fn alloc_table() -> NonNull<TTable<TABLE_ENTRIES>> {
     table_aligned
 }
 
-#[inline(always)]
 pub fn uefi_addr_to_paddr(vaddr: usize) -> usize {
-    type TTable4K = TTable<512>;
-
-    let table_addr = &unsafe { *(TTBR0_EL1.get() as *const TTable4K) };
-    info!("ttbr0: {}", table_addr as *const _ as u64);
-
-    busy_loop_ret();
+    type TTable4K = TTableUEFI;
+    // DO NOT make this a reference.
+    // rust is fucking STUPID and reserves stack space for the entire table and causes an overflow.
+    let table_addr = TTBR0_EL1.get() as *const TTable4K;
 
     let i0 = (vaddr >> 39) & 0x1FF;
     let i1 = (vaddr >> 30) & 0x1FF;
@@ -294,12 +291,13 @@ pub fn uefi_addr_to_paddr(vaddr: usize) -> usize {
     let i3 = (vaddr >> 12) & 0x1FF;
     let offset = vaddr & 0xFFF;
 
-    let l1_table_addr = table_addr.entries[i0].address() as *const TTable4K;
-    if l1_table_addr.is_null() {
+    let l1_table_addr = (&unsafe { *table_addr }).entries[i0].address();
+    if (l1_table_addr as *const TTable4K).is_null() {
         panic!("l1 table (l0[{}]) null: {}", i0, l1_table_addr as u64);
     }
-    let l1_table = &unsafe { *l1_table_addr };
-    let l1_entry = l1_table.entries[i1];
+
+    let l1_table = l1_table_addr as *const TTable4K;
+    let l1_entry = (&unsafe { *l1_table }).entries[i1];
 
     if l1_entry.is_block() {
         info!(
@@ -316,16 +314,16 @@ pub fn uefi_addr_to_paddr(vaddr: usize) -> usize {
     if l2_table_addr.is_null() {
         panic!("l2 table (l1[{}]) null: {}", i1, l2_table_addr as u64);
     }
-    let l2_table = &unsafe { *l2_table_addr };
-    let l2_entry = l2_table.entries[i2];
+    let l2_table = l2_table_addr as *const TTable4K;
+    let l2_entry = (&unsafe { *l2_table }).entries[i2];
 
     if l2_entry.is_block() {
-        info!(
-            "L2 {:#x} block {} entry: {:#x}",
-            l2_table_addr as u64,
-            i2,
-            l2_entry.get()
-        );
+        //info!(
+        //    "L2 {:#x} block {} entry: {:#x}",
+        //    l2_table_addr as u64,
+        //    i2,
+        //    l2_entry.get()
+        //);
         return l2_entry.address() as usize + offset;
     }
 
@@ -335,16 +333,16 @@ pub fn uefi_addr_to_paddr(vaddr: usize) -> usize {
         panic!("l3 table (l2[{}]) null: {}", i2, l3_table_addr as u64);
     }
 
-    let l3_table = &unsafe { *l3_table_addr };
-    let l3_entry = l3_table.entries[i3];
+    let l3_table = l3_table_addr as *const TTable4K;
+    let l3_entry = (&unsafe { *l3_table }).entries[i3];
 
     if l3_entry.is_block() {
-        info!(
-            "L3 {:#x} block {} entry: {:#x}",
-            l3_table_addr as u64,
-            i3,
-            l3_entry.get()
-        );
+        //info!(
+        //    "L3 {:#x} block {} entry: {:#x}",
+        //    l3_table_addr as u64,
+        //    i3,
+        //    l3_entry.get()
+        //);
     }
 
     l3_entry.address() as usize + offset
