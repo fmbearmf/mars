@@ -1,5 +1,5 @@
 [package]
-name = "mars_protocol"
+name = "protocol"
 version = "0.0.1"
 edition = "2024"
 

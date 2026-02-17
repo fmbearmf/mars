@@ -18,11 +18,11 @@ use core::{
 use aarch64_cpu::asm::nop;
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{alloc::alloc, boxed::Box};
-use log::{error, info};
-use mars_klib::vm::{
+use klib::vm::{
     DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, TABLE_ENTRIES, TTENATIVE, TTable,
 };
-use mars_protocol::BootInfo;
+use log::{error, info};
+use protocol::BootInfo;
 use uefi::{
     CStr16, Status,
     allocator::Allocator,
@@ -98,7 +98,7 @@ fn busy_loop_noret() -> ! {
 fn main() -> Status {
     uefi::helpers::init().unwrap();
 
-    //cpu_init();
+    cpu_init();
     info!("Loader starting...");
     let mut root_table = alloc_table();
 

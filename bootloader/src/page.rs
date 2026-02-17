@@ -9,15 +9,12 @@ use aarch64_cpu::{
 };
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::boxed::Box;
-use log::info;
-use mars_klib::vm::{
+use klib::vm::{
     L2_BLOCK_MASK, L2_BLOCK_SHIFT, MAIR_DEVICE_INDEX, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE,
     TABLE_ENTRIES, TTENATIVE, TTable, TTableUEFI,
 };
 use tock_registers::interfaces::*;
 use uefi::boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PS};
-
-use crate::{busy_loop_noret, busy_loop_ret};
 
 pub fn cpu_init() {
     MAIR_EL1.modify(

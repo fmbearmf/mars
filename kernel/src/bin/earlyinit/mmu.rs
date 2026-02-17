@@ -4,7 +4,7 @@ use aarch64_cpu::{
 };
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use core::mem::transmute;
-use mars_klib::vm::{
+use klib::vm::{
     DMAP_START, L2_BLOCK_MASK, L2_BLOCK_SHIFT, L2_BLOCK_SIZE, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX,
     PAGE_MASK, PAGE_SHIFT, TABLE_ENTRIES, TTENATIVE, TTable, align_down, align_up,
 };

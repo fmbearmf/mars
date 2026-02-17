@@ -16,8 +16,8 @@ use core::{
     panic::PanicInfo,
     ptr,
 };
-use mars_klib::exception::ExceptionHandler;
-use mars_protocol::BootInfo;
+use klib::exception::ExceptionHandler;
+use protocol::BootInfo;
 use uefi::mem::memory_map::MemoryMap;
 
 use crate::earlyinit::{
@@ -30,7 +30,7 @@ extern crate core;
 struct Exceptions;
 impl ExceptionHandler for Exceptions {}
 
-mars_klib::exception_handlers!(Exceptions);
+klib::exception_handlers!(Exceptions);
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {

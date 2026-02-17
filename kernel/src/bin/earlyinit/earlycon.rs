@@ -1,9 +1,7 @@
 use arm_pl011_uart::{LineConfig, PL011Registers, Uart, UniqueMmioPointer};
 use core::{fmt::Write, ptr::NonNull};
-use mars_klib::vm::phys_addr_to_dmap;
+use klib::vm::phys_addr_to_dmap;
 use spin::Mutex;
-
-use crate::busy_loop;
 
 const UART_ADDRESS: *mut PL011Registers = (0x0900_0000_u64) as *mut PL011Registers;
 

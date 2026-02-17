@@ -1,4 +1,4 @@
-use mars_klib::vm::TTable;
+use klib::vm::TTable;
 
 #[inline]
 pub fn alloc_table<const N: usize>() -> Option<*mut TTable<N>> {
