@@ -19,13 +19,16 @@ use aarch64_cpu::asm::nop;
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{alloc::alloc, boxed::Box};
 use log::{error, info};
-use mars_klib::vm::{MAIR_NORMAL_INDEX, TABLE_ENTRIES, TTENATIVE, TTable};
+use mars_klib::vm::{
+    DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, TABLE_ENTRIES, TTENATIVE, TTable,
+};
 use mars_protocol::BootInfo;
 use uefi::{
     CStr16, Status,
     allocator::Allocator,
-    boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE},
+    boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE, memory_map},
     entry,
+    mem::memory_map::MemoryMap,
     proto::media::file::{File, FileAttribute, FileInfo, FileMode},
 };
 
@@ -243,7 +246,7 @@ fn main() -> Status {
 
     let alloc_result = boot::allocate_pages(
         AllocateType::AnyPages,
-        MemoryType::LOADER_CODE,
+        MemoryType::LOADER_DATA,
         pages + extra,
     );
     let alloc_ptr = match alloc_result {
@@ -311,10 +314,16 @@ fn main() -> Status {
             return Status::LOAD_ERROR;
         }
 
-        let offset = TTENATIVE::align_up(vaddr - min_vaddr) as usize;
+        let mut offset = (vaddr - min_vaddr) as usize;
         let dst = TTENATIVE::align_down(base_phys + offset as u64) as *mut u8;
+        offset = dst as usize - base_phys as usize;
         let src =
             TTENATIVE::align_down(unsafe { elf_bytes.as_ptr().add(file_off) } as u64) as *mut u8;
+
+        info!(
+            "base_phys {:#x} rounded down to {:#x}",
+            base_phys, dst as usize
+        );
 
         info!(
             "COPYING segment: src={:#x} dst={:#x} filesz={}",
@@ -352,6 +361,15 @@ fn main() -> Status {
             uefi_addr_to_paddr(dst as usize)
         );
 
+        if x {
+            info!(
+                "mapping code @ vaddr {:#x} paddr {:#x} offset {:#x}",
+                vaddr,
+                uefi_addr_to_paddr(dst as usize),
+                offset
+            )
+        }
+
         map_region(
             unsafe { root_table.as_mut() },
             uefi_addr_to_paddr(dst as usize),
@@ -374,22 +392,131 @@ fn main() -> Status {
         return Status::LOAD_ERROR;
     }
 
+    let mem_map = boot::memory_map(MemoryType::LOADER_DATA).unwrap();
+
+    for entry in mem_map.entries() {
+        //info!("raw phys: {:#x}", entry.phys_start);
+        let phys_start =
+            TTENATIVE::align_down(uefi_addr_to_paddr(entry.phys_start as usize) as u64) as usize;
+        let size = TTENATIVE::align_up(entry.page_count * UEFI_PS) as usize;
+        let vaddr = TTENATIVE::align_down((DMAP_START + phys_start) as u64) as usize;
+
+        //info!(
+        //    "map type {:?} attr {:?} @ phys {:#x}, {} pages, virt {:#x}",
+        //    entry.ty,
+        //    entry.att,
+        //    phys_start,
+        //    size / UEFI_PS as usize,
+        //    vaddr
+        //);
+        info!("{:?}", entry);
+
+        match entry.ty {
+            // RW no exec
+            MemoryType::CONVENTIONAL
+            | MemoryType::LOADER_DATA
+            | MemoryType::BOOT_SERVICES_DATA
+            | MemoryType::RUNTIME_SERVICES_DATA => {
+                map_region(
+                    unsafe { root_table.as_mut() },
+                    phys_start,
+                    vaddr,
+                    size,
+                    AccessPermission::PrivilegedReadWrite,
+                    Shareability::OuterShareable,
+                    true,
+                    true,
+                    MAIR_NORMAL_INDEX,
+                );
+            }
+
+            // RO exec
+            MemoryType::LOADER_CODE
+            | MemoryType::BOOT_SERVICES_CODE
+            | MemoryType::RUNTIME_SERVICES_CODE => {
+                map_region(
+                    unsafe { root_table.as_mut() },
+                    phys_start,
+                    vaddr,
+                    size,
+                    AccessPermission::PrivilegedReadOnly,
+                    Shareability::InnerShareable,
+                    true,
+                    false,
+                    MAIR_NORMAL_INDEX,
+                );
+            }
+
+            // RO no exec
+            MemoryType::ACPI_RECLAIM => {
+                map_region(
+                    unsafe { root_table.as_mut() },
+                    phys_start,
+                    vaddr,
+                    size,
+                    AccessPermission::PrivilegedReadOnly,
+                    Shareability::InnerShareable,
+                    true,
+                    true,
+                    MAIR_NORMAL_INDEX,
+                );
+            }
+
+            // RO no exec device
+            MemoryType::ACPI_NON_VOLATILE => {
+                map_region(
+                    unsafe { root_table.as_mut() },
+                    phys_start,
+                    vaddr,
+                    size,
+                    AccessPermission::PrivilegedReadOnly,
+                    Shareability::OuterShareable,
+                    true,
+                    true,
+                    MAIR_DEVICE_INDEX,
+                );
+            }
+
+            // RW no exec device
+            MemoryType::MMIO | MemoryType::MMIO_PORT_SPACE => {
+                map_region(
+                    unsafe { root_table.as_mut() },
+                    phys_start,
+                    vaddr,
+                    size,
+                    AccessPermission::PrivilegedReadWrite,
+                    Shareability::OuterShareable,
+                    true,
+                    true,
+                    MAIR_DEVICE_INDEX,
+                );
+            }
+
+            _ => {
+                info!("Unrecognized UEFI mem map entry type: {:?}", entry);
+            }
+        }
+    }
+
     let entry_offset = (entry_vaddr - min_vaddr) as usize;
-    let entry_addr = base_phys + entry_offset as u64;
+    let entry_addr = entry_vaddr as usize;
 
     mmu_init(root_table.as_ptr());
 
     info!(
-        "entry at physical {:#x} (offset {:#x})",
-        entry_addr, entry_offset
+        "entry at physical {:#x} virt {:#x} (offset {:#x})",
+        base_phys + entry_offset as u64,
+        entry_addr,
+        entry_offset
     );
 
     let entry_fn: fn(boot_info_ptr: *mut BootInfo) -> ! = unsafe { transmute(entry_addr) };
-    let mem_map = unsafe { boot::exit_boot_services(None) };
+
+    let mem_map_final = unsafe { boot::exit_boot_services(None) };
 
     entry_fn(&mut BootInfo {
         kernel_load_physical_address: base_phys as usize,
         kernel_size: load_size as usize,
-        memory_map: mem_map,
+        memory_map: mem_map_final,
     });
 }

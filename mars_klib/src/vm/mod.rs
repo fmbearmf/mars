@@ -64,8 +64,8 @@ pub struct MemoryRegion {
     pub size: usize,
 }
 
-pub const fn dmap_addr_to_virt(dmap_addr: u64) -> u64 {
-    DMAP_START as u64 + dmap_addr
+pub const fn phys_addr_to_dmap(phys_addr: u64) -> u64 {
+    DMAP_START as u64 + phys_addr
 }
 
 #[inline]

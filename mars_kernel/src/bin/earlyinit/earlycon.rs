@@ -1,6 +1,6 @@
 use arm_pl011_uart::{LineConfig, PL011Registers, Uart, UniqueMmioPointer};
 use core::{fmt::Write, ptr::NonNull};
-use mars_klib::vm::dmap_addr_to_virt;
+use mars_klib::vm::phys_addr_to_dmap;
 use spin::Mutex;
 
 use crate::busy_loop;

@@ -6,7 +6,7 @@ use core::{
 
 use aarch64_cpu::asm::barrier;
 
-use crate::vm::{MemoryRegion, PAGE_MASK, PAGE_SIZE};
+use crate::vm::{MemoryRegion, PAGE_MASK, PAGE_SIZE, align_up};
 
 const NULL_ADDRESS: *mut VMPageMeta = ptr::null_mut();
 
@@ -70,19 +70,14 @@ impl TicketLock {
         while self.users.load(Ordering::Acquire) != ticket {
             core::hint::spin_loop();
         }
-        barrier::dsb(barrier::SY);
+        core::sync::atomic::fence(Ordering::SeqCst);
     }
 
     #[inline]
-    unsafe fn unlock(&self) {
+    fn unlock(&self) {
+        core::sync::atomic::fence(Ordering::SeqCst);
         self.users.fetch_add(1, Ordering::Release);
-        barrier::dsb(barrier::SY);
     }
-}
-
-#[inline]
-const fn align_up(addr: usize, align: usize) -> usize {
-    (addr + (align - 1)) & !(align - 1)
 }
 
 pub struct PageAllocator {
@@ -113,7 +108,7 @@ impl PageAllocator {
         };
         for &r in ranges {
             if r.size == 0 || (r.base & PAGE_MASK) != 0 || (r.size & PAGE_MASK) != 0 {
-                continue;
+                panic!("region {:?} not page aligned", r);
             }
             pa.add_range(r);
         }
@@ -121,7 +116,7 @@ impl PageAllocator {
     }
 
     pub fn add_range(&mut self, region: MemoryRegion) {
-        assert_eq!(region.size, 0);
+        assert_ne!(region.size, 0);
         assert_ne!((region.base & PAGE_MASK), 0);
         assert_ne!((region.size & PAGE_MASK), 0);
 
@@ -130,9 +125,7 @@ impl PageAllocator {
         unsafe {
             let total_pages_reg = region.size / PAGE_SIZE;
             if total_pages_reg == 0 {
-                unsafe {
-                    self.lock.unlock();
-                }
+                self.lock.unlock();
                 return;
             }
 

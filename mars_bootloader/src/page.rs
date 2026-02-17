@@ -80,26 +80,25 @@ pub fn map_region(
         panic!("addresses AND size must be page aligned");
     }
 
-    if va & L2_BLOCK_MASK == 0 && pa & L2_BLOCK_MASK == 0 && size & L2_BLOCK_MASK == 0 {
-        let num_blocks = size >> L2_BLOCK_SHIFT;
+    //if va & L2_BLOCK_MASK == 0 && size & L2_BLOCK_MASK == 0 {
+    //    let num_blocks = size >> L2_BLOCK_SHIFT;
 
-        for i in 0..num_blocks {
-            info!("hi nb {}", i);
-            let vaddr = va + (i << L2_BLOCK_SHIFT);
-            let paddr = pa + (i << L2_BLOCK_SHIFT);
-            map_l2_block(root, paddr, vaddr, access, share, uxn, pxn, attr_index);
-        }
+    //    for i in 0..num_blocks {
+    //        let vaddr = va + (i << L2_BLOCK_SHIFT);
+    //        let paddr = pa + (i << L2_BLOCK_SHIFT);
+    //        map_l2_block(root, paddr, vaddr, access, share, uxn, pxn, attr_index);
+    //    }
 
-        return;
-    } else {
-        let num_pages = size >> PAGE_SHIFT;
+    //    return;
+    //} else {
+    let num_pages = size >> PAGE_SHIFT;
 
-        for i in 0..num_pages {
-            let vaddr = va + (i << PAGE_SHIFT);
-            let paddr = pa + (i << PAGE_SHIFT);
-            map_page(root, paddr, vaddr, access, share, uxn, pxn, attr_index);
-        }
+    for i in 0..num_pages {
+        let vaddr = va + (i << PAGE_SHIFT);
+        let paddr = pa + (i << PAGE_SHIFT);
+        map_page(root, paddr, vaddr, access, share, uxn, pxn, attr_index);
     }
+    //}
 }
 
 fn map_l2_block(
@@ -243,12 +242,6 @@ fn map_page(
     l3_entry.set_attr_index(attr_index);
     l3_entry.set_executable(!uxn);
     l3_entry.set_privileged_executable(!pxn);
-
-    info!(
-        "l3_entry {:#x} = addr {:#x}",
-        l3_entry as *const _ as u64,
-        l3_entry.address()
-    );
 }
 
 pub fn alloc_table() -> NonNull<TTable<TABLE_ENTRIES>> {
@@ -270,9 +263,7 @@ pub fn alloc_table() -> NonNull<TTable<TABLE_ENTRIES>> {
 
     let table_aligned_mut = unsafe { table_aligned.as_mut() };
 
-    info!("ZEROING {:#x}", table_aligned_mut as *const _ as u64);
     *table_aligned_mut = TTable::new();
-    info!("[0] = {:#x}", table_aligned_mut.entries[0].get());
 
     //info!("ALLOC table @ {:#x} of size {}", aligned, real_size);
 
@@ -289,7 +280,7 @@ pub fn uefi_addr_to_paddr(vaddr: usize) -> usize {
     let i1 = (vaddr >> 30) & 0x1FF;
     let i2 = (vaddr >> 21) & 0x1FF;
     let i3 = (vaddr >> 12) & 0x1FF;
-    let offset = vaddr & 0xFFF;
+    let mut offset = vaddr & 0xFFF;
 
     let l1_table_addr = (&unsafe { *table_addr }).entries[i0].address();
     if (l1_table_addr as *const TTable4K).is_null() {
@@ -300,12 +291,13 @@ pub fn uefi_addr_to_paddr(vaddr: usize) -> usize {
     let l1_entry = (&unsafe { *l1_table }).entries[i1];
 
     if l1_entry.is_block() {
-        info!(
-            "L1 {:#x} block {} entry: {:#x}",
-            l1_table_addr as u64,
-            i1,
-            l1_entry.get()
-        );
+        offset = vaddr & ((1usize << 30) - 1);
+        //info!(
+        //    "L1 {:#x} block {} entry: {:#x}",
+        //    l1_table_addr as u64,
+        //    i1,
+        //    l1_entry.get()
+        //);
         return l1_entry.address() as usize + offset;
     }
 
@@ -318,11 +310,12 @@ pub fn uefi_addr_to_paddr(vaddr: usize) -> usize {
     let l2_entry = (&unsafe { *l2_table }).entries[i2];
 
     if l2_entry.is_block() {
+        offset = vaddr & ((1usize << 21) - 1);
         //info!(
-        //    "L2 {:#x} block {} entry: {:#x}",
-        //    l2_table_addr as u64,
-        //    i2,
-        //    l2_entry.get()
+        //    "L2 block entry @ {:#x} = {:#x} (offset {:#x})",
+        //    l2_table_addr as usize,
+        //    l2_entry.address(),
+        //    offset
         //);
         return l2_entry.address() as usize + offset;
     }
@@ -336,12 +329,12 @@ pub fn uefi_addr_to_paddr(vaddr: usize) -> usize {
     let l3_table = l3_table_addr as *const TTable4K;
     let l3_entry = (&unsafe { *l3_table }).entries[i3];
 
-    if l3_entry.is_block() {
+    if l3_entry.is_table() {
         //info!(
-        //    "L3 {:#x} block {} entry: {:#x}",
-        //    l3_table_addr as u64,
-        //    i3,
-        //    l3_entry.get()
+        //    "L3 PTE entry @ {:#x} = {:#x} (offset {:#x})",
+        //    l3_table_addr as usize,
+        //    l3_entry.address(),
+        //    offset
         //);
     }
 

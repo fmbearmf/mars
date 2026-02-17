@@ -1,4 +1,4 @@
-# HACK
+# AAVMF in Nixpkgs is bugged currently.
 {
   dpkg,
   fetchurl,

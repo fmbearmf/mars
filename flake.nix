@@ -1,5 +1,5 @@
 {
-  description = "absolute CINEMA";
+  description = "Mars kernel";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";

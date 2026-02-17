@@ -18,6 +18,7 @@ use core::{
 };
 use mars_klib::exception::ExceptionHandler;
 use mars_protocol::BootInfo;
+use uefi::mem::memory_map::MemoryMap;
 
 use crate::earlyinit::{
     earlycon::{EARLYCON, EarlyCon},
@@ -33,10 +34,10 @@ mars_klib::exception_handlers!(Exceptions);
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    //unsafe {
-    //    EARLYCON.force_unlock();
-    //    earlycon_writeln!("{}", info);
-    //}
+    unsafe {
+        EARLYCON.force_unlock();
+        earlycon_writeln!("{}", info);
+    }
     busy_loop();
 }
 
@@ -103,15 +104,19 @@ fn kentry(boot_info_ref: &mut BootInfo) -> ! {
         *lock = Some(EarlyCon::new());
     }
 
-    earlycon_writeln!("g");
+    let mmap = &unsafe { ptr::read(&boot_info_ref.memory_map) };
+    earlycon_writeln!("mmap @ {:#x}", mmap as *const _ as u64);
 
-    let mut mmap = unsafe { ptr::read(&boot_info_ref.memory_map) };
+    init_mmu(boot_info_ref.kernel_load_physical_address, offset);
+    earlycon_writeln!("hi");
 
-    init_mmu(
-        boot_info_ref.kernel_load_physical_address,
-        offset,
-        &mut mmap,
-    )
+    for entry in mmap.entries() {
+        earlycon_writeln!("{:?}", entry);
+    }
+
+    arm_init();
+
+    busy_loop()
 }
 
 pub extern "C" fn arm_init() {
@@ -122,13 +127,6 @@ pub extern "C" fn arm_init() {
             x = out(reg) _,
             options(nomem, nostack),
         );
-    }
-
-    busy_loop();
-
-    {
-        let mut lock = EARLYCON.lock();
-        *lock = Some(EarlyCon::new());
     }
 
     // unsafe {
