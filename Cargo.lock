@@ -251,6 +251,7 @@ dependencies = [
  "arm-pl011-uart",
  "spin",
  "tock-registers 0.10.1",
+ "uefi",
 ]
 
 [[package]]

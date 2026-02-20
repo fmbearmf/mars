@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     let root = workspace_root();
 
     let kernel_status = Command::new("cargo")
-        .args(["build", "--package", "mars_kernel"])
+        .args(["build", "--package", "kernel"])
         .status()
         .context("Kernel build failed.")?;
 
@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     }
 
     let boot_status = Command::new("cargo")
-        .args(["build", "--package", "mars_bootloader"])
+        .args(["build", "--package", "bootloader"])
         .status()
         .context("Bootloader build failed.")?;
 
@@ -39,11 +39,11 @@ fn main() -> Result<()> {
     }
 
     let kernel_path = root
-        .join("target/aarch64-unknown-none/debug/mars_kernel")
+        .join("target/aarch64-unknown-none/debug/kernel")
         .canonicalize()
         .unwrap();
     let boot_path = root
-        .join("target/aarch64-unknown-uefi/debug/mars_bootloader.efi")
+        .join("target/aarch64-unknown-uefi/debug/bootloader.efi")
         .canonicalize()
         .unwrap();
 
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
     let qemu_status = Command::new("qemu-system-aarch64")
         .args([
             "-M",
-            "virt",
+            "virt,gic-version=3",
             "-accel",
             "hvf",
             "-cpu",
@@ -74,14 +74,18 @@ fn main() -> Result<()> {
             &format!("file=fat:rw:{},if=virtio", esp_dir.to_string_lossy()),
             "-serial",
             "mon:stdio",
+            //"-monitor",
+            //"stdio",
             "-device",
             "virtio-gpu-pci",
-            "-D",
-            "qemu.log",
-            "-d",
-            "int",
-            "-S",
-            "-s",
+            //"-smp",
+            //"2",
+            //"-D",
+            //"qemu.log",
+            //"-d",
+            //"int,exec",
+            //"-S",
+            //"-s",
         ])
         .status()
         .context("QEMU failed.")?;

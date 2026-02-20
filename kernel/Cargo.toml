@@ -7,7 +7,7 @@ edition = "2024"
 forced-target = "aarch64-unknown-none"
 
 [[bin]]
-name = "mars_kernel"
+name = "kernel"
 path = "src/bin/main.rs"
 test = false
 
