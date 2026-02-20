@@ -1,8 +1,10 @@
 use core::ptr;
 
 use super::{GenericAddress, header::SdtHeader};
+use getters::unaligned_getters;
 
 #[repr(C, packed)]
+#[unaligned_getters]
 pub struct Spcr {
     pub header: SdtHeader,
     pub interface_type: u8,
@@ -25,10 +27,4 @@ pub struct Spcr {
     pub pci_flags: u32,
     pub pci_segment: u8,
     pub reserved3: u32,
-}
-
-impl Spcr {
-    pub fn interface_type(&self) -> u8 {
-        unsafe { ptr::read_unaligned(&raw const self.interface_type) }
-    }
 }

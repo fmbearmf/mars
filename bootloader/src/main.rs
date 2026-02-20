@@ -145,7 +145,7 @@ fn main() -> Status {
 
         if let Some(fadt) = sys.fadt {
             info!("FADT found. X_DSDT: {:#x}", sys.dsdt_addr);
-            let arm_flags = fadt.arm_flags();
+            let arm_flags = fadt.arm_boot_arch();
             info!("arm boot arch: {:#06x}", arm_flags);
             if (arm_flags & 1) != 0 {
                 info!("PSCI compliant");
@@ -214,8 +214,8 @@ fn main() -> Status {
         }
 
         if let Some(gtdt) = sys.gtdt {
-            let virt = unsafe { ptr::read_unaligned(&raw const gtdt.virt_el1_gsiv) };
-            let phys = unsafe { ptr::read_unaligned(&raw const gtdt.ns_el1_gsiv) };
+            let virt = gtdt.virt_el1_gsiv();
+            let phys = gtdt.ns_el1_gsiv();
             info!("GTDT timer GSIVs Virt={}, Phys={}", virt, phys);
         }
     }

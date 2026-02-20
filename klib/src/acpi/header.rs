@@ -1,8 +1,10 @@
 use core::{fmt, mem, ptr, slice, str::from_utf8};
 
 use super::checksum;
+use getters::unaligned_getters;
 
 #[repr(C, packed)]
+#[unaligned_getters]
 #[derive(Clone, Copy)]
 pub struct SdtHeader {
     pub sig: [u8; 4],
@@ -21,12 +23,9 @@ impl SdtHeader {
         from_utf8(&self.sig).unwrap_or("ERR ")
     }
 
-    pub fn len(&self) -> usize {
-        unsafe { ptr::read_unaligned(&raw const self.len) as usize }
-    }
-
     pub fn check(&self) -> Result<(), &'static str> {
-        let bytes = unsafe { slice::from_raw_parts(self as *const _ as *const u8, self.len()) };
+        let bytes =
+            unsafe { slice::from_raw_parts(self as *const _ as *const u8, self.len() as usize) };
 
         if checksum(bytes) != 0 {
             return Err("checksum wrong");

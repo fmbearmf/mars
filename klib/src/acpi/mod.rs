@@ -10,6 +10,8 @@ use core::{ffi::c_void, fmt, mem, ptr, slice, str::from_utf8};
 
 use uefi::{system, table::cfg::ACPI2_GUID};
 
+use getters::unaligned_getters;
+
 use fadt::Fadt;
 use gtdt::Gtdt;
 use header::SdtHeader;
@@ -19,6 +21,7 @@ use rsdp::XsdtIter;
 use spcr::Spcr;
 
 #[repr(C, packed)]
+#[unaligned_getters]
 #[derive(Debug, Clone, Copy)]
 pub struct GenericAddress {
     pub address_space_id: u8,
@@ -26,12 +29,6 @@ pub struct GenericAddress {
     pub register_bit_offset: u8,
     pub access_size: u8,
     pub address: u64,
-}
-
-impl GenericAddress {
-    pub fn address(&self) -> u64 {
-        unsafe { ptr::read_unaligned(&raw const self.address) }
-    }
 }
 
 pub struct SystemDescription {

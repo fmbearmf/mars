@@ -2,8 +2,10 @@ use core::ptr;
 
 use super::GenericAddress;
 use super::header::SdtHeader;
+use getters::unaligned_getters;
 
 #[repr(C, packed)]
+#[unaligned_getters]
 pub struct Fadt {
     pub header: SdtHeader,
     pub firmware_ctrl: u32,
@@ -68,22 +70,4 @@ pub struct Fadt {
     pub sleep_status: GenericAddress,
     //
     pub hypervisor_id: u64,
-}
-
-impl Fadt {
-    pub fn x_dsdt(&self) -> u64 {
-        unsafe { ptr::read_unaligned(&raw const self.x_dsdt) }
-    }
-
-    pub fn arm_flags(&self) -> u16 {
-        unsafe { ptr::read_unaligned(&raw const self.arm_boot_arch) }
-    }
-
-    pub fn hypervisor_id(&self) -> u64 {
-        if self.header.len() >= 268 {
-            unsafe { ptr::read_unaligned(&raw const self.hypervisor_id) }
-        } else {
-            0u64
-        }
-    }
 }

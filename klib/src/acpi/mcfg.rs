@@ -1,14 +1,17 @@
 use core::mem;
 
 use super::header::SdtHeader;
+use getters::unaligned_getters;
 
 #[repr(C, packed)]
+#[unaligned_getters]
 pub struct Mcfg {
     pub header: SdtHeader,
     pub reserved: u64,
 }
 
 #[repr(C, packed)]
+#[unaligned_getters]
 #[derive(Debug, Clone, Copy)]
 pub struct McfgAllocation {
     pub base_addr: u64,
@@ -22,7 +25,7 @@ impl Mcfg {
     pub fn allocations(&self) -> McfgIter {
         unsafe {
             let start = self.header.data_ptr().add(8);
-            let end = (self as *const _ as *const u8).add(self.header.len());
+            let end = (self as *const _ as *const u8).add(self.header.len() as usize);
             McfgIter { ptr: start, end }
         }
     }
