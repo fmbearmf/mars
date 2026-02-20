@@ -5,3 +5,4 @@ result
 result-*
 *.dtb
 *.log
+*.DS_Store
