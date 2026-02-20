@@ -1,6 +1,7 @@
 use core::{ptr, slice};
 
 use super::header::SdtHeader;
+use getters::unaligned_getters;
 
 pub const MADT_GICC: u8 = 0x0B;
 pub const MADT_GICD: u8 = 0x0C;
@@ -8,6 +9,7 @@ pub const MADT_GICR: u8 = 0x0E;
 pub const MADT_ITS: u8 = 0x0F;
 
 #[repr(C, packed)]
+#[unaligned_getters]
 pub struct Madt {
     pub header: SdtHeader,
     pub local_interrupt_ctrl: u32,
@@ -15,6 +17,7 @@ pub struct Madt {
 }
 
 #[repr(C, packed)]
+#[unaligned_getters]
 #[derive(Debug, Copy, Clone)]
 pub struct MadtEntryHeader {
     pub entry_type: u8,
@@ -22,6 +25,7 @@ pub struct MadtEntryHeader {
 }
 
 #[repr(C, packed)]
+#[unaligned_getters]
 #[derive(Debug, Copy, Clone)]
 pub struct GicCpuInterface {
     pub header: MadtEntryHeader,
@@ -43,6 +47,7 @@ pub struct GicCpuInterface {
 }
 
 #[repr(C, packed)]
+#[unaligned_getters]
 #[derive(Debug, Copy, Clone)]
 pub struct GicDistributor {
     pub header: MadtEntryHeader,
@@ -54,6 +59,7 @@ pub struct GicDistributor {
 }
 
 #[repr(C, packed)]
+#[unaligned_getters]
 #[derive(Debug, Copy, Clone)]
 pub struct GicRedistributor {
     pub header: MadtEntryHeader,
@@ -64,6 +70,7 @@ pub struct GicRedistributor {
 }
 
 #[repr(C, packed)]
+#[unaligned_getters]
 #[derive(Debug, Copy, Clone)]
 pub struct GicIts {
     pub header: MadtEntryHeader,

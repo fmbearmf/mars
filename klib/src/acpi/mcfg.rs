@@ -1,14 +1,17 @@
 use core::mem;
 
 use super::header::SdtHeader;
+use getters::unaligned_getters;
 
 #[repr(C, packed)]
+#[unaligned_getters]
 pub struct Mcfg {
     pub header: SdtHeader,
     pub reserved: u64,
 }
 
 #[repr(C, packed)]
+#[unaligned_getters]
 #[derive(Debug, Clone, Copy)]
 pub struct McfgAllocation {
     pub base_addr: u64,

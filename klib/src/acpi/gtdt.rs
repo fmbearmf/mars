@@ -1,6 +1,8 @@
 use super::header::SdtHeader;
+use getters::unaligned_getters;
 
 #[repr(C, packed)]
+#[unaligned_getters]
 pub struct Gtdt {
     pub header: SdtHeader,
     pub cnt_control_base: u64,

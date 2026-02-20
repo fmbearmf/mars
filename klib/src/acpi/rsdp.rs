@@ -1,10 +1,12 @@
 use core::{ffi::c_void, fmt, mem, ptr, slice, str::from_utf8};
 
+use getters::unaligned_getters;
 use uefi::{system, table::cfg::ACPI2_GUID};
 
 use super::{SdtHeader, checksum};
 
 #[repr(C, packed)]
+#[unaligned_getters]
 #[derive(Debug, Clone, Copy)]
 pub struct Rsdp {
     pub sig: [u8; 8],
@@ -39,13 +41,13 @@ impl Rsdp {
             return Err("invalid RSDP sig");
         }
 
-        let rev = unsafe { ptr::read_unaligned(&raw const rsdp.rev) };
+        let rev = rsdp.rev();
 
         if rev < 2 {
             return Err("erm... whar?");
         }
 
-        let len = unsafe { ptr::read_unaligned(&raw const rsdp.len) } as usize;
+        let len = rsdp.len() as usize;
 
         if len < mem::size_of::<Rsdp>() {
             return Err("rsdp too small");
@@ -60,7 +62,7 @@ impl Rsdp {
     }
 
     pub fn xsdt(&self) -> Result<&'static SdtHeader, &'static str> {
-        let xsdt_addr = unsafe { ptr::read_unaligned(&raw const self.xsdt_addr) };
+        let xsdt_addr = self.xsdt_addr();
 
         if (xsdt_addr as *const ()).is_null() {
             return Err("xsdt addr null");
@@ -72,7 +74,7 @@ impl Rsdp {
             return Err("invalid xsdt sig");
         }
 
-        let len = unsafe { ptr::read_unaligned(&raw const xsdt.len) } as usize;
+        let len = xsdt.len() as usize;
         let data = unsafe { slice::from_raw_parts(xsdt as *const _ as *const u8, len) };
 
         if checksum(data) != 0 {
@@ -91,7 +93,7 @@ pub struct XsdtIter {
 
 impl XsdtIter {
     pub fn new(xsdt: &SdtHeader) -> Self {
-        let len = unsafe { ptr::read_unaligned(&raw const xsdt.len) } as usize;
+        let len = xsdt.len() as usize;
         let header_sz = mem::size_of::<SdtHeader>();
 
         if len <= header_sz {
