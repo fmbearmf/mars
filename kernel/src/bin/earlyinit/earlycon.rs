@@ -3,7 +3,8 @@ use core::{fmt::Write, ptr::NonNull};
 use klib::vm::phys_addr_to_dmap;
 use spin::Mutex;
 
-const UART_ADDRESS: *mut PL011Registers = (0x0900_0000_u64) as *mut PL011Registers;
+//const UART_ADDRESS: *mut PL011Registers =
+//    (phys_addr_to_dmap(0x900_0000_u64)) as *mut PL011Registers;
 
 pub static EARLYCON: Mutex<Option<EarlyCon>> = Mutex::new(None);
 
@@ -30,8 +31,10 @@ pub struct EarlyCon<'a> {
 }
 
 impl<'a> EarlyCon<'a> {
-    pub fn new() -> Self {
-        let uart_ptr = unsafe { UniqueMmioPointer::new(NonNull::new(UART_ADDRESS).unwrap()) };
+    pub fn new(serial_uart_addr: usize) -> Self {
+        let uart_ptr = unsafe {
+            UniqueMmioPointer::new(NonNull::new(serial_uart_addr as *mut PL011Registers).unwrap())
+        };
         let mut uart = Uart::new(uart_ptr);
 
         let line_conf = LineConfig {
@@ -40,7 +43,7 @@ impl<'a> EarlyCon<'a> {
             stop_bits: arm_pl011_uart::StopBits::One,
         };
         _ = uart.enable(line_conf, 115_200, 16_000_000);
-        _ = writeln!(uart, "UART {:p} enabled", UART_ADDRESS);
+        _ = writeln!(uart, "UART {:#x} enabled", serial_uart_addr);
 
         Self { uart }
     }

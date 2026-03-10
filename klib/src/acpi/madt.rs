@@ -1,7 +1,9 @@
 use core::{ptr, slice};
 
-use super::header::SdtHeader;
+use super::{SystemDescription, header::SdtHeader};
 use getters::unaligned_getters;
+
+use zerocopy::{FromBytes, Immutable, Unaligned};
 
 pub const MADT_GICC: u8 = 0x0B;
 pub const MADT_GICD: u8 = 0x0C;
@@ -10,6 +12,7 @@ pub const MADT_ITS: u8 = 0x0F;
 
 #[repr(C, packed)]
 #[unaligned_getters]
+#[derive(FromBytes, Immutable, Unaligned)]
 pub struct Madt {
     pub header: SdtHeader,
     pub local_interrupt_ctrl: u32,
@@ -18,7 +21,7 @@ pub struct Madt {
 
 #[repr(C, packed)]
 #[unaligned_getters]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, FromBytes, Immutable, Unaligned)]
 pub struct MadtEntryHeader {
     pub entry_type: u8,
     pub len: u8,
@@ -26,7 +29,7 @@ pub struct MadtEntryHeader {
 
 #[repr(C, packed)]
 #[unaligned_getters]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, FromBytes, Immutable, Unaligned)]
 pub struct GicCpuInterface {
     pub header: MadtEntryHeader,
     pub reserved: u16,
@@ -48,7 +51,7 @@ pub struct GicCpuInterface {
 
 #[repr(C, packed)]
 #[unaligned_getters]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, FromBytes, Immutable, Unaligned)]
 pub struct GicDistributor {
     pub header: MadtEntryHeader,
     pub reserved: u16,
@@ -60,7 +63,7 @@ pub struct GicDistributor {
 
 #[repr(C, packed)]
 #[unaligned_getters]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, FromBytes, Immutable, Unaligned)]
 pub struct GicRedistributor {
     pub header: MadtEntryHeader,
     pub flags: u8,
@@ -71,7 +74,7 @@ pub struct GicRedistributor {
 
 #[repr(C, packed)]
 #[unaligned_getters]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, FromBytes, Immutable, Unaligned)]
 pub struct GicIts {
     pub header: MadtEntryHeader,
     pub flags: u8,
@@ -113,5 +116,31 @@ impl Madt {
             let end = (self as *const _ as *const u8).add(self.header.len() as usize);
             MadtIter { ptr: start, end }
         }
+    }
+}
+
+pub fn parse_gic_addresses(sys: &SystemDescription) -> Option<(u64, u64)> {
+    let madt = sys.madt?;
+
+    let mut gicd_phys_base = None;
+    let mut gicr_phys_base = None;
+
+    for (type_, slice) in madt.entries() {
+        match type_ {
+            MADT_GICD => {
+                let (gicd, _) = GicDistributor::read_from_prefix(slice).unwrap();
+                gicd_phys_base = Some(gicd.phys_base());
+            }
+            MADT_GICR => {
+                let (gicr, _) = GicRedistributor::read_from_prefix(slice).unwrap();
+                gicr_phys_base = Some(gicr.discovery_range_base());
+            }
+            _ => {}
+        }
+    }
+
+    match (gicd_phys_base, gicr_phys_base) {
+        (Some(d), Some(r)) => Some((d, r)),
+        _ => None,
     }
 }

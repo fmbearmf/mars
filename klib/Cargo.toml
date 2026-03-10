@@ -15,4 +15,6 @@ arm-pl011-uart = { version = "0.4.0", default-features = false }
 tock-registers = { workspace = true }
 spin = { workspace = true }
 uefi = { workspace = true }
+zerocopy = { workspace = true }
+zerocopy-derive = { workspace = true }
 getters = { path = "../getters" }

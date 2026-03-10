@@ -106,119 +106,11 @@ fn busy_loop_noret() -> ! {
 #[entry]
 fn main() -> Status {
     uefi::helpers::init().unwrap();
+    let mut serial_uart_addr_opt = None;
 
     cpu_init();
     info!("Loader starting...");
     let mut root_table = alloc_table();
-
-    {
-        let rsdp = match Rsdp::find() {
-            Ok(r) => r,
-            Err(e) => {
-                error!("rsdp err: {}", e);
-                return Status::ABORTED;
-            }
-        };
-
-        info!("RSDP at {:p}", rsdp);
-
-        let xsdt = match rsdp.xsdt() {
-            Ok(x) => x,
-            Err(e) => {
-                error!("xsdt invalid: {}", e);
-                return Status::ABORTED;
-            }
-        };
-
-        info!("XSDT found.");
-
-        {
-            let iter = XsdtIter::new(xsdt);
-            for (i, table) in iter.enumerate() {
-                let sig = from_utf8(&table.sig).unwrap_or("ERR ");
-                let len = unsafe { ptr::read_unaligned(&raw const table.len) };
-                info!("     Table [{}]: \"{}\" ({} bytes)", i, sig, len);
-            }
-        }
-
-        let sys = SystemDescription::parse(xsdt);
-
-        if let Some(fadt) = sys.fadt {
-            info!("FADT found. X_DSDT: {:#x}", sys.dsdt_addr);
-            let arm_flags = fadt.arm_boot_arch();
-            info!("arm boot arch: {:#06x}", arm_flags);
-            if (arm_flags & 1) != 0 {
-                info!("PSCI compliant");
-            }
-        }
-
-        if let Some(spcr) = sys.spcr {
-            let base = spcr.base_addr.address();
-            let type_ = spcr.interface_type();
-            info!("SPCR serial type: {}, base: {:#x}", type_, base);
-        }
-
-        if let Some(madt) = sys.madt {
-            info!("MADT found");
-
-            for (t, data) in madt.entries() {
-                match t {
-                    acpi::madt::MADT_GICC => {
-                        if data.len() >= mem::size_of::<acpi::madt::GicCpuInterface>() {
-                            let gicc =
-                                unsafe { &*(data.as_ptr() as *const acpi::madt::GicCpuInterface) };
-                            let mpidr = unsafe { ptr::read_unaligned(&raw const gicc.mpidr) };
-                            info!("     GICC CPU MPIDR={:#x}", mpidr);
-                        }
-                    }
-                    acpi::madt::MADT_GICD => {
-                        if data.len() >= mem::size_of::<acpi::madt::GicDistributor>() {
-                            let gicd =
-                                unsafe { &*(data.as_ptr() as *const acpi::madt::GicDistributor) };
-                            let base = unsafe { ptr::read_unaligned(&raw const gicd.phys_base) };
-                            info!("     GICD Distributor Base={:#x}", base);
-                        }
-                    }
-                    acpi::madt::MADT_GICR => {
-                        if data.len() >= mem::size_of::<acpi::madt::GicRedistributor>() {
-                            let gicr =
-                                unsafe { &*(data.as_ptr() as *const acpi::madt::GicRedistributor) };
-                            let base = unsafe {
-                                ptr::read_unaligned(&raw const gicr.discovery_range_base)
-                            };
-                            info!("     GICR Redistributor Base={:#x}", base);
-                        }
-                    }
-                    acpi::madt::MADT_ITS => {
-                        if data.len() >= mem::size_of::<acpi::madt::GicIts>() {
-                            let its = unsafe { &*(data.as_ptr() as *const acpi::madt::GicIts) };
-                            let id = unsafe { ptr::read_unaligned(&raw const its.translation_id) };
-                            let base = unsafe { ptr::read_unaligned(&raw const its.phys_base) };
-                            info!("     ITS ID={}, Base={:#x}", id, base);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        if let Some(mcfg) = sys.mcfg {
-            info!("MCFG found.");
-            for alloc in mcfg.allocations() {
-                let base = unsafe { ptr::read_unaligned(&raw const alloc.base_addr) };
-                let seg = unsafe { ptr::read_unaligned(&raw const alloc.pci_segment_group) };
-                let start = unsafe { ptr::read_unaligned(&raw const alloc.start_bus_num) };
-                let end = unsafe { ptr::read_unaligned(&raw const alloc.end_bus_num) };
-                info!("PCI seg {} Base={:#x}, Bus {}-{}", seg, base, start, end);
-            }
-        }
-
-        if let Some(gtdt) = sys.gtdt {
-            let virt = gtdt.virt_el1_gsiv();
-            let phys = gtdt.ns_el1_gsiv();
-            info!("GTDT timer GSIVs Virt={}, Phys={}", virt, phys);
-        }
-    }
 
     let mut sfs_prot = match boot::get_image_file_system(boot::image_handle()) {
         Ok(s) => s,
@@ -512,6 +404,129 @@ fn main() -> Status {
 
     let mem_map = boot::memory_map(MemoryType::LOADER_DATA).unwrap();
 
+    {
+        let rsdp = match Rsdp::find() {
+            Ok(r) => r,
+            Err(e) => {
+                error!("rsdp err: {}", e);
+                return Status::ABORTED;
+            }
+        };
+
+        info!("RSDP at {:p}", rsdp);
+
+        let xsdt = match rsdp.xsdt() {
+            Ok(x) => x,
+            Err(e) => {
+                error!("xsdt invalid: {}", e);
+                return Status::ABORTED;
+            }
+        };
+
+        info!("XSDT found.");
+
+        {
+            let iter = XsdtIter::new(xsdt);
+            for (i, table) in iter.enumerate() {
+                let sig = from_utf8(&table.sig).unwrap_or("ERR ");
+                let len = unsafe { ptr::read_unaligned(&raw const table.len) };
+                info!("     Table [{}]: \"{}\" ({} bytes)", i, sig, len);
+            }
+        }
+
+        let sys = SystemDescription::parse(xsdt);
+
+        if let Some(fadt) = sys.fadt {
+            info!("FADT found. X_DSDT: {:#x}", sys.dsdt_addr);
+            let arm_flags = fadt.arm_boot_arch();
+            info!("arm boot arch: {:#06x}", arm_flags);
+            if (arm_flags & 1) != 0 {
+                info!("PSCI compliant");
+            }
+        }
+
+        if let Some(spcr) = sys.spcr {
+            let base = spcr.base_addr.address();
+            let type_ = spcr.interface_type();
+            serial_uart_addr_opt = Some(base as usize);
+            info!("SPCR serial type: {}, base: {:#x}", type_, base);
+            let virt = TTENATIVE::align_down((DMAP_START as u64 + base) as u64) as usize;
+            info!("mapping serial @ {:#x} to {:#x}", base, virt);
+            map_region(
+                unsafe { root_table.as_mut() },
+                base as usize,
+                virt,
+                PAGE_SIZE * 1,
+                AccessPermission::PrivilegedReadWrite,
+                Shareability::OuterShareable,
+                true,
+                true,
+                MAIR_DEVICE_INDEX,
+            );
+        }
+
+        if let Some(madt) = sys.madt {
+            info!("MADT found");
+
+            for (t, data) in madt.entries() {
+                match t {
+                    acpi::madt::MADT_GICC => {
+                        if data.len() >= mem::size_of::<acpi::madt::GicCpuInterface>() {
+                            let gicc =
+                                unsafe { &*(data.as_ptr() as *const acpi::madt::GicCpuInterface) };
+                            let mpidr = unsafe { ptr::read_unaligned(&raw const gicc.mpidr) };
+                            info!("     GICC CPU MPIDR={:#x}", mpidr);
+                        }
+                    }
+                    acpi::madt::MADT_GICD => {
+                        if data.len() >= mem::size_of::<acpi::madt::GicDistributor>() {
+                            let gicd =
+                                unsafe { &*(data.as_ptr() as *const acpi::madt::GicDistributor) };
+                            let base = unsafe { ptr::read_unaligned(&raw const gicd.phys_base) };
+                            info!("     GICD Distributor Base={:#x}", base);
+                        }
+                    }
+                    acpi::madt::MADT_GICR => {
+                        if data.len() >= mem::size_of::<acpi::madt::GicRedistributor>() {
+                            let gicr =
+                                unsafe { &*(data.as_ptr() as *const acpi::madt::GicRedistributor) };
+                            let base = unsafe {
+                                ptr::read_unaligned(&raw const gicr.discovery_range_base)
+                            };
+                            info!("     GICR Redistributor Base={:#x}", base);
+                        }
+                    }
+                    acpi::madt::MADT_ITS => {
+                        if data.len() >= mem::size_of::<acpi::madt::GicIts>() {
+                            let its = unsafe { &*(data.as_ptr() as *const acpi::madt::GicIts) };
+                            let id = unsafe { ptr::read_unaligned(&raw const its.translation_id) };
+                            let base = unsafe { ptr::read_unaligned(&raw const its.phys_base) };
+                            info!("     ITS ID={}, Base={:#x}", id, base);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if let Some(mcfg) = sys.mcfg {
+            info!("MCFG found.");
+            for alloc in mcfg.allocations() {
+                let base = unsafe { ptr::read_unaligned(&raw const alloc.base_addr) };
+                let seg = unsafe { ptr::read_unaligned(&raw const alloc.pci_segment_group) };
+                let start = unsafe { ptr::read_unaligned(&raw const alloc.start_bus_num) };
+                let end = unsafe { ptr::read_unaligned(&raw const alloc.end_bus_num) };
+                info!("PCI seg {} Base={:#x}, Bus {}-{}", seg, base, start, end);
+            }
+        }
+
+        if let Some(gtdt) = sys.gtdt {
+            let virt = gtdt.virt_el1_gsiv();
+            let phys = gtdt.ns_el1_gsiv();
+            info!("GTDT timer GSIVs Virt={}, Phys={}", virt, phys);
+        }
+    }
+
     for entry in mem_map.entries() {
         //info!("raw phys: {:#x}", entry.phys_start);
         let phys_start =
@@ -527,7 +542,7 @@ fn main() -> Status {
         //    size / UEFI_PS as usize,
         //    vaddr
         //);
-        info!("{:?}", entry);
+        //info!("{:?}", entry);
 
         match entry.ty {
             // RW no exec
@@ -628,6 +643,8 @@ fn main() -> Status {
         entry_offset
     );
 
+    let serial_uart_addr = serial_uart_addr_opt.unwrap();
+
     let entry_fn: fn(boot_info_ptr: *mut BootInfo) -> ! = unsafe { transmute(entry_addr) };
 
     let mem_map_final = unsafe { boot::exit_boot_services(None) };
@@ -635,6 +652,7 @@ fn main() -> Status {
     entry_fn(&mut BootInfo {
         kernel_load_physical_address: base_phys as usize,
         kernel_size: load_size as usize,
+        serial_uart_address: serial_uart_addr,
         memory_map: mem_map_final,
     });
 }

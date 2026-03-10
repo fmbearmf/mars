@@ -37,7 +37,7 @@ pub fn mmu_init(root_pt: *const TTable<TABLE_ENTRIES>) {
             + MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc,
     );
 
-    TCR_EL1.write(
+    TCR_EL1.modify(
         TCR_EL1::TBI1::Ignored
             + TCR_EL1::IPS::Bits_48
             + TCR_EL1::TG1::KiB_16

@@ -227,7 +227,7 @@ impl PageAllocator {
             self.total_pages.fetch_add(usable_pages, Ordering::Relaxed);
         }
 
-        unsafe { self.lock.unlock() }
+        self.lock.unlock()
     }
 
     pub fn alloc_page(&self) -> *mut u8 {
@@ -256,7 +256,7 @@ impl PageAllocator {
                 result_ptr = (*head).page_base as *mut u8;
             }
         }
-        unsafe { self.lock.unlock() };
+        self.lock.unlock();
 
         result_ptr
     }
@@ -330,7 +330,7 @@ impl PageAllocator {
             self.allocated_pages.fetch_sub(1, Ordering::Relaxed);
         }
 
-        unsafe { self.lock.unlock() };
+        self.lock.unlock();
     }
 
     pub fn total_pages(&self) -> usize {

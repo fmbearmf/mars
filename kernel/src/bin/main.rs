@@ -101,7 +101,7 @@ fn kentry(boot_info_ref: &mut BootInfo) -> ! {
 
     {
         let mut lock = EARLYCON.lock();
-        *lock = Some(EarlyCon::new());
+        *lock = Some(EarlyCon::new(boot_info_ref.serial_uart_address));
     }
 
     let mmap = &unsafe { ptr::read(&boot_info_ref.memory_map) };
@@ -110,9 +110,9 @@ fn kentry(boot_info_ref: &mut BootInfo) -> ! {
     init_mmu(boot_info_ref.kernel_load_physical_address, offset);
     earlycon_writeln!("hi");
 
-    for entry in mmap.entries() {
-        earlycon_writeln!("{:?}", entry);
-    }
+    //for entry in mmap.entries() {
+    //    earlycon_writeln!("{:?}", entry);
+    //}
 
     arm_init();
 
@@ -129,23 +129,5 @@ pub extern "C" fn arm_init() {
         );
     }
 
-    // unsafe {
-    //     let dtb_addr = 0xFFFF_0000_0000_0000
-    //         + (128 * 1024 * 1024 * 1024 * 1024)
-    //         + ((TABLE_ENTRIES - 1) * (32 * 1024 * 1024));
-    //     let fdt = Fdt::from_addr(dtb_addr).expect("invalid FDT");
-
-    //     let mut regions: [MemoryRegion; 16] = [MemoryRegion { base: 0, size: 0 }; 16];
-    //     let count = fdt
-    //         .usable_mem_regions(&mut regions)
-    //         .expect("failed to enum memory");
-
-    //     for i in 0..count {
-    //         let r = regions[i];
-    //         earlycon_writeln!("region {} = base: {:#X}, size: {:#X}", i, r.base, r.size);
-    //     }
-    // }
-
     panic!("End.");
-    busy_loop();
 }

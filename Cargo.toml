@@ -8,6 +8,8 @@ aarch64-cpu-ext = "0.1.4"
 tock-registers = "0.10.1"
 spin = "0.10.0"
 uefi = "0.36.1"
+zerocopy = "0.8.42"
+zerocopy-derive = "0.8.42"
 
 [profile.release]
 panic = "abort"

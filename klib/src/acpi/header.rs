@@ -2,10 +2,11 @@ use core::{fmt, mem, ptr, slice, str::from_utf8};
 
 use super::checksum;
 use getters::unaligned_getters;
+use zerocopy::{FromBytes, Immutable, Unaligned};
 
 #[repr(C, packed)]
 #[unaligned_getters]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, FromBytes, Immutable, Unaligned)]
 pub struct SdtHeader {
     pub sig: [u8; 4],
     pub len: u32,

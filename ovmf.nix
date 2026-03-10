@@ -6,14 +6,14 @@
 }:
 
 let
-  version = "2025.11-3";
+  version = "2025.11-4";
   url = "https://ftp.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_${version}_all.deb";
 in
 stdenv.mkDerivation {
   name = "aarch64-uefi-fw";
   src = fetchurl {
     inherit url;
-    hash = "sha256-scmv/fFCTp/AIs5TFJq9HfMjVAeas/HY23cwacxOMNY=";
+    hash = "sha256-725DvoCrSM+204KIbDbhBWKdICi5PgQ7o6hmwEa/AoM=";
   };
 
   nativeBuildInputs = [ dpkg ];

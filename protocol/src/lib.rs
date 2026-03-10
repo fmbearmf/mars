@@ -10,6 +10,8 @@ pub struct BootInfo {
     /// size of the kernel in bytes
     pub kernel_size: usize,
 
+    pub serial_uart_address: usize,
+
     /// memory map
     pub memory_map: MemoryMapOwned,
 }
