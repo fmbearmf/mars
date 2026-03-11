@@ -1,6 +1,8 @@
-use core::{borrow::Borrow, ops::Deref};
+use core::{borrow::Borrow, fmt, ops::Deref};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+use aarch64_cpu::registers::{ESR_EL1, Readable};
+
+#[derive(Clone, Eq, PartialEq)]
 #[repr(C)]
 pub struct RegisterFile {
     pub registers: [u64; 19],
@@ -11,11 +13,41 @@ pub struct RegisterFile {
     pub spsr: u64,
 }
 
+impl fmt::Debug for RegisterFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        struct HexSlice<'a>(&'a [u64]);
+
+        impl fmt::Debug for HexSlice<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let mut list = f.debug_list();
+                for v in self.0 {
+                    list.entry(&format_args!("{:#x}", v));
+                }
+                list.finish()
+            }
+        }
+
+        f.debug_struct("RegisterFile")
+            .field("registers", &HexSlice(&self.registers))
+            .field("fp", &format_args!("{:#x}", self.fp))
+            .field("sp", &format_args!("{:#x}", self.sp))
+            .field("elr", &format_args!("{:#x}", self.elr))
+            .field("spsr", &format_args!("{:#x}", self.spsr))
+            .finish()
+    }
+}
+
 //const _: () = assert!(size_of::<RegisterFile>() == 8 * 24);
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 #[repr(transparent)]
 pub struct RegisterFileRef<'a>(&'a mut RegisterFile);
+
+impl fmt::Debug for RegisterFileRef<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&*self.0, f)
+    }
+}
 
 impl RegisterFileRef<'_> {
     pub unsafe fn get_mut(&mut self) -> &mut RegisterFile {
@@ -45,8 +77,11 @@ impl Deref for RegisterFileRef<'_> {
 
 pub trait ExceptionHandler {
     extern "C" fn sync_current(register_file: RegisterFileRef) {
-        _ = register_file;
-        panic!("Unexpected sync exception from current EL");
+        panic!(
+            "Unexpected sync exception (ESR: {:#x}) from current EL: {:?}",
+            ESR_EL1.get(),
+            register_file
+        );
     }
 
     extern "C" fn irq_current(register_file: RegisterFileRef) {

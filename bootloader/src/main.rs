@@ -30,7 +30,7 @@ use klib::{
         map::{TableAllocator, map_region},
     },
 };
-use log::{error, info};
+use log::{debug, error, info};
 use protocol::BootInfo;
 use uefi::{
     CStr16, Status,
@@ -112,6 +112,8 @@ fn busy_loop_noret() -> ! {
 fn main() -> Status {
     uefi::helpers::init().unwrap();
     let mut serial_uart_addr_opt = None;
+
+    debug!("main() @ {:#x}", main as *const () as usize);
 
     cpu_init();
     info!("Loader starting...");
@@ -267,7 +269,6 @@ fn main() -> Status {
         pages + extra,
     );
     let alloc_ptr = match alloc_result {
-        //Ok(ptr) => ((ptr.as_ptr() as u64) + (PAGE_SIZE as u64) - 1) & !(PAGE_SIZE as u64 - 1),
         Ok(ptr) => ptr.as_ptr() as u64,
         Err(e) => {
             error!("page allocation failed: {:?}", e);
@@ -537,27 +538,18 @@ fn main() -> Status {
     }
 
     for entry in mem_map.entries() {
-        //info!("raw phys: {:#x}", entry.phys_start);
         let phys_start =
             TTENATIVE::align_down(allocator.vaddr_to_paddr_uefi(entry.phys_start as usize) as u64)
                 as usize;
         let size = TTENATIVE::align_up(entry.page_count * UEFI_PS) as usize;
         let vaddr = TTENATIVE::align_down((DMAP_START + phys_start) as u64) as usize;
 
-        //info!(
-        //    "map type {:?} attr {:?} @ phys {:#x}, {} pages, virt {:#x}",
-        //    entry.ty,
-        //    entry.att,
-        //    phys_start,
-        //    size / UEFI_PS as usize,
-        //    vaddr
-        //);
-        //info!("{:?}", entry);
-
         match entry.ty {
             // RW no exec
             MemoryType::CONVENTIONAL
             | MemoryType::LOADER_DATA
+            // bootloader code is later reclaimed for allocation, so it needs to be normal memory
+            | MemoryType::LOADER_CODE
             | MemoryType::BOOT_SERVICES_DATA
             | MemoryType::RUNTIME_SERVICES_DATA => {
                 map_region(
@@ -575,9 +567,8 @@ fn main() -> Status {
             }
 
             // RO exec
-            MemoryType::LOADER_CODE
-            | MemoryType::BOOT_SERVICES_CODE
-            | MemoryType::RUNTIME_SERVICES_CODE => {
+            //MemoryType::LOADER_CODE |
+            MemoryType::BOOT_SERVICES_CODE | MemoryType::RUNTIME_SERVICES_CODE => {
                 map_region(
                     unsafe { root_table.as_mut() },
                     phys_start,
