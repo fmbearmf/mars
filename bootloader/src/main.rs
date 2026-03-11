@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+mod allocator;
 mod page;
 
 use core::{
@@ -22,24 +23,28 @@ use alloc::alloc::alloc;
 use klib::{
     acpi::{
         self, SystemDescription,
-        fadt::Fadt,
         rsdp::{Rsdp, XsdtIter},
     },
-    vm::{DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, TABLE_ENTRIES, TTENATIVE, TTable},
+    vm::{
+        DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, TTENATIVE,
+        map::{TableAllocator, map_region},
+    },
 };
 use log::{error, info};
 use protocol::BootInfo;
 use uefi::{
     CStr16, Status,
     allocator::Allocator,
-    boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE, memory_map},
+    boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE},
     entry,
     mem::memory_map::MemoryMap,
     proto::media::file::{File, FileAttribute, FileInfo, FileMode},
-    table::cfg::ConfigTableEntry,
 };
 
-use crate::page::{alloc_table, cpu_init, map_region, mmu_init, uefi_addr_to_paddr};
+use crate::{
+    allocator::UefiPTAllocator,
+    page::{cpu_init, mmu_init},
+};
 
 const PAGE_SIZE: usize = 16384;
 
@@ -110,7 +115,9 @@ fn main() -> Status {
 
     cpu_init();
     info!("Loader starting...");
-    let mut root_table = alloc_table();
+    let allocator = UefiPTAllocator::new();
+
+    let mut root_table = allocator.alloc_table();
 
     let mut sfs_prot = match boot::get_image_file_system(boot::image_handle()) {
         Ok(s) => s,
@@ -368,21 +375,21 @@ fn main() -> Status {
         info!(
             "VADDR dst {:#x} -> PADDR dst {:#x}",
             dst as usize,
-            uefi_addr_to_paddr(dst as usize)
+            allocator.vaddr_to_paddr_uefi(dst as usize)
         );
 
         if x {
             info!(
                 "mapping code @ vaddr {:#x} paddr {:#x} offset {:#x}",
                 vaddr,
-                uefi_addr_to_paddr(dst as usize),
+                allocator.vaddr_to_paddr_uefi(dst as usize),
                 offset
             )
         }
 
         map_region(
             unsafe { root_table.as_mut() },
-            uefi_addr_to_paddr(dst as usize),
+            allocator.vaddr_to_paddr_uefi(dst as usize),
             vaddr as usize,
             pages as usize * PAGE_SIZE,
             ap,
@@ -390,6 +397,7 @@ fn main() -> Status {
             true,
             !x,
             MAIR_NORMAL_INDEX,
+            &allocator,
         );
     }
 
@@ -462,6 +470,7 @@ fn main() -> Status {
                 true,
                 true,
                 MAIR_DEVICE_INDEX,
+                &allocator,
             );
         }
 
@@ -530,7 +539,8 @@ fn main() -> Status {
     for entry in mem_map.entries() {
         //info!("raw phys: {:#x}", entry.phys_start);
         let phys_start =
-            TTENATIVE::align_down(uefi_addr_to_paddr(entry.phys_start as usize) as u64) as usize;
+            TTENATIVE::align_down(allocator.vaddr_to_paddr_uefi(entry.phys_start as usize) as u64)
+                as usize;
         let size = TTENATIVE::align_up(entry.page_count * UEFI_PS) as usize;
         let vaddr = TTENATIVE::align_down((DMAP_START + phys_start) as u64) as usize;
 
@@ -560,6 +570,7 @@ fn main() -> Status {
                     true,
                     true,
                     MAIR_NORMAL_INDEX,
+                    &allocator,
                 );
             }
 
@@ -577,6 +588,7 @@ fn main() -> Status {
                     true,
                     false,
                     MAIR_NORMAL_INDEX,
+                    &allocator,
                 );
             }
 
@@ -592,6 +604,7 @@ fn main() -> Status {
                     true,
                     true,
                     MAIR_NORMAL_INDEX,
+                    &allocator,
                 );
             }
 
@@ -607,6 +620,7 @@ fn main() -> Status {
                     true,
                     true,
                     MAIR_DEVICE_INDEX,
+                    &allocator,
                 );
             }
 
@@ -622,6 +636,7 @@ fn main() -> Status {
                     true,
                     true,
                     MAIR_DEVICE_INDEX,
+                    &allocator,
                 );
             }
 

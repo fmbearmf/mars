@@ -1,6 +1,7 @@
 use aarch64_cpu_ext::structures::tte::{TTE4K48, TTE16K48};
 use spin::Mutex;
 
+pub mod map;
 pub mod page;
 pub mod slab;
 
