@@ -14,11 +14,13 @@ use core::{
     arch::{asm, naked_asm},
     cmp,
     fmt::Write,
+    mem::{self, MaybeUninit},
     panic::PanicInfo,
     ptr, slice,
 };
 use klib::{
     exception::ExceptionHandler,
+    vec::StaticVec,
     vm::{
         DMAP_START, MemoryRegion, PAGE_SIZE, align_down, align_up,
         map::TableAllocator,
@@ -35,8 +37,6 @@ use crate::earlyinit::{
     earlycon::{EARLYCON, EarlyCon},
     mmu::init_mmu,
 };
-
-extern crate core;
 
 struct Exceptions;
 impl ExceptionHandler for Exceptions {}
@@ -76,7 +76,10 @@ struct KStack([u8; STACK_SIZE]);
 static mut KSTACK: KStack = KStack([0u8; STACK_SIZE]);
 
 fn uefi_mmap_convert_inplace(mmap: &mut MemoryMapOwned) -> &[MemoryRegion] {
-    mmap.sort();
+    debug_assert!(
+        size_of::<MemoryRegion>() <= size_of::<MemoryDescriptor>(),
+        "memoryregion must be able to fit into a memorydescriptor!"
+    );
 
     let entries = mmap.len();
     if entries == 0 {
@@ -107,8 +110,9 @@ fn uefi_mmap_convert_inplace(mmap: &mut MemoryMapOwned) -> &[MemoryRegion] {
         let entry: &MemoryDescriptor = mmap.get(i).expect("index in range");
 
         match entry.ty {
-            MemoryType::CONVENTIONAL | MemoryType::LOADER_CODE | MemoryType::BOOT_SERVICES_DATA => {
-            }
+            MemoryType::LOADER_CODE
+            | MemoryType::BOOT_SERVICES_DATA
+            | MemoryType::BOOT_SERVICES_CODE => {}
             _ => {
                 continue;
             }
@@ -116,55 +120,53 @@ fn uefi_mmap_convert_inplace(mmap: &mut MemoryMapOwned) -> &[MemoryRegion] {
 
         let start = entry.phys_start as usize + DMAP_START;
         let total_bytes = (entry.page_count as usize).saturating_mul(UEFI_PS);
-        if total_bytes <= (2 * PAGE_SIZE) {
-            continue;
-        }
-
         let end = start.saturating_add(total_bytes);
 
-        let astart = align_up(start, PAGE_SIZE);
-        let aend = align_down(end, PAGE_SIZE);
+        if out_count > 0 {
+            let last = unsafe { &mut *out_ptr.add(out_count - 1) };
+            let last_end = last.base + last.size;
 
-        if aend <= astart {
-            continue;
+            if start <= last_end {
+                let new_end = cmp::max(last_end, end);
+                last.size = new_end - last.base;
+                continue;
+            }
+
+            let astart = align_up(last.base, PAGE_SIZE);
+            let aend = align_down(last.base + last.size, PAGE_SIZE);
+
+            if aend <= astart || (aend - astart) <= (2 * PAGE_SIZE) {
+                out_count -= 1;
+            } else {
+                last.base = astart;
+                last.size = aend - astart;
+            }
         }
 
-        if out_count == 0 {
+        if out_count < max_slots {
             unsafe {
-                ptr::write_volatile(
+                ptr::write(
                     out_ptr.add(out_count),
                     MemoryRegion {
-                        base: astart,
-                        size: aend - astart,
+                        base: start,
+                        size: end - start,
                     },
                 );
             }
             out_count += 1;
-        } else {
-            let last = unsafe { &mut *out_ptr.add(out_count - 1) };
-            let last_end = last.base + last.size;
+        }
+    }
 
-            if last_end == astart {
-                last.size = last.size.checked_add(aend - astart).expect("size overflow");
-            } else if astart < last_end {
-                let new_end = cmp::max(last_end, aend);
-                last.size = new_end - last.base;
-            } else {
-                // extremely unlikely but maybe possible
-                if out_count >= max_slots {
-                    break;
-                }
-                unsafe {
-                    ptr::write(
-                        out_ptr.add(out_count),
-                        MemoryRegion {
-                            base: astart,
-                            size: aend - astart,
-                        },
-                    );
-                }
-                out_count += 1;
-            }
+    if out_count > 0 {
+        let last = unsafe { &mut *out_ptr.add(out_count - 1) };
+        let astart = align_up(last.base, PAGE_SIZE);
+        let aend = align_down(last.base + last.size, PAGE_SIZE);
+
+        if aend <= astart || (aend - astart) <= (2 * PAGE_SIZE) {
+            out_count -= 1;
+        } else {
+            last.base = astart;
+            last.size = aend - astart;
         }
     }
 
@@ -192,7 +194,7 @@ pub unsafe extern "C" fn _start(_boot_info_ref: &mut BootInfo) {
     );
 }
 
-fn kentry(boot_info_ref: &mut BootInfo) -> ! {
+fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     CPACR_EL1.modify(CPACR_EL1::FPEN::TrapNothing);
     CPACR_EL1.modify(CPACR_EL1::ZEN::TrapNothing);
     CPACR_EL1.modify(CPACR_EL1::TTA::NoTrap);
@@ -207,36 +209,51 @@ fn kentry(boot_info_ref: &mut BootInfo) -> ! {
 
     DAIF.write(DAIF::D::Masked + DAIF::A::Masked + DAIF::I::Masked + DAIF::F::Masked);
 
+    let boot_info: BootInfo = unsafe { boot_info_ref.assume_init() };
+
     let kbase = unsafe { &__KBASE as *const _ as usize };
-    let offset = kbase - boot_info_ref.kernel_load_physical_address;
+    let offset = kbase - boot_info.kernel_load_physical_address;
 
     {
         let mut lock = EARLYCON.lock();
-        *lock = Some(EarlyCon::new(boot_info_ref.serial_uart_address));
+        *lock = Some(EarlyCon::new(boot_info.serial_uart_address));
     }
 
-    let mmap = &mut unsafe { ptr::read(&boot_info_ref.memory_map) };
-    earlycon_writeln!("mmap @ {:#x}", mmap as *const _ as u64);
+    let uefi_mmap = &mut unsafe { ptr::read(&boot_info.memory_map) };
+    uefi_mmap.sort();
+    earlycon_writeln!("uefi_mmap @ {:#x}", uefi_mmap as *const _ as u64);
 
-    //for entry in mmap.entries() {
-    //    if entry.ty == MemoryType::CONVENTIONAL {
-    //        earlycon_writeln!(
-    //            "MemoryDescriptor {{ phys_start: {:#x}, size: {:#x} }}",
-    //            entry.phys_start,
-    //            entry.page_count as usize * UEFI_PS
-    //        );
-    //    }
-    //}
+    let mut total = 0usize;
+    for entry in uefi_mmap.entries() {
+        match entry.ty {
+            MemoryType::LOADER_CODE
+            | MemoryType::BOOT_SERVICES_DATA
+            | MemoryType::BOOT_SERVICES_CODE => {
+                earlycon_writeln!(
+                    "MemoryDescriptor {{ phys_start: {:#x}, size: {:#x}, ty: {:?} }}",
+                    entry.phys_start,
+                    entry.page_count as usize * UEFI_PS,
+                    entry.ty
+                );
+                total += entry.page_count as usize * UEFI_PS;
+            }
+            _ => {}
+        }
+    }
+    earlycon_writeln!("total: {:#x}", total);
 
-    init_mmu(boot_info_ref.kernel_load_physical_address, offset);
+    init_mmu(boot_info.kernel_load_physical_address, offset);
     earlycon_writeln!("hi");
 
-    arm_init(mmap);
+    arm_init(uefi_mmap, boot_info.kernel_regions);
 
     busy_loop()
 }
 
-pub extern "C" fn arm_init(mmap: &mut MemoryMapOwned) {
+pub extern "C" fn arm_init(
+    uefi_mmap: &mut MemoryMapOwned,
+    memory_regions: StaticVec<MemoryRegion>,
+) {
     unsafe {
         asm!(
             "adr {x}, vector_table_el1",
@@ -246,7 +263,7 @@ pub extern "C" fn arm_init(mmap: &mut MemoryMapOwned) {
         );
     }
 
-    let regions: &[MemoryRegion] = uefi_mmap_convert_inplace(mmap);
+    let regions: &[MemoryRegion] = uefi_mmap_convert_inplace(uefi_mmap);
 
     for region in regions {
         earlycon_writeln!(
@@ -257,7 +274,7 @@ pub extern "C" fn arm_init(mmap: &mut MemoryMapOwned) {
     }
 
     let page_allocator = unsafe { PageAllocator::init(regions) };
-    let pt_allocator = KernelPTAllocator::new(&page_allocator);
+    let pt_allocator = KernelPTAllocator::new(&page_allocator, memory_regions);
 
     panic!("End.");
 }

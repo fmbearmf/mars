@@ -8,6 +8,7 @@ use super::{TABLE_ENTRIES, TTable};
 
 pub trait TableAllocator {
     fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>>;
+    fn free_table(&self, table: NonNull<TTable<TABLE_ENTRIES>>);
 }
 
 pub fn map_region<A: TableAllocator>(
@@ -49,6 +50,24 @@ pub fn map_region<A: TableAllocator>(
     //}
 }
 
+pub fn unmap_region<A: TableAllocator>(
+    root: &mut TTable<TABLE_ENTRIES>,
+    va: usize,
+    size: usize,
+    allocator: &A,
+) {
+    if va & PAGE_MASK != 0 || size & PAGE_MASK != 0 {
+        panic!("addresses AND size must be page aligned");
+    }
+
+    let num_pages = size >> PAGE_SHIFT;
+
+    for i in 0..num_pages {
+        let vaddr = va + (i << PAGE_SHIFT);
+        unmap_page(root, vaddr, allocator);
+    }
+}
+
 fn map_l2_block<A: TableAllocator>(
     root: &mut TTable<TABLE_ENTRIES>,
     pa: usize,
@@ -65,7 +84,6 @@ fn map_l2_block<A: TableAllocator>(
     let i2 = TTENATIVE::calculate_index(va as u64, 2);
 
     let l0_entry = &mut (root.entries[i0]);
-
     let l1_table = if l0_entry.address() != 0 && l0_entry.is_table() {
         let l1_pa = l0_entry.address();
         let mut z = unsafe { NonNull::new_unchecked(l1_pa as *mut _) };
@@ -81,7 +99,6 @@ fn map_l2_block<A: TableAllocator>(
     };
 
     let l1_entry = &mut (l1_table.entries[i1]);
-
     let l2_table = if l1_entry.address() != 0 && l1_entry.is_table() {
         let l2_pa = l1_entry.address();
         let mut z = unsafe { NonNull::new_unchecked(l2_pa as *mut _) };
@@ -98,6 +115,15 @@ fn map_l2_block<A: TableAllocator>(
 
     let l2_entry = &mut (l2_table.entries[i2]);
 
+    if l2_entry.is_valid() && l2_entry.is_table() {
+        let child_pa = l2_entry.address();
+        if child_pa != 0 {
+            unsafe {
+                let child_ptr = NonNull::new_unchecked(child_pa as *mut TTable<TABLE_ENTRIES>);
+            }
+        }
+    }
+
     l2_entry.set_is_valid(true);
     l2_entry.set_is_block();
     l2_entry.set_address(pa as u64);
@@ -109,7 +135,51 @@ fn map_l2_block<A: TableAllocator>(
     l2_entry.set_privileged_executable(!pxn);
 }
 
-#[inline(always)]
+fn unmap_l2_block<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, allocator: &A) {
+    let i0 = TTENATIVE::calculate_index(va as u64, 0);
+    let i1 = TTENATIVE::calculate_index(va as u64, 1);
+    let i2 = TTENATIVE::calculate_index(va as u64, 2);
+
+    let l0_entry = &mut (root.entries[i0]);
+    if !l0_entry.is_valid() || !l0_entry.is_table() {
+        return;
+    }
+
+    let l1_pa = l0_entry.address();
+    let mut l1_table_ptr = unsafe { NonNull::new_unchecked(l1_pa as *mut TTable<TABLE_ENTRIES>) };
+    let l1_table = unsafe { l1_table_ptr.as_mut() };
+    let l1_entry = &mut (l1_table.entries[i1]);
+
+    if !l1_entry.is_valid() || !l1_entry.is_table() {
+        return;
+    }
+
+    let l2_pa = l1_entry.address();
+    let mut l2_table_ptr = unsafe { NonNull::new_unchecked(l2_pa as *mut TTable<TABLE_ENTRIES>) };
+    let l2_table = unsafe { l2_table_ptr.as_mut() };
+    let l2_entry = &mut (l2_table.entries[i2]);
+
+    if !l2_entry.is_valid() {
+        return;
+    }
+
+    l2_entry.set_is_valid(false);
+    l2_entry.set_address(0);
+
+    if is_table_empty(l2_table) {
+        allocator.free_table(l2_table_ptr);
+        l1_entry.set_is_valid(false);
+        l1_entry.set_address(0);
+
+        if is_table_empty(l1_table) {
+            allocator.free_table(l1_table_ptr);
+            l0_entry.set_is_valid(false);
+            l0_entry.set_address(0);
+        }
+    }
+}
+
+#[inline]
 fn map_page<A: TableAllocator>(
     root: &mut TTable<TABLE_ENTRIES>,
     pa: usize,
@@ -189,4 +259,75 @@ fn map_page<A: TableAllocator>(
     l3_entry.set_attr_index(attr_index);
     l3_entry.set_executable(!uxn);
     l3_entry.set_privileged_executable(!pxn);
+}
+
+#[inline]
+fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, allocator: &A) {
+    let i0 = TTENATIVE::calculate_index(va as u64, 0);
+    let i1 = TTENATIVE::calculate_index(va as u64, 1);
+    let i2 = TTENATIVE::calculate_index(va as u64, 2);
+    let i3 = TTENATIVE::calculate_index(va as u64, 3);
+
+    let l0_entry = &mut (root.entries[i0]);
+    if !l0_entry.is_valid() || !l0_entry.is_table() {
+        return;
+    }
+
+    let l1_pa = l0_entry.address();
+    let mut l1_table_ptr = unsafe { NonNull::new_unchecked(l1_pa as *mut TTable<TABLE_ENTRIES>) };
+    let l1_table = unsafe { l1_table_ptr.as_mut() };
+    let l1_entry = &mut (l1_table.entries[i1]);
+
+    if !l1_entry.is_valid() || !l1_entry.is_table() {
+        return;
+    }
+
+    let l2_pa = l1_entry.address();
+    let mut l2_table_ptr = unsafe { NonNull::new_unchecked(l2_pa as *mut TTable<TABLE_ENTRIES>) };
+    let l2_table = unsafe { l2_table_ptr.as_mut() };
+    let l2_entry = &mut (l2_table.entries[i2]);
+
+    if !l2_entry.is_valid() || !l2_entry.is_table() {
+        return;
+    }
+
+    let l3_pa = l2_entry.address();
+    let mut l3_table_ptr = unsafe { NonNull::new_unchecked(l3_pa as *mut TTable<TABLE_ENTRIES>) };
+    let l3_table = unsafe { l3_table_ptr.as_mut() };
+    let l3_entry = &mut (l3_table.entries[i3]);
+
+    if !l3_entry.is_valid() {
+        return;
+    }
+
+    l3_entry.set_is_valid(false);
+    l3_entry.set_address(0);
+
+    if is_table_empty(l3_table) {
+        allocator.free_table(l3_table_ptr);
+        l2_entry.set_is_valid(false);
+        l2_entry.set_address(0);
+
+        if is_table_empty(l2_table) {
+            allocator.free_table(l2_table_ptr);
+            l1_entry.set_is_valid(false);
+            l1_entry.set_address(0);
+
+            if is_table_empty(l1_table) {
+                allocator.free_table(l1_table_ptr);
+                l0_entry.set_is_valid(false);
+                l0_entry.set_address(0);
+            }
+        }
+    }
+}
+
+fn is_table_empty(table: &TTable<TABLE_ENTRIES>) -> bool {
+    for i in 0..TABLE_ENTRIES {
+        let entry = &table.entries[i];
+        if entry.is_valid() {
+            return false;
+        }
+    }
+    true
 }

@@ -1,4 +1,9 @@
-use core::ptr::{self, NonNull};
+use core::{
+    cell::RefCell,
+    ptr::{self, NonNull},
+};
+
+use crate::{vec::StaticVec, vm::MemoryRegion};
 
 use super::{
     super::{PAGE_MASK, PAGE_SIZE, TABLE_ENTRIES, TTable, map::TableAllocator},
@@ -7,11 +12,15 @@ use super::{
 
 pub struct KernelPTAllocator<'a> {
     pa: &'a PageAllocator,
+    uefi_regions: RefCell<StaticVec<MemoryRegion>>,
 }
 
 impl<'a> KernelPTAllocator<'a> {
-    pub const fn new(pa: &'a PageAllocator) -> Self {
-        Self { pa }
+    pub const fn new(pa: &'a PageAllocator, uefi_regions: StaticVec<MemoryRegion>) -> Self {
+        Self {
+            pa,
+            uefi_regions: RefCell::new(uefi_regions),
+        }
     }
 }
 
@@ -41,5 +50,15 @@ impl<'a> TableAllocator for KernelPTAllocator<'a> {
 
             NonNull::new(table_ptr).expect("page ptr non-null")
         }
+    }
+
+    fn free_table(&self, table: NonNull<TTable<TABLE_ENTRIES>>) {
+        let addr = table.as_ptr() as usize;
+
+        if let Some(reg) = self.uefi_regions.borrow_mut().remove_containing(addr) {
+            return;
+        }
+
+        self.pa.free_pages(table.as_ptr().cast());
     }
 }
