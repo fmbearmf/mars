@@ -15,12 +15,13 @@ use core::{
     cmp,
     fmt::Write,
     mem::{self, MaybeUninit},
+    ops::Add,
     panic::PanicInfo,
     ptr, slice,
 };
 use klib::{
     exception::ExceptionHandler,
-    vec::StaticVec,
+    vec::{RawVec, StaticVec},
     vm::{
         DMAP_START, MemoryRegion, PAGE_SIZE, align_down, align_up,
         map::TableAllocator,
@@ -74,108 +75,6 @@ struct KStack([u8; STACK_SIZE]);
 
 #[unsafe(link_section = ".reclaimable.bss")]
 static mut KSTACK: KStack = KStack([0u8; STACK_SIZE]);
-
-fn uefi_mmap_convert_inplace(mmap: &mut MemoryMapOwned) -> &[MemoryRegion] {
-    debug_assert!(
-        size_of::<MemoryRegion>() <= size_of::<MemoryDescriptor>(),
-        "memoryregion must be able to fit into a memorydescriptor!"
-    );
-
-    let entries = mmap.len();
-    if entries == 0 {
-        return &[];
-    }
-
-    let buf = unsafe { mmap.buffer_mut() };
-    let buf_addr = buf.as_mut_ptr() as usize;
-    let buf_len = buf.len();
-
-    const REG_ALIGN: usize = align_of::<MemoryRegion>();
-    const REG_SIZE: usize = size_of::<MemoryRegion>();
-
-    let aligned_start = align_up(buf_addr, REG_ALIGN);
-    let offset = aligned_start - buf_addr;
-
-    let max_slots_by_size = (buf_len.saturating_sub(offset)) / REG_SIZE;
-    let max_slots = cmp::min(max_slots_by_size, entries);
-
-    if max_slots == 0 {
-        return &[];
-    }
-
-    let out_ptr = unsafe { buf.as_mut_ptr().add(offset) as *mut MemoryRegion };
-    let mut out_count: usize = 0;
-
-    for i in 0..entries {
-        let entry: &MemoryDescriptor = mmap.get(i).expect("index in range");
-
-        match entry.ty {
-            MemoryType::LOADER_CODE
-            | MemoryType::BOOT_SERVICES_DATA
-            | MemoryType::BOOT_SERVICES_CODE => {}
-            _ => {
-                continue;
-            }
-        }
-
-        let start = entry.phys_start as usize + DMAP_START;
-        let total_bytes = (entry.page_count as usize).saturating_mul(UEFI_PS);
-        let end = start.saturating_add(total_bytes);
-
-        if out_count > 0 {
-            let last = unsafe { &mut *out_ptr.add(out_count - 1) };
-            let last_end = last.base + last.size;
-
-            if start <= last_end {
-                let new_end = cmp::max(last_end, end);
-                last.size = new_end - last.base;
-                continue;
-            }
-
-            let astart = align_up(last.base, PAGE_SIZE);
-            let aend = align_down(last.base + last.size, PAGE_SIZE);
-
-            if aend <= astart || (aend - astart) <= (2 * PAGE_SIZE) {
-                out_count -= 1;
-            } else {
-                last.base = astart;
-                last.size = aend - astart;
-            }
-        }
-
-        if out_count < max_slots {
-            unsafe {
-                ptr::write(
-                    out_ptr.add(out_count),
-                    MemoryRegion {
-                        base: start,
-                        size: end - start,
-                    },
-                );
-            }
-            out_count += 1;
-        }
-    }
-
-    if out_count > 0 {
-        let last = unsafe { &mut *out_ptr.add(out_count - 1) };
-        let astart = align_up(last.base, PAGE_SIZE);
-        let aend = align_down(last.base + last.size, PAGE_SIZE);
-
-        if aend <= astart || (aend - astart) <= (2 * PAGE_SIZE) {
-            out_count -= 1;
-        } else {
-            last.base = astart;
-            last.size = aend - astart;
-        }
-    }
-
-    if out_count == 0 {
-        &[]
-    } else {
-        unsafe { slice::from_raw_parts(out_ptr as *const MemoryRegion, out_count) }
-    }
-}
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -263,18 +162,28 @@ pub extern "C" fn arm_init(
         );
     }
 
-    let regions: &[MemoryRegion] = uefi_mmap_convert_inplace(uefi_mmap);
+    let mut page_allocator = unsafe { PageAllocator::init(&[]) };
 
-    for region in regions {
+    for &region in memory_regions.as_slice() {
+        if !region.is_normal() {
+            continue;
+        };
+        if region.size <= 2 * PAGE_SIZE {
+            continue;
+        }
         earlycon_writeln!(
-            "MemoryRegion {{ base: {:#x}, size: {:#x} }}",
+            "MemoryRegion {{ base: {:#x}, size: {:#x}, region_type: {:?} }}",
             region.base,
-            region.size
+            region.size,
+            region.region_type
         );
+        page_allocator.add_range(region);
     }
 
-    let page_allocator = unsafe { PageAllocator::init(regions) };
     let pt_allocator = KernelPTAllocator::new(&page_allocator, memory_regions);
+
+    let page = page_allocator.alloc_page() as usize;
+    earlycon_writeln!("page start: {:#x}, head: {:#x}", page, page.add(PAGE_SIZE));
 
     panic!("End.");
 }

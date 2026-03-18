@@ -1,4 +1,4 @@
-use core::ptr::NonNull;
+use core::{intrinsics::copy_nonoverlapping, ptr::NonNull, slice::from_raw_parts_mut};
 
 use klib::{
     vec::{DynVec, RawVec, StaticVec},
@@ -43,6 +43,23 @@ impl<T> UefiVec<T> {
 
         self.ptr = new_ptr;
         self.capacity = new_cap;
+    }
+
+    pub fn extend(&mut self, other: UefiVec<T>) {
+        while self.len + other.len > self.capacity {
+            self.grow();
+        }
+
+        unsafe {
+            copy_nonoverlapping(
+                other.ptr.as_ptr(),
+                self.ptr.as_ptr().add(self.len),
+                other.len,
+            );
+        }
+        self.len += other.len;
+
+        _ = other.into_raw_parts();
     }
 }
 
@@ -124,5 +141,29 @@ impl UefiVec<MemoryRegion> {
         }
         self.len -= 1;
         Some(reg)
+    }
+
+    pub fn compact(&mut self) {
+        if self.len < 2 {
+            return;
+        }
+
+        let slice = unsafe { from_raw_parts_mut(self.ptr.as_ptr(), self.len) };
+        slice.sort_unstable_by_key(|r| r.base);
+
+        let mut write_i = 0;
+
+        for read_i in 1..self.len {
+            if slice[write_i].can_merge(&slice[read_i]) {
+                slice[write_i].merge(slice[read_i]);
+            } else {
+                write_i += 1;
+                if write_i != read_i {
+                    slice[write_i] = slice[read_i];
+                }
+            }
+        }
+
+        self.len = write_i + 1;
     }
 }

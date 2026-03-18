@@ -59,10 +59,92 @@ impl<const N: usize> TTable<N> {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum MemoryRegionType {
+    Corrupt = 0,
+    KernelCode,
+    KernelRwData,
+    KernelRoData,
+    KernelStack,
+    Mmio,
+    BootloaderReclaim,
+    FirmwareReclaim,
+
+    AcpiTables,
+    AcpiNvs,
+
+    PageTable,
+
+    RtFirmwareCode,
+    RtFirmwareData,
+
+    Normal,
+
+    Unknown = 255,
+}
+
+impl MemoryRegionType {
+    #[inline]
+    pub const fn from_bits(bits: u8) -> Self {
+        match bits {
+            1 => Self::KernelCode,
+            2 => Self::KernelRwData,
+            3 => Self::KernelRoData,
+            4 => Self::KernelStack,
+            5 => Self::Mmio,
+            6 => Self::BootloaderReclaim,
+            7 => Self::FirmwareReclaim,
+            8 => Self::AcpiTables,
+            9 => Self::AcpiNvs,
+            10 => Self::PageTable,
+            11 => Self::RtFirmwareCode,
+            12 => Self::RtFirmwareData,
+            13 => Self::Normal,
+            255 => Self::Unknown,
+            _ => Self::Corrupt,
+        }
+    }
+
+    #[inline]
+    pub const fn as_bits(self) -> u8 {
+        self as u8
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct MemoryRegion {
     pub base: usize,
     pub size: usize,
+    pub region_type: MemoryRegionType,
+}
+
+impl MemoryRegion {
+    pub fn end(&self) -> usize {
+        self.base + self.size
+    }
+
+    pub fn can_merge(&self, other: &MemoryRegion) -> bool {
+        self.region_type == other.region_type &&
+        // check if overlap or touch
+        !(self.end() < other.base || other.end() < self.base)
+    }
+
+    pub fn merge(&mut self, other: MemoryRegion) {
+        let start = self.base.min(other.base);
+        let end = self.end().max(other.end());
+        self.base = start;
+        self.size = end - start;
+    }
+
+    pub fn is_normal(&self) -> bool {
+        match self.region_type {
+            MemoryRegionType::BootloaderReclaim => true,
+            MemoryRegionType::FirmwareReclaim => true,
+            MemoryRegionType::Normal => true,
+            _ => false,
+        }
+    }
 }
 
 pub const fn phys_addr_to_dmap(phys_addr: u64) -> u64 {

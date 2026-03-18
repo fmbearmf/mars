@@ -7,7 +7,13 @@ use core::{
 
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::alloc::alloc;
-use klib::vm::{MAIR_NORMAL_INDEX, TABLE_ENTRIES, TTENATIVE, TTable, map::map_region};
+use klib::{
+    vec::{DynVec, StaticVec},
+    vm::{
+        MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType, TABLE_ENTRIES, TTENATIVE, TTable,
+        align_up, map::map_region,
+    },
+};
 use log::{debug, error, info};
 use uefi::{
     Status,
@@ -15,11 +21,14 @@ use uefi::{
     proto::media::file::{File, FileInfo, RegularFile},
 };
 
-use crate::{Elf64Ehdr, Elf64Phdr, PAGE_SIZE, PT_ALLOCATOR, PT_LOAD, PhdrFlags, UEFI_PS};
+use crate::{
+    Elf64Ehdr, Elf64Phdr, PAGE_SIZE, PT_ALLOCATOR, PT_LOAD, PhdrFlags, UEFI_PS, vec::UefiVec,
+};
 
 pub fn load_kernel(
     mut kernel: RegularFile,
     mut root_table: NonNull<TTable<TABLE_ENTRIES>>,
+    kregions: &mut UefiVec<MemoryRegion>,
 ) -> Result<(u64, u64, u64), Status> {
     let mut info_buf = [0u8; 512];
     let file_info: &FileInfo = match kernel.get_info(&mut info_buf) {
@@ -137,7 +146,7 @@ pub fn load_kernel(
         }
     };
 
-    let base_phys = (alloc_ptr + (PAGE_SIZE as u64) - 1) & !(PAGE_SIZE as u64 - 1);
+    let base_phys = align_up(alloc_ptr as usize, PAGE_SIZE) as u64;
 
     debug!(
         "allocated {} UEFI pages ({} bytes) at {:#x}",
@@ -259,6 +268,20 @@ pub fn load_kernel(
             MAIR_NORMAL_INDEX,
             &PT_ALLOCATOR,
         );
+
+        let region_type = if r && x {
+            MemoryRegionType::KernelCode
+        } else if r && w {
+            MemoryRegionType::KernelRwData
+        } else {
+            MemoryRegionType::KernelRoData
+        };
+
+        kregions.push(MemoryRegion {
+            base: vaddr as usize,
+            size: pages as usize * PAGE_SIZE,
+            region_type,
+        });
     }
 
     let entry_vaddr = ehdr.e_entry;

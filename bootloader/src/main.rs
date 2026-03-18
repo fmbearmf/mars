@@ -24,8 +24,10 @@ use klib::{
         self, SystemDescription,
         rsdp::{Rsdp, XsdtIter},
     },
+    vec::{DynVec, RawVec, StaticVec},
     vm::{
-        DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, TTENATIVE,
+        DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
+        TTENATIVE, align_down, align_up,
         map::{TableAllocator, map_region},
     },
 };
@@ -44,6 +46,7 @@ use crate::{
     allocator::UefiPTAllocator,
     elf::load_kernel,
     page::{cpu_init, mmu_init},
+    vec::UefiVec,
 };
 
 use alloc::boxed::Box;
@@ -118,6 +121,8 @@ fn main() -> Status {
     uefi::helpers::init().unwrap();
     let mut serial_uart_addr_opt = None;
 
+    let mut kregions: UefiVec<MemoryRegion> = UefiVec::new();
+
     debug!("main() @ {:#x}", main as *const () as usize);
 
     cpu_init();
@@ -166,7 +171,7 @@ fn main() -> Status {
 
     let mut kernel = fh.into_regular_file().unwrap();
 
-    let (entry_addr, base_phys, load_size) = match load_kernel(kernel, root_table) {
+    let (entry_addr, base_phys, load_size) = match load_kernel(kernel, root_table, &mut kregions) {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -304,11 +309,21 @@ fn main() -> Status {
         }
 
         for entry in mem_map.entries() {
-            let phys_start = TTENATIVE::align_down(
-                PT_ALLOCATOR.vaddr_to_paddr_uefi(entry.phys_start as usize) as u64,
-            ) as usize;
-            let size = TTENATIVE::align_up(entry.page_count * UEFI_PS) as usize;
-            let vaddr = TTENATIVE::align_down((DMAP_START + phys_start) as u64) as usize;
+            let phys_start_unaligned = PT_ALLOCATOR.vaddr_to_paddr_uefi(entry.phys_start as usize);
+            let phys_start = align_up(phys_start_unaligned, PAGE_SIZE);
+
+            let size_unaligned = (entry.page_count * UEFI_PS) as usize;
+            let size = align_down(size_unaligned, PAGE_SIZE);
+            let vaddr = TTENATIVE::align_up((DMAP_START + phys_start) as u64) as usize;
+
+            info!(
+                "start: {:#x}, start_align: {:#x}, size: {:#x}, size_align: {:#x}",
+                phys_start_unaligned, phys_start, size_unaligned, size
+            );
+
+            if size == 0 || phys_start + size > phys_start_unaligned + size_unaligned {
+                continue;
+            }
 
             if let Some(uart) = serial_uart_addr_opt {
                 if phys_start > uart && phys_start < (uart + PAGE_SIZE) {
@@ -316,6 +331,16 @@ fn main() -> Status {
                     busy_loop_ret();
                 }
             }
+
+            let region_type = match entry.ty {
+                MemoryType::LOADER_CODE => MemoryRegionType::BootloaderReclaim,
+                MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA => {
+                    MemoryRegionType::FirmwareReclaim
+                }
+                MemoryType::RUNTIME_SERVICES_CODE => MemoryRegionType::RtFirmwareCode,
+                MemoryType::MMIO | MemoryType::MMIO_PORT_SPACE => MemoryRegionType::Mmio,
+                _ => MemoryRegionType::Unknown,
+            };
 
             match entry.ty {
                 // RW no exec
@@ -345,6 +370,7 @@ fn main() -> Status {
                         MAIR_NORMAL_INDEX,
                         &PT_ALLOCATOR,
                     );
+                    kregions.push(MemoryRegion { base: vaddr, size, region_type });
                 }
 
                 // RO exec
@@ -363,6 +389,7 @@ fn main() -> Status {
                         MAIR_NORMAL_INDEX,
                         &PT_ALLOCATOR,
                     );
+                    kregions.push(MemoryRegion { base: vaddr, size, region_type });
                 }
 
                 // RO no exec
@@ -411,6 +438,7 @@ fn main() -> Status {
                         MAIR_DEVICE_INDEX,
                         &PT_ALLOCATOR,
                     );
+                    kregions.push(MemoryRegion { base: vaddr, size, region_type });
                 }
 
                 _ => {
@@ -428,6 +456,9 @@ fn main() -> Status {
 
     let mut boot_info = MaybeUninit::<BootInfo>::uninit();
 
+    kregions.extend(PT_ALLOCATOR.take_kernel_regions());
+    kregions.compact();
+
     let mem_map_final = unsafe { boot::exit_boot_services(None) };
 
     boot_info.write(BootInfo {
@@ -436,7 +467,7 @@ fn main() -> Status {
         serial_uart_address: serial_uart_addr + DMAP_START,
         memory_map: mem_map_final,
         root_pt: root_table,
-        kernel_regions: PT_ALLOCATOR.take_kernel_regions(),
+        kernel_regions: core::ops::Fn::call(&StaticVec::from_raw_parts, kregions.into_raw_parts()),
     });
 
     entry_fn(boot_info);

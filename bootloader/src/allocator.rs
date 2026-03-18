@@ -5,7 +5,8 @@ use aarch64_cpu::registers::TTBR0_EL1;
 use klib::{
     vec::{DynVec, RawVec, StaticVec},
     vm::{
-        MemoryRegion, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, TTableUEFI, map::TableAllocator,
+        MemoryRegion, MemoryRegionType, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, TTableUEFI,
+        map::TableAllocator,
     },
 };
 use uefi::boot::{self, MemoryType, PAGE_SIZE as UEFI_PS};
@@ -23,11 +24,11 @@ impl UefiPTAllocator {
         }
     }
 
-    pub fn take_kernel_regions(&self) -> StaticVec<MemoryRegion> {
+    pub fn take_kernel_regions(&self) -> UefiVec<MemoryRegion> {
         let mut regions_ref = self.regions.borrow_mut();
         let vec = core::mem::replace(&mut *regions_ref, UefiVec::new());
 
-        core::ops::Fn::call(&StaticVec::from_raw_parts, vec.into_raw_parts())
+        core::ops::Fn::call(&UefiVec::from_raw_parts, vec.into_raw_parts())
     }
 
     pub fn vaddr_to_paddr_uefi(&self, vaddr: usize) -> usize {
@@ -94,6 +95,7 @@ impl TableAllocator for UefiPTAllocator {
         self.regions.borrow_mut().push(MemoryRegion {
             base: addr,
             size: TOTAL_SIZE,
+            region_type: MemoryRegionType::PageTable,
         });
 
         let aligned = TTENATIVE::align_up(addr as u64) as *mut TTable<TABLE_ENTRIES>;
