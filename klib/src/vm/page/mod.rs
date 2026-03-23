@@ -32,13 +32,13 @@ struct VMZone {
 
 #[repr(align(64))]
 #[derive(Debug)]
-struct TicketLock {
+pub struct TicketLock {
     ticket: AtomicUsize,
     users: AtomicUsize,
 }
 
 impl TicketLock {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             ticket: AtomicUsize::new(0),
             users: AtomicUsize::new(0),
@@ -46,7 +46,7 @@ impl TicketLock {
     }
 
     #[inline]
-    fn lock(&self) {
+    pub fn lock(&self) {
         let ticket = self.ticket.fetch_add(1, Ordering::Relaxed);
         while self.users.load(Ordering::Acquire) != ticket {
             core::hint::spin_loop();
@@ -54,11 +54,12 @@ impl TicketLock {
     }
 
     #[inline]
-    fn unlock(&self) {
+    pub fn unlock(&self) {
         self.users.fetch_add(1, Ordering::Release);
     }
 }
 
+#[repr(C)]
 #[derive(Debug)]
 pub struct PageAllocator {
     lock: TicketLock,

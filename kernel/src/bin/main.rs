@@ -4,6 +4,8 @@
 
 mod earlyinit;
 
+extern crate alloc;
+
 use aarch64_cpu::{
     asm::{
         barrier::{self, isb},
@@ -12,15 +14,17 @@ use aarch64_cpu::{
     registers::{CPACR_EL1, DAIF, MPIDR_EL1, ReadWriteable, Readable, Writeable},
 };
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
+use alloc::vec::Vec;
 use core::{
     arch::{asm, naked_asm},
     fmt::Write,
-    mem::MaybeUninit,
+    mem::{self, MaybeUninit},
     ops::Add,
     panic::PanicInfo,
     ptr::{self, NonNull},
 };
 use klib::{
+    bytes_to_human_readable,
     exception::ExceptionHandler,
     vec::{DynVec, PMVec, RawVec, StaticVec},
     vm::{
@@ -31,6 +35,7 @@ use klib::{
             PageAllocator,
             table_allocator::{KernelPTAllocator, PMTableAllocator},
         },
+        slab::SlabAllocator,
     },
 };
 use protocol::BootInfo;
@@ -48,6 +53,9 @@ struct Exceptions;
 impl ExceptionHandler for Exceptions {}
 
 klib::exception_handlers!(Exceptions);
+
+#[global_allocator]
+pub static KALLOCATOR: SlabAllocator = SlabAllocator::new();
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -151,7 +159,26 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     init_mmu(boot_info.kernel_load_physical_address, offset);
     earlycon_writeln!("hi");
 
-    arm_init(uefi_mmap, boot_info.kernel_regions, boot_info.root_pt);
+    let page_allocator = &arm_init(uefi_mmap, boot_info.kernel_regions, boot_info.root_pt);
+
+    let page_alloc_ref: &'static PageAllocator = unsafe { mem::transmute(page_allocator) };
+
+    unsafe { KALLOCATOR.init(page_alloc_ref) };
+
+    let mut vec = Vec::new();
+    vec.push(42);
+
+    earlycon_writeln!("heap vec: {:?}", vec);
+
+    let mut bufs = [[0u8; 16]; 2];
+
+    let bufs_tuple = bufs.split_at_mut(1);
+
+    earlycon_writeln!(
+        "heap usage: {} / {}",
+        bytes_to_human_readable(KALLOCATOR.heap_usage() as u64, &mut bufs_tuple.0[0]),
+        bytes_to_human_readable(KALLOCATOR.heap_capacity() as u64, &mut bufs_tuple.1[0]),
+    );
 
     busy_loop()
 }
@@ -160,7 +187,7 @@ pub extern "C" fn arm_init(
     uefi_mmap: &mut MemoryMapOwned,
     memory_regions: StaticVec<MemoryRegion>,
     mut root_pt: NonNull<TTable<TABLE_ENTRIES>>,
-) {
+) -> PageAllocator {
     unsafe {
         asm!(
             "adr {x}, vector_table_el1",
@@ -202,19 +229,11 @@ pub extern "C" fn arm_init(
         });
     }
 
-    earlycon_writeln!("{:?}", pmvec);
-
     let mut pmvec_copy: PMVec<MemoryRegion> = PMVec::new();
     pmvec_copy.extend_from_slice(pmvec.as_slice());
     pmvec_copy.compact();
 
     for &region in pmvec_copy.as_slice() {
-        earlycon_writeln!("    {:x?}", region);
-    }
-
-    let static_vec = core::ops::Fn::call(&StaticVec::from_raw_parts, pmvec_copy.into_raw_parts());
-
-    for &region in static_vec.as_slice() {
         if region.is_normal() {
             continue;
         }
@@ -227,7 +246,7 @@ pub extern "C" fn arm_init(
 
     {
         let mut total = 0usize;
-        for &region in static_vec.as_slice() {
+        for &region in pmvec_copy.as_slice() {
             //if !region.is_normal() {
             //    continue;
             //};
@@ -260,10 +279,35 @@ pub extern "C" fn arm_init(
         earlycon_writeln!("mem size: {:#x} ({} B)", total, total);
     }
 
-    earlycon_writeln!("ttbr1 pt: {:#x}", root_pt.as_ptr() as usize);
+    let mmap_swiss_cheese = early_page_allocator.free_regions.into_inner();
 
-    let page_allocator = unsafe { PageAllocator::init(&[]) };
-    let pt_allocator = KernelPTAllocator::new(&page_allocator, memory_regions);
+    for &region in mmap_swiss_cheese.as_slice() {
+        if let Some(popped) = pmvec_copy.remove_containing(region.base) {
+            pmvec_copy.push(region);
+        }
+    }
+    pmvec_copy.compact();
+
+    earlycon_writeln!("pmvec_copy: {:#x?}", pmvec_copy.as_slice());
+
+    let mut page_allocator = unsafe { PageAllocator::init(&[]) };
+
+    for &region in pmvec_copy.as_slice() {
+        if region.is_usable() {
+            let aligned_base = align_up(DMAP_START + region.base, PAGE_SIZE);
+            let aligned_size = align_down(region.size, PAGE_SIZE);
+
+            if aligned_size <= 2 * PAGE_SIZE {
+                continue;
+            }
+
+            page_allocator.add_range(MemoryRegion {
+                base: aligned_base,
+                size: aligned_size,
+                region_type: region.region_type,
+            });
+        }
+    }
 
     let page = page_allocator.alloc_page();
     assert!(!page.is_null());
@@ -274,5 +318,7 @@ pub extern "C" fn arm_init(
         (page as usize).add(PAGE_SIZE)
     );
 
-    panic!("End.");
+    page_allocator.free_pages(page);
+
+    page_allocator
 }

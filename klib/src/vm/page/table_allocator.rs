@@ -1,5 +1,6 @@
 use core::{
     cell::RefCell,
+    mem::forget,
     ptr::{self, NonNull},
 };
 
@@ -112,7 +113,7 @@ impl TableAllocator for PMTableAllocator {
             regions.push(MemoryRegion {
                 base: region.base,
                 size: aligned - region.base,
-                region_type: MemoryRegionType::PageTable,
+                region_type: region.region_type,
             });
         }
 
@@ -123,9 +124,11 @@ impl TableAllocator for PMTableAllocator {
             regions.push(MemoryRegion {
                 base: alloc_end,
                 size: region_end - alloc_end,
-                region_type: MemoryRegionType::PageTable,
+                region_type: region.region_type,
             });
         }
+
+        regions.compact();
 
         let ptr = NonNull::new(aligned as *mut TTable<TABLE_ENTRIES>).expect("null ptr");
         let ptr_ish = ptr.as_ptr() as *mut [u64; TABLE_ENTRIES];
@@ -145,7 +148,7 @@ impl TableAllocator for PMTableAllocator {
         regions.push(MemoryRegion {
             base: table.as_ptr() as usize,
             size: size_of::<TTable<TABLE_ENTRIES>>(),
-            region_type: crate::vm::MemoryRegionType::PageTable,
+            region_type: MemoryRegionType::PageTable,
         });
 
         regions.compact();

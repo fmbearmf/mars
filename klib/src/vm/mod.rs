@@ -140,6 +140,15 @@ impl MemoryRegion {
     pub fn is_normal(&self) -> bool {
         self.region_type == MemoryRegionType::Normal
     }
+
+    pub fn is_usable(&self) -> bool {
+        match self.region_type {
+            MemoryRegionType::Normal
+            | MemoryRegionType::BootloaderReclaim
+            | MemoryRegionType::FirmwareReclaim => true,
+            _ => false,
+        }
+    }
 }
 
 pub const fn phys_addr_to_dmap(phys_addr: u64) -> u64 {
