@@ -323,7 +323,7 @@ impl PageAllocator {
         mut page_index: usize,
         mut order: usize,
     ) {
-        let zone = &mut *zone_ptr;
+        let zone = unsafe { &mut *zone_ptr };
         while order < MAX_ORDER - 1 {
             // the magic buddy XOR
             let index = page_index ^ (1 << order);
@@ -332,43 +332,43 @@ impl PageAllocator {
                 break;
             }
 
-            let meta = zone.meta_array.add(index);
+            let meta = unsafe { zone.meta_array.add(index) };
 
-            if (*meta).is_free == 0 || (*meta).order != order as u32 {
+            if unsafe { (*meta).is_free == 0 } || unsafe { (*meta).order != order as u32 } {
                 break;
             }
 
-            let next = (*meta).next;
-            let prev = (*meta).prev;
+            let next = unsafe { (*meta).next };
+            let prev = unsafe { (*meta).prev };
 
             if !prev.is_null() {
-                (*prev).next = next;
+                unsafe { (*prev).next = next };
             } else {
                 zone.free_area[order] = next;
             }
 
             if !next.is_null() {
-                (*next).prev = prev;
+                unsafe { (*next).prev = prev };
             }
 
-            (*meta).is_free = 0;
-            (*meta).next = ptr::null_mut();
-            (*meta).prev = ptr::null_mut();
+            unsafe { (*meta).is_free = 0 };
+            unsafe { (*meta).next = ptr::null_mut() };
+            unsafe { (*meta).prev = ptr::null_mut() };
 
             // merge
             page_index = page_index & !(1 << order);
             order += 1;
         }
 
-        let meta = zone.meta_array.add(page_index);
-        (*meta).order = order as u32;
-        (*meta).is_free = 1;
+        let meta = unsafe { zone.meta_array.add(page_index) };
+        unsafe { (*meta).order = order as u32 };
+        unsafe { (*meta).is_free = 1 };
 
         let old_head = zone.free_area[order];
-        (*meta).next = old_head;
-        (*meta).prev = ptr::null_mut();
+        unsafe { (*meta).next = old_head };
+        unsafe { (*meta).prev = ptr::null_mut() };
         if !old_head.is_null() {
-            (*old_head).prev = meta;
+            unsafe { (*old_head).prev = meta };
         }
         zone.free_area[order] = meta;
     }

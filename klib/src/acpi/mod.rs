@@ -6,10 +6,6 @@ pub mod mcfg;
 pub mod rsdp;
 pub mod spcr;
 
-use core::{ffi::c_void, fmt, mem, ptr, slice, str::from_utf8};
-
-use uefi::{system, table::cfg::ACPI2_GUID};
-
 use getters::unaligned_getters;
 
 use fadt::Fadt;
@@ -65,7 +61,7 @@ impl SystemDescription {
                 "GTDT" => unsafe { desc.gtdt = Some(&*(header as *const _ as *const Gtdt)) },
                 "SPCR" => unsafe { desc.spcr = Some(&*(header as *const _ as *const Spcr)) },
                 "MCFG" => unsafe { desc.mcfg = Some(&*(header as *const _ as *const Mcfg)) },
-                "DBG2" => unsafe { desc.dbg2 = Some(header) },
+                "DBG2" => desc.dbg2 = Some(header),
                 _ => {}
             }
         }

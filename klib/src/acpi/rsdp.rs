@@ -1,7 +1,7 @@
-use core::{ffi::c_void, fmt, mem, ptr, slice, str::from_utf8};
+use core::{ffi::c_void, mem, ptr, slice};
 
 use getters::unaligned_getters;
-use uefi::{system, table::cfg::ACPI2_GUID};
+use uefi::{system, table::cfg::ConfigTableEntry};
 
 use super::{SdtHeader, checksum};
 
@@ -24,7 +24,7 @@ impl Rsdp {
     pub fn find() -> Result<&'static Rsdp, &'static str> {
         let acpi2_addr: *const c_void = system::with_config_table(|slice| {
             for i in slice {
-                if i.guid == ACPI2_GUID {
+                if i.guid == ConfigTableEntry::ACPI2_GUID {
                     return i.address;
                 }
             }

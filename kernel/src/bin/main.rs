@@ -12,9 +12,8 @@ use aarch64_cpu::{
 };
 use core::{
     arch::{asm, naked_asm},
-    cmp,
     fmt::Write,
-    mem::{self, MaybeUninit},
+    mem::MaybeUninit,
     ops::Add,
     panic::PanicInfo,
     ptr,
@@ -29,7 +28,7 @@ use klib::{
 };
 use protocol::BootInfo;
 use uefi::{
-    boot::{MemoryDescriptor, MemoryType, PAGE_SIZE as UEFI_PS},
+    boot::{MemoryType, PAGE_SIZE as UEFI_PS},
     mem::memory_map::{MemoryMap, MemoryMapMut, MemoryMapOwned},
 };
 

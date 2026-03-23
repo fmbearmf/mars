@@ -9,7 +9,7 @@ impl Arm64InterruptInterface {
     fn read_iar() -> u32 {
         let val: u32;
         unsafe {
-            asm!("mrs {}, ICC_IAR1_EL1", out(reg) val);
+            asm!("mrs {0:x}, ICC_IAR1_EL1", out(reg) val);
         }
         val
     }

@@ -3,7 +3,7 @@ use core::{cell::RefCell, ptr::NonNull};
 use super::vec::UefiVec;
 use aarch64_cpu::registers::TTBR0_EL1;
 use klib::{
-    vec::{DynVec, RawVec, StaticVec},
+    vec::{DynVec, RawVec},
     vm::{
         MemoryRegion, MemoryRegionType, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, TTableUEFI,
         map::TableAllocator,

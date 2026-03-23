@@ -8,13 +8,13 @@ use core::{
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::alloc::alloc;
 use klib::{
-    vec::{DynVec, StaticVec},
+    vec::DynVec,
     vm::{
         MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType, TABLE_ENTRIES, TTENATIVE, TTable,
         align_up, map::map_region,
     },
 };
-use log::{debug, error, info};
+use log::{debug, error};
 use uefi::{
     Status,
     boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE},

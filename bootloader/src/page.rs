@@ -1,16 +1,9 @@
-use core::ptr::NonNull;
-
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
-    registers::{CPACR_EL1, MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1},
+    registers::{CPACR_EL1, MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR1_EL1},
 };
-use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
-use klib::vm::{
-    PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, TTableUEFI,
-    map::TableAllocator,
-};
+use klib::vm::{TABLE_ENTRIES, TTable};
 use tock_registers::interfaces::*;
-use uefi::boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PS};
 
 pub fn cpu_init() {
     MAIR_EL1.modify(

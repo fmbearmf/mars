@@ -112,7 +112,7 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
         if int_id == 1023 {
             Ok(None)
         } else {
-            Ok(Some((int_id)))
+            Ok(Some(int_id))
         }
     }
 

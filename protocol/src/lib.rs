@@ -6,7 +6,7 @@ use klib::{
     vec::StaticVec,
     vm::{MemoryRegion, TABLE_ENTRIES, TTable},
 };
-use uefi::mem::memory_map::{MemoryMapIter, MemoryMapMeta, MemoryMapMut, MemoryMapOwned};
+use uefi::mem::memory_map::MemoryMapOwned;
 
 #[derive(Debug)]
 pub struct BootInfo {

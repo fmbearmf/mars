@@ -9,6 +9,7 @@ use crate::vm::{MemoryRegion, align_up};
 
 const PM_POOL_SIZE: usize = size_of::<MemoryRegion>() * 1024;
 
+#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct StaticVec<T> {
     ptr: NonNull<T>,

@@ -55,7 +55,7 @@ impl<'a> TableAllocator for KernelPTAllocator<'a> {
     fn free_table(&self, table: NonNull<TTable<TABLE_ENTRIES>>) {
         let addr = table.as_ptr() as usize;
 
-        if let Some(reg) = self.uefi_regions.borrow_mut().remove_containing(addr) {
+        if let Some(_reg) = self.uefi_regions.borrow_mut().remove_containing(addr) {
             return;
         }
 

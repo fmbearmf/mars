@@ -1,5 +1,3 @@
-use core::ptr;
-
 use super::{GenericAddress, header::SdtHeader};
 use getters::unaligned_getters;
 

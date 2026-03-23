@@ -1,4 +1,4 @@
-use core::{fmt, mem, ptr, slice, str::from_utf8};
+use core::{fmt, mem, slice, str::from_utf8};
 
 use super::checksum;
 use getters::unaligned_getters;

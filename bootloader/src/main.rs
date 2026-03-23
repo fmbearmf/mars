@@ -49,8 +49,6 @@ use crate::{
     vec::UefiVec,
 };
 
-use alloc::boxed::Box;
-
 const PAGE_SIZE: usize = 16384;
 const UEFI_PS: u64 = UEFI_PAGE_SIZE as u64;
 
@@ -101,7 +99,7 @@ bitflags::bitflags! {
     }
 }
 
-#[inline(always)]
+#[allow(dead_code)]
 fn busy_loop_ret() {
     loop {
         dsb(barrier::SY);
@@ -109,6 +107,7 @@ fn busy_loop_ret() {
     }
 }
 
+#[allow(dead_code)]
 fn busy_loop_noret() -> ! {
     loop {
         dsb(barrier::SY);
@@ -169,7 +168,7 @@ fn main() -> Status {
         }
     };
 
-    let mut kernel = fh.into_regular_file().unwrap();
+    let kernel = fh.into_regular_file().unwrap();
 
     let (entry_addr, base_phys, load_size) = match load_kernel(kernel, root_table, &mut kregions) {
         Ok(v) => v,

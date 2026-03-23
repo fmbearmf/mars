@@ -1,6 +1,5 @@
 use arm_pl011_uart::{LineConfig, PL011Registers, Uart, UniqueMmioPointer};
 use core::{fmt::Write, ptr::NonNull};
-use klib::vm::phys_addr_to_dmap;
 use spin::Mutex;
 
 //const UART_ADDRESS: *mut PL011Registers =

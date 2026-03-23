@@ -1,7 +1,7 @@
 use std::{
     env,
-    fs::{self, canonicalize},
-    path::{Path, PathBuf},
+    fs::{self},
+    path::PathBuf,
     process::Command,
 };
 

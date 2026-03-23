@@ -1,7 +1,10 @@
-use core::{intrinsics::copy_nonoverlapping, ptr::NonNull, slice::from_raw_parts_mut};
+use core::{
+    ptr::{NonNull, copy_nonoverlapping},
+    slice::from_raw_parts_mut,
+};
 
 use klib::{
-    vec::{DynVec, RawVec, StaticVec},
+    vec::{DynVec, RawVec},
     vm::MemoryRegion,
 };
 use uefi::boot::{self, MemoryType};
