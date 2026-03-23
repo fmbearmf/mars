@@ -1,6 +1,6 @@
 use core::{borrow::Borrow, fmt, ops::Deref};
 
-use aarch64_cpu::registers::{ESR_EL1, Readable};
+use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Readable};
 
 #[derive(Clone, Eq, PartialEq)]
 #[repr(C)]
@@ -78,8 +78,9 @@ impl Deref for RegisterFileRef<'_> {
 pub trait ExceptionHandler {
     extern "C" fn sync_current(register_file: RegisterFileRef) {
         panic!(
-            "Unexpected sync exception (ESR: {:#x}) from current EL: {:?}",
+            "Unexpected sync exception (ESR: {:#x}, FAR: {:#x}) from current EL: {:?}",
             ESR_EL1.get(),
+            FAR_EL1.get(),
             register_file
         );
     }

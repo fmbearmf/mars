@@ -2,7 +2,7 @@ use core::ptr::NonNull;
 
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 
-use crate::vm::{PAGE_MASK, PAGE_SHIFT, TTENATIVE};
+use crate::vm::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TTENATIVE};
 
 use super::{TABLE_ENTRIES, TTable};
 
@@ -25,6 +25,10 @@ pub fn map_region<A: TableAllocator>(
 ) {
     if va & PAGE_MASK != 0 || pa & PAGE_MASK != 0 || size & PAGE_MASK != 0 {
         panic!("addresses AND size must be page aligned");
+    }
+
+    if size < PAGE_SIZE {
+        panic!("can't map less than 1 page!");
     }
 
     //if va & L2_BLOCK_MASK == 0 && size & L2_BLOCK_MASK == 0 {

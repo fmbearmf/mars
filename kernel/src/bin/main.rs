@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(fn_traits)]
 
 mod earlyinit;
 
@@ -10,20 +11,26 @@ use aarch64_cpu::{
     },
     registers::{CPACR_EL1, DAIF, MPIDR_EL1, ReadWriteable, Readable, Writeable},
 };
+use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use core::{
     arch::{asm, naked_asm},
     fmt::Write,
     mem::MaybeUninit,
     ops::Add,
     panic::PanicInfo,
-    ptr,
+    ptr::{self, NonNull},
 };
 use klib::{
     exception::ExceptionHandler,
     vec::{DynVec, PMVec, RawVec, StaticVec},
     vm::{
-        MemoryRegion, MemoryRegionType, PAGE_SIZE,
-        page::{PageAllocator, table_allocator::KernelPTAllocator},
+        DMAP_START, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType, PAGE_SIZE, TABLE_ENTRIES,
+        TTable, align_down, align_up,
+        map::map_region,
+        page::{
+            PageAllocator,
+            table_allocator::{KernelPTAllocator, PMTableAllocator},
+        },
     },
 };
 use protocol::BootInfo;
@@ -127,9 +134,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     let mut total = 0usize;
     for entry in uefi_mmap.entries() {
         match entry.ty {
-            MemoryType::LOADER_CODE
-            | MemoryType::BOOT_SERVICES_DATA
-            | MemoryType::BOOT_SERVICES_CODE => {
+            _ => {
                 earlycon_writeln!(
                     "MemoryDescriptor {{ phys_start: {:#x}, size: {:#x}, ty: {:?} }}",
                     entry.phys_start,
@@ -146,7 +151,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     init_mmu(boot_info.kernel_load_physical_address, offset);
     earlycon_writeln!("hi");
 
-    arm_init(uefi_mmap, boot_info.kernel_regions);
+    arm_init(uefi_mmap, boot_info.kernel_regions, boot_info.root_pt);
 
     busy_loop()
 }
@@ -154,6 +159,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
 pub extern "C" fn arm_init(
     uefi_mmap: &mut MemoryMapOwned,
     memory_regions: StaticVec<MemoryRegion>,
+    mut root_pt: NonNull<TTable<TABLE_ENTRIES>>,
 ) {
     unsafe {
         asm!(
@@ -172,18 +178,18 @@ pub extern "C" fn arm_init(
     }
 
     for &region in uefi_mmap.entries() {
+        _ = pmvec.remove_containing(region.phys_start as usize);
         let region_type: MemoryRegionType = match region.ty {
-            MemoryType::LOADER_CODE => MemoryRegionType::BootloaderReclaim,
-            MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA => {
-                MemoryRegionType::FirmwareReclaim
-            }
             MemoryType::RUNTIME_SERVICES_CODE => MemoryRegionType::RtFirmwareCode,
             MemoryType::RUNTIME_SERVICES_DATA => MemoryRegionType::RtFirmwareData,
 
             MemoryType::MMIO | MemoryType::MMIO_PORT_SPACE => MemoryRegionType::Mmio,
-            MemoryType::CONVENTIONAL => MemoryRegionType::Normal,
+            MemoryType::CONVENTIONAL | MemoryType::BOOT_SERVICES_DATA => MemoryRegionType::Normal,
+            MemoryType::BOOT_SERVICES_CODE => MemoryRegionType::FirmwareReclaim,
+            MemoryType::LOADER_CODE => MemoryRegionType::FirmwareReclaim,
             MemoryType::ACPI_RECLAIM => MemoryRegionType::AcpiTables,
             MemoryType::ACPI_NON_VOLATILE => MemoryRegionType::AcpiNvs,
+            MemoryType::LOADER_DATA => continue,
             _ => {
                 earlycon_writeln!("unknown: {:?}", region);
                 MemoryRegionType::Unknown
@@ -196,31 +202,67 @@ pub extern "C" fn arm_init(
         });
     }
 
-    pmvec.compact();
-
     earlycon_writeln!("{:?}", pmvec);
 
-    let mut page_allocator = unsafe { PageAllocator::init(&[]) };
+    let mut pmvec_copy: PMVec<MemoryRegion> = PMVec::new();
+    pmvec_copy.extend_from_slice(pmvec.as_slice());
+    pmvec_copy.compact();
 
-    for &region in pmvec.as_slice() {
-        //if !is_dmap_address(region.base) {
-        //    continue;
-        //}
-        //if !region.is_normal() {
-        //    continue;
-        //};
-        //if region.size <= 2 * PAGE_SIZE {
-        //    continue;
-        //}
-        earlycon_writeln!(
-            "MemoryRegion {{ base: {:#x}, size: {:#x}, region_type: {:?} }}",
-            region.base,
-            region.size,
-            region.region_type
-        );
-        //page_allocator.add_range(region);
+    for &region in pmvec_copy.as_slice() {
+        earlycon_writeln!("    {:x?}", region);
     }
 
+    let static_vec = core::ops::Fn::call(&StaticVec::from_raw_parts, pmvec_copy.into_raw_parts());
+
+    for &region in static_vec.as_slice() {
+        if region.is_normal() {
+            continue;
+        }
+
+        _ = pmvec.remove_containing(region.base);
+    }
+    pmvec.compact();
+
+    let early_page_allocator = PMTableAllocator::new(pmvec);
+
+    {
+        let mut total = 0usize;
+        for &region in static_vec.as_slice() {
+            //if !region.is_normal() {
+            //    continue;
+            //};
+            if region.size < PAGE_SIZE {
+                continue;
+            }
+            earlycon_writeln!(
+                "MemoryRegion {{ base: {:#x}, size: {:#x}, region_type: {:?} }}",
+                region.base,
+                region.size,
+                region.region_type
+            );
+            let aligned_base = align_up(region.base, PAGE_SIZE);
+            unsafe {
+                map_region(
+                    root_pt.as_mut(),
+                    aligned_base,
+                    DMAP_START + aligned_base,
+                    align_down(region.size, PAGE_SIZE),
+                    AccessPermission::PrivilegedReadWrite,
+                    Shareability::InnerShareable,
+                    true,
+                    true,
+                    MAIR_NORMAL_INDEX,
+                    &early_page_allocator,
+                )
+            };
+            total += region.size;
+        }
+        earlycon_writeln!("mem size: {:#x} ({} B)", total, total);
+    }
+
+    earlycon_writeln!("ttbr1 pt: {:#x}", root_pt.as_ptr() as usize);
+
+    let page_allocator = unsafe { PageAllocator::init(&[]) };
     let pt_allocator = KernelPTAllocator::new(&page_allocator, memory_regions);
 
     let page = page_allocator.alloc_page();

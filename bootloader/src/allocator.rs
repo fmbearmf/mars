@@ -92,12 +92,6 @@ impl TableAllocator for UefiPTAllocator {
         let addr = table.as_ptr() as usize;
         const TOTAL_SIZE: usize = PAGES * UEFI_PS;
 
-        self.regions.borrow_mut().push(MemoryRegion {
-            base: addr,
-            size: TOTAL_SIZE,
-            region_type: MemoryRegionType::PageTable,
-        });
-
         let aligned = TTENATIVE::align_up(addr as u64) as *mut TTable<TABLE_ENTRIES>;
         let mut table_aligned = NonNull::new(aligned).unwrap();
 

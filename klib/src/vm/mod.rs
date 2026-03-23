@@ -138,12 +138,7 @@ impl MemoryRegion {
     }
 
     pub fn is_normal(&self) -> bool {
-        match self.region_type {
-            MemoryRegionType::BootloaderReclaim => true,
-            MemoryRegionType::FirmwareReclaim => true,
-            MemoryRegionType::Normal => true,
-            _ => false,
-        }
+        self.region_type == MemoryRegionType::Normal
     }
 }
 

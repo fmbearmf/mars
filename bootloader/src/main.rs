@@ -452,7 +452,7 @@ fn main() -> Status {
 
     let mut boot_info = MaybeUninit::<BootInfo>::uninit();
 
-    kregions.extend(PT_ALLOCATOR.take_kernel_regions());
+    //kregions.extend(PT_ALLOCATOR.take_kernel_regions());
     kregions.compact();
 
     let mem_map_final = unsafe { boot::exit_boot_services(None) };
