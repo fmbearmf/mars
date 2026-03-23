@@ -26,7 +26,7 @@ impl<T> UefiVec<T> {
         let new_cap = if self.capacity == 0 {
             4
         } else {
-            self.capacity * 2
+            self.capacity.checked_mul(2).expect("capacity OOB")
         };
         let new_size = new_cap * size_of::<T>();
 

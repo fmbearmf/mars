@@ -309,19 +309,19 @@ fn main() -> Status {
         }
 
         for entry in mem_map.entries() {
-            let phys_start_unaligned = PT_ALLOCATOR.vaddr_to_paddr_uefi(entry.phys_start as usize);
-            let phys_start = align_up(phys_start_unaligned, PAGE_SIZE);
+            let phys_start_unaligned = entry.phys_start as usize;
+            let phys_start = align_down(phys_start_unaligned, PAGE_SIZE);
 
             let size_unaligned = (entry.page_count * UEFI_PS) as usize;
             let size = align_down(size_unaligned, PAGE_SIZE);
-            let vaddr = TTENATIVE::align_up((DMAP_START + phys_start) as u64) as usize;
+            let vaddr = align_up(DMAP_START + phys_start, PAGE_SIZE);
 
-            info!(
-                "start: {:#x}, start_align: {:#x}, size: {:#x}, size_align: {:#x}",
-                phys_start_unaligned, phys_start, size_unaligned, size
-            );
+            //info!(
+            //    "start: {:#x}, start_align: {:#x}, size: {:#x}, size_align: {:#x}",
+            //    phys_start_unaligned, phys_start, size_unaligned, size
+            //);
 
-            if size == 0 || phys_start + size > phys_start_unaligned + size_unaligned {
+            if size < PAGE_SIZE || phys_start + size > phys_start_unaligned + size_unaligned {
                 continue;
             }
 
@@ -334,9 +334,7 @@ fn main() -> Status {
 
             let region_type = match entry.ty {
                 MemoryType::LOADER_CODE => MemoryRegionType::BootloaderReclaim,
-                MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA => {
-                    MemoryRegionType::FirmwareReclaim
-                }
+                MemoryType::BOOT_SERVICES_CODE => MemoryRegionType::FirmwareReclaim,
                 MemoryType::RUNTIME_SERVICES_CODE => MemoryRegionType::RtFirmwareCode,
                 MemoryType::MMIO | MemoryType::MMIO_PORT_SPACE => MemoryRegionType::Mmio,
                 _ => MemoryRegionType::Unknown,
@@ -346,10 +344,9 @@ fn main() -> Status {
                 // RW no exec
                 //MemoryType::CONVENTIONAL
                 //MemoryType::LOADER_DATA |
-                // bootloader code is later reclaimed
                 | MemoryType::LOADER_CODE
-                | MemoryType::BOOT_SERVICES_DATA
-                | MemoryType::BOOT_SERVICES_CODE
+                //| MemoryType::BOOT_SERVICES_DATA
+                //| MemoryType::BOOT_SERVICES_CODE
                 //| MemoryType::RUNTIME_SERVICES_DATA
                 => {
                     info!(
@@ -370,27 +367,27 @@ fn main() -> Status {
                         MAIR_NORMAL_INDEX,
                         &PT_ALLOCATOR,
                     );
-                    kregions.push(MemoryRegion { base: vaddr, size, region_type });
+                    kregions.push(MemoryRegion { base: phys_start, size, region_type });
                 }
 
                 // RO exec
                 //MemoryType::LOADER_CODE |
                 //MemoryType::BOOT_SERVICES_CODE |
-                MemoryType::RUNTIME_SERVICES_CODE => {
-                    map_region(
-                        unsafe { root_table.as_mut() },
-                        phys_start,
-                        vaddr,
-                        size,
-                        AccessPermission::PrivilegedReadOnly,
-                        Shareability::InnerShareable,
-                        true,
-                        false,
-                        MAIR_NORMAL_INDEX,
-                        &PT_ALLOCATOR,
-                    );
-                    kregions.push(MemoryRegion { base: vaddr, size, region_type });
-                }
+                //MemoryType::RUNTIME_SERVICES_CODE => {
+                //    map_region(
+                //        unsafe { root_table.as_mut() },
+                //        phys_start,
+                //        vaddr,
+                //        size,
+                //        AccessPermission::PrivilegedReadOnly,
+                //        Shareability::InnerShareable,
+                //        true,
+                //        false,
+                //        MAIR_NORMAL_INDEX,
+                //        &PT_ALLOCATOR,
+                //    );
+                //    kregions.push(MemoryRegion { base: vaddr, size, region_type });
+                //}
 
                 // RO no exec
                 MemoryType::ACPI_RECLAIM => {
@@ -438,7 +435,7 @@ fn main() -> Status {
                         MAIR_DEVICE_INDEX,
                         &PT_ALLOCATOR,
                     );
-                    kregions.push(MemoryRegion { base: vaddr, size, region_type });
+                    kregions.push(MemoryRegion { base: phys_start, size, region_type });
                 }
 
                 _ => {

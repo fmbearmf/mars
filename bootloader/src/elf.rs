@@ -278,7 +278,7 @@ pub fn load_kernel(
         };
 
         kregions.push(MemoryRegion {
-            base: vaddr as usize,
+            base: PT_ALLOCATOR.vaddr_to_paddr_uefi(dst as usize),
             size: pages as usize * PAGE_SIZE,
             region_type,
         });

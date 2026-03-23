@@ -17,14 +17,13 @@ use core::{
     mem::{self, MaybeUninit},
     ops::Add,
     panic::PanicInfo,
-    ptr, slice,
+    ptr,
 };
 use klib::{
     exception::ExceptionHandler,
-    vec::{RawVec, StaticVec},
+    vec::{DynVec, PMVec, RawVec, StaticVec},
     vm::{
-        DMAP_START, MemoryRegion, PAGE_SIZE, align_down, align_up,
-        map::TableAllocator,
+        MemoryRegion, MemoryRegionType, PAGE_SIZE,
         page::{PageAllocator, table_allocator::KernelPTAllocator},
     },
 };
@@ -53,12 +52,14 @@ fn panic(info: &PanicInfo) -> ! {
     busy_loop();
 }
 
+#[allow(dead_code)]
 fn busy_loop() -> ! {
     loop {
         wfe();
     }
 }
 
+#[allow(dead_code)]
 fn busy_loop_ret() {
     loop {
         wfe();
@@ -70,6 +71,8 @@ unsafe extern "C" {
 }
 
 const STACK_SIZE: usize = 128 * 1024;
+
+#[allow(dead_code)]
 #[repr(align(16))]
 struct KStack([u8; STACK_SIZE]);
 
@@ -162,28 +165,73 @@ pub extern "C" fn arm_init(
         );
     }
 
+    let mut pmvec: PMVec<MemoryRegion> = PMVec::new();
+
+    {
+        let slice = memory_regions.as_slice();
+        pmvec.extend_from_slice(slice);
+    }
+
+    for &region in uefi_mmap.entries() {
+        let region_type: MemoryRegionType = match region.ty {
+            MemoryType::LOADER_CODE => MemoryRegionType::BootloaderReclaim,
+            MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA => {
+                MemoryRegionType::FirmwareReclaim
+            }
+            MemoryType::RUNTIME_SERVICES_CODE => MemoryRegionType::RtFirmwareCode,
+            MemoryType::RUNTIME_SERVICES_DATA => MemoryRegionType::RtFirmwareData,
+
+            MemoryType::MMIO | MemoryType::MMIO_PORT_SPACE => MemoryRegionType::Mmio,
+            MemoryType::CONVENTIONAL => MemoryRegionType::Normal,
+            MemoryType::ACPI_RECLAIM => MemoryRegionType::AcpiTables,
+            MemoryType::ACPI_NON_VOLATILE => MemoryRegionType::AcpiNvs,
+            _ => {
+                earlycon_writeln!("unknown: {:?}", region);
+                MemoryRegionType::Unknown
+            }
+        };
+        pmvec.push(MemoryRegion {
+            base: region.phys_start as usize,
+            size: (region.page_count as usize * UEFI_PS),
+            region_type,
+        });
+    }
+
+    pmvec.compact();
+
+    earlycon_writeln!("{:?}", pmvec);
+
     let mut page_allocator = unsafe { PageAllocator::init(&[]) };
 
-    for &region in memory_regions.as_slice() {
-        if !region.is_normal() {
-            continue;
-        };
-        if region.size <= 2 * PAGE_SIZE {
-            continue;
-        }
+    for &region in pmvec.as_slice() {
+        //if !is_dmap_address(region.base) {
+        //    continue;
+        //}
+        //if !region.is_normal() {
+        //    continue;
+        //};
+        //if region.size <= 2 * PAGE_SIZE {
+        //    continue;
+        //}
         earlycon_writeln!(
             "MemoryRegion {{ base: {:#x}, size: {:#x}, region_type: {:?} }}",
             region.base,
             region.size,
             region.region_type
         );
-        page_allocator.add_range(region);
+        //page_allocator.add_range(region);
     }
 
     let pt_allocator = KernelPTAllocator::new(&page_allocator, memory_regions);
 
-    let page = page_allocator.alloc_page() as usize;
-    earlycon_writeln!("page start: {:#x}, head: {:#x}", page, page.add(PAGE_SIZE));
+    let page = page_allocator.alloc_page();
+    assert!(!page.is_null());
+
+    earlycon_writeln!(
+        "page start: {:#x}, head: {:#x}",
+        page as usize,
+        (page as usize).add(PAGE_SIZE)
+    );
 
     panic!("End.");
 }

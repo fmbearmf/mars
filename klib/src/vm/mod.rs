@@ -112,6 +112,7 @@ impl MemoryRegionType {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct MemoryRegion {
     pub base: usize,
@@ -156,4 +157,9 @@ pub const fn bsize_for_level(level: usize) -> usize {
     let exp = 3usize.saturating_sub(level);
     let fac = TABLE_ENTRIES.pow(exp as u32);
     PAGE_SIZE * fac
+}
+
+#[inline]
+pub const fn is_dmap_address(addr: usize) -> bool {
+    ((addr >> 48) & 0x1) == 0x1
 }

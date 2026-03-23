@@ -30,6 +30,7 @@ struct VMZone {
     next: *mut VMZone,
 }
 
+#[repr(align(64))]
 #[derive(Debug)]
 struct TicketLock {
     ticket: AtomicUsize,
@@ -50,12 +51,10 @@ impl TicketLock {
         while self.users.load(Ordering::Acquire) != ticket {
             core::hint::spin_loop();
         }
-        core::sync::atomic::fence(Ordering::SeqCst);
     }
 
     #[inline]
     fn unlock(&self) {
-        core::sync::atomic::fence(Ordering::SeqCst);
         self.users.fetch_add(1, Ordering::Release);
     }
 }
