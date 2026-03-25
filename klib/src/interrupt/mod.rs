@@ -4,7 +4,6 @@ use tock_registers::{
     registers::{ReadOnly, ReadWrite, WriteOnly},
 };
 
-pub mod cpu_interface;
 pub mod gicv3;
 
 pub trait InterruptController {

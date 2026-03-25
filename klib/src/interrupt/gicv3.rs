@@ -1,9 +1,13 @@
+use core::sync::atomic::{AtomicU8, Ordering};
+
 use aarch64_cpu::registers::{ReadWriteable, Readable, Writeable};
 
 use super::{
     GICD_CTLR, GICR_WAKER, GicdRegisters, GicrRdRegisters, GicrSgiRegisters, InterruptController,
     InterruptInterface,
 };
+
+static INIT_STATE: AtomicU8 = AtomicU8::new(0);
 
 pub struct GicV3<'a, I: InterruptInterface> {
     distributor: &'a GicdRegisters,
@@ -32,26 +36,37 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
     type Error = GicError;
 
     fn init(&mut self) -> Result<(), Self::Error> {
-        self.distributor
-            .CTLR
-            .modify(GICD_CTLR::ENABLE_G1A::Disable + GICD_CTLR::ENABLE_G1::Disable);
+        match INIT_STATE.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed) {
+            Ok(_) => {
+                self.distributor
+                    .CTLR
+                    .modify(GICD_CTLR::ENABLE_G1A::Disable + GICD_CTLR::ENABLE_G1::Disable);
 
-        self.distributor.CTLR.modify(GICD_CTLR::ARE_NS::Enable);
+                self.distributor.CTLR.modify(GICD_CTLR::ARE_NS::Enable);
 
-        // shared peripheral interrupts
-        for i in 1..32 {
-            self.distributor.ICENABLER[i].set(0xFFFF_FFFF); // disable
-            self.distributor.ICPENDR[i].set(0xFFFF_FFFF); // clear pending
-            self.distributor.IGROUPR[i].set(0xFFFF_FFFF); // group 1 (non-secure)
+                // shared peripheral interrupts
+                for i in 1..32 {
+                    self.distributor.ICENABLER[i].set(0xFFFF_FFFF); // disable
+                    self.distributor.ICPENDR[i].set(0xFFFF_FFFF); // clear pending
+                    self.distributor.IGROUPR[i].set(0xFFFF_FFFF); // group 1 (non-secure)
+                }
+
+                for i in 32..1020 {
+                    self.distributor.IPRIORITYR[i].set(0xA0); // default priority
+                }
+
+                self.distributor
+                    .CTLR
+                    .modify(GICD_CTLR::ENABLE_G1A::Enable + GICD_CTLR::ENABLE_G1::Enable);
+
+                INIT_STATE.store(2, Ordering::Release);
+            }
+            Err(_) => {
+                while INIT_STATE.load(Ordering::Acquire) != 2 {
+                    core::hint::spin_loop();
+                }
+            }
         }
-
-        for i in 32..1020 {
-            self.distributor.IPRIORITYR[i].set(0xA0); // default priority
-        }
-
-        self.distributor
-            .CTLR
-            .modify(GICD_CTLR::ENABLE_G1A::Enable + GICD_CTLR::ENABLE_G1::Enable);
 
         self.redistributor_rd
             .WAKER

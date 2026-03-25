@@ -115,4 +115,12 @@ impl TableAllocator for UefiPTAllocator {
 
         _ = unsafe { boot::free_pages(base_ptr, pages) };
     }
+
+    fn phys_to_virt(&self, phys: u64) -> *mut TTable<TABLE_ENTRIES> {
+        phys as *mut TTable<TABLE_ENTRIES>
+    }
+
+    fn virt_to_phys(&self, virt: *mut TTable<TABLE_ENTRIES>) -> u64 {
+        virt as u64
+    }
 }

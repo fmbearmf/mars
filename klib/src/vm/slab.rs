@@ -5,12 +5,12 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
-use crate::vm::{PAGE_MASK, align_down, align_up};
-
-use super::{
-    MemoryRegion, PAGE_SIZE,
-    page::{PageAllocator, TicketLock},
+use crate::{
+    sync::TicketLock,
+    vm::{PAGE_MASK, align_down, align_up},
 };
+
+use super::{MemoryRegion, PAGE_SIZE, page::PageAllocator};
 
 const MIN_OBJ_SIZE: usize = mem::size_of::<usize>();
 
@@ -140,7 +140,7 @@ impl SlabAllocator {
                 let header = unsafe { &mut *cache.plist };
                 let obj = header.free_list;
                 header.free_list = unsafe { *(obj as *mut *mut u8) };
-                header.free_count.saturating_sub(1);
+                header.free_count -= 1;
 
                 if header.free_count == 0 {
                     cache.plist = header.next;
@@ -209,7 +209,10 @@ impl SlabAllocator {
         } else {
             let total_size = layout.size().max(layout.align());
             let req = align_up(total_size, PAGE_SIZE);
-            let order = req.next_power_of_two().trailing_zeros() as usize;
+
+            let req_pages = req / PAGE_SIZE;
+
+            let order = req_pages.next_power_of_two().trailing_zeros() as usize;
 
             if layout.align() <= PAGE_SIZE {
                 page_alloc.alloc_pages(order)
@@ -220,7 +223,7 @@ impl SlabAllocator {
                     return ptr::null_mut();
                 };
 
-                let aligned = align_up(ptr as usize, align);
+                let aligned = align_up(ptr as usize + mem::size_of::<usize>(), align);
                 unsafe { (aligned as *mut usize).sub(1).write(ptr as usize) };
                 aligned as *mut u8
             }

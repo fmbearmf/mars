@@ -38,7 +38,7 @@ pub struct SystemDescription {
 }
 
 impl SystemDescription {
-    pub fn parse(xsdt: &SdtHeader) -> Self {
+    pub fn parse(xsdt: &SdtHeader, kernel: bool) -> Self {
         let mut desc = SystemDescription {
             fadt: None,
             madt: None,
@@ -49,7 +49,7 @@ impl SystemDescription {
             dsdt_addr: 0,
         };
 
-        for header in XsdtIter::new(xsdt) {
+        for header in XsdtIter::new(xsdt, kernel) {
             let sig = header.signature();
             match sig {
                 "FACP" => unsafe {

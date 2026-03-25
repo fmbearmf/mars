@@ -152,7 +152,16 @@ impl MemoryRegion {
 }
 
 pub const fn phys_addr_to_dmap(phys_addr: u64) -> u64 {
+    if is_kernel_address(phys_addr as usize) {
+        return phys_addr;
+    }
     DMAP_START as u64 + phys_addr
+}
+
+pub const fn dmap_addr_to_phys(dmap_addr: u64) -> u64 {
+    dmap_addr
+        .checked_sub(DMAP_START as u64)
+        .unwrap_or(dmap_addr)
 }
 
 #[inline]
@@ -163,6 +172,6 @@ pub const fn bsize_for_level(level: usize) -> usize {
 }
 
 #[inline]
-pub const fn is_dmap_address(addr: usize) -> bool {
+pub const fn is_kernel_address(addr: usize) -> bool {
     ((addr >> 48) & 0x1) == 0x1
 }

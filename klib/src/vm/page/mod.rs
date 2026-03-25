@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
-use crate::vm::{MemoryRegion, PAGE_MASK, PAGE_SIZE, align_up};
+use super::{super::sync::TicketLock, MemoryRegion, PAGE_MASK, PAGE_SIZE, align_up};
 use aarch64_cpu::asm::barrier;
 
 pub mod table_allocator;
@@ -28,35 +28,6 @@ struct VMZone {
     total_pages: usize,
     free_area: [*mut VMPageMeta; MAX_ORDER],
     next: *mut VMZone,
-}
-
-#[repr(align(64))]
-#[derive(Debug)]
-pub struct TicketLock {
-    ticket: AtomicUsize,
-    users: AtomicUsize,
-}
-
-impl TicketLock {
-    pub const fn new() -> Self {
-        Self {
-            ticket: AtomicUsize::new(0),
-            users: AtomicUsize::new(0),
-        }
-    }
-
-    #[inline]
-    pub fn lock(&self) {
-        let ticket = self.ticket.fetch_add(1, Ordering::Relaxed);
-        while self.users.load(Ordering::Acquire) != ticket {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[inline]
-    pub fn unlock(&self) {
-        self.users.fetch_add(1, Ordering::Release);
-    }
 }
 
 #[repr(C)]

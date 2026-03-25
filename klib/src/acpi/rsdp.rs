@@ -3,6 +3,8 @@ use core::{ffi::c_void, mem, ptr, slice};
 use getters::unaligned_getters;
 use uefi::{system, table::cfg::ConfigTableEntry};
 
+use crate::vm::{is_kernel_address, phys_addr_to_dmap};
+
 use super::{SdtHeader, checksum};
 
 #[repr(C, packed)]
@@ -61,8 +63,12 @@ impl Rsdp {
         Ok(rsdp)
     }
 
-    pub fn xsdt(&self) -> Result<&'static SdtHeader, &'static str> {
-        let xsdt_addr = self.xsdt_addr();
+    pub fn xsdt(&self, kernel: bool) -> Result<&'static SdtHeader, &'static str> {
+        let xsdt_addr = if kernel {
+            phys_addr_to_dmap(self.xsdt_addr())
+        } else {
+            self.xsdt_addr()
+        };
 
         if (xsdt_addr as *const ()).is_null() {
             return Err("xsdt addr null");
@@ -89,10 +95,11 @@ pub struct XsdtIter {
     base: *const u8,
     count: usize,
     curr: usize,
+    kernel: bool,
 }
 
 impl XsdtIter {
-    pub fn new(xsdt: &SdtHeader) -> Self {
+    pub fn new(xsdt: &SdtHeader, kernel: bool) -> Self {
         let len = xsdt.len() as usize;
         let header_sz = mem::size_of::<SdtHeader>();
 
@@ -101,6 +108,7 @@ impl XsdtIter {
                 base: ptr::null(),
                 count: 0,
                 curr: 0,
+                kernel,
             };
         }
 
@@ -115,6 +123,7 @@ impl XsdtIter {
             base,
             count,
             curr: 0,
+            kernel,
         }
     }
 }
@@ -136,7 +145,46 @@ impl Iterator for XsdtIter {
             return self.next();
         }
 
-        let header = unsafe { &*(table_addr as *const SdtHeader) };
+        let mut header = unsafe { &*(table_addr as *const SdtHeader) };
+        if self.kernel {
+            header =
+                unsafe { &*(phys_addr_to_dmap(header as *const _ as u64) as *const SdtHeader) };
+        }
         Some(header)
     }
+}
+
+pub fn find_rsdp_in_slice(slice: &[u8]) -> Option<&Rsdp> {
+    const SIG: &[u8; 8] = b"RSD PTR ";
+
+    // packed struct has no alignment requirements, therefore `STEP` = 1
+    const STEP: usize = align_of::<Rsdp>();
+
+    let mut i = 0;
+    while i + size_of::<Rsdp>() <= slice.len() {
+        let candidate = &slice[i..];
+
+        if &candidate[..8] == SIG {
+            let rsdp = unsafe { &*(candidate.as_ptr() as *const Rsdp) };
+
+            if checksum(&candidate[..20]) != 0 {
+                i += STEP;
+                continue;
+            }
+
+            if rsdp.rev() >= 2 {
+                let len = rsdp.len() as usize;
+                if i + len > slice.len() || checksum(&candidate[..len]) != 0 {
+                    i += STEP;
+                    continue;
+                }
+            }
+
+            return Some(rsdp);
+        }
+
+        i += STEP;
+    }
+
+    None
 }

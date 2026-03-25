@@ -10,6 +10,7 @@ pub static EARLYCON: Mutex<Option<EarlyCon>> = Mutex::new(None);
 #[macro_export]
 macro_rules! earlycon_write {
     ($($arg:tt)*) => {{
+        use core::fmt::Write;
         if let Some(uart) = crate::earlyinit::earlycon::EARLYCON.lock().as_mut() {
             let _ = core::write!(uart.uart, $($arg)*);
         }
@@ -19,6 +20,7 @@ macro_rules! earlycon_write {
 #[macro_export]
 macro_rules! earlycon_writeln {
     ($($arg:tt)*) => {{
+        use core::fmt::Write;
         if let Some(uart) = crate::earlyinit::earlycon::EARLYCON.lock().as_mut() {
             let _ = core::writeln!(uart.uart, $($arg)*);
         }

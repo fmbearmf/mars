@@ -1,4 +1,6 @@
 #![no_std]
+#![feature(const_option_ops)]
+#![feature(const_trait_impl)]
 
 use core::{
     fmt::{self, Write},
@@ -6,9 +8,12 @@ use core::{
 };
 
 pub mod acpi;
-pub mod cell;
+pub mod cpu_interface;
 pub mod exception;
 pub mod interrupt;
+pub mod smccc;
+pub mod sync;
+pub mod vcpu;
 pub mod vec;
 pub mod vm;
 

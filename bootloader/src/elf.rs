@@ -296,7 +296,7 @@ pub fn load_kernel(
     let entry_offset = entry_vaddr - min_vaddr;
 
     debug!(
-        "entry at physical {:#x} virt {:#x} (offset {:#x})",
+        "entrypoint at physical {:#x} virt {:#x} (offset {:#x})",
         base_phys + entry_offset as u64,
         entry_vaddr,
         entry_offset

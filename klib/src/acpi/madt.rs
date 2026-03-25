@@ -1,4 +1,4 @@
-use core::{ptr, slice};
+use core::{ptr, slice, u32, u64};
 
 use super::{SystemDescription, header::SdtHeader};
 use getters::unaligned_getters;
@@ -115,6 +115,26 @@ impl Madt {
             let start = self.header.data_ptr().add(8);
             let end = (self as *const _ as *const u8).add(self.header.len() as usize);
             MadtIter { ptr: start, end }
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+pub struct CpuInfo {
+    pub acpi_cpu_uid: u32,
+    pub mpidr: u64,
+    pub available: bool,
+    // idk
+    //pub efficiency_class: u8,
+}
+
+impl CpuInfo {
+    pub const fn new() -> Self {
+        Self {
+            acpi_cpu_uid: u32::MAX,
+            mpidr: u64::MAX,
+            available: false,
+            //efficiency_class: 0,
         }
     }
 }

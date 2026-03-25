@@ -2,13 +2,18 @@ use core::ptr::NonNull;
 
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 
-use crate::vm::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TTENATIVE};
+use crate::vm::{
+    PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TTENATIVE, dmap_addr_to_phys, phys_addr_to_dmap,
+};
 
 use super::{TABLE_ENTRIES, TTable};
 
 pub trait TableAllocator {
     fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>>;
     fn free_table(&self, table: NonNull<TTable<TABLE_ENTRIES>>);
+
+    fn phys_to_virt(&self, phys: u64) -> *mut TTable<TABLE_ENTRIES>;
+    fn virt_to_phys(&self, virt: *mut TTable<TABLE_ENTRIES>) -> u64;
 }
 
 pub fn map_region<A: TableAllocator>(
@@ -90,14 +95,15 @@ fn map_l2_block<A: TableAllocator>(
     let l0_entry = &mut (root.entries[i0]);
     let l1_table = if l0_entry.address() != 0 && l0_entry.is_table() {
         let l1_pa = l0_entry.address();
-        let mut z = unsafe { NonNull::new_unchecked(l1_pa as *mut _) };
+        let l1_va = allocator.phys_to_virt(l1_pa);
+        let mut z = unsafe { NonNull::new_unchecked(l1_va as *mut _) };
         unsafe { z.as_mut() }
     } else {
         let mut table = allocator.alloc_table();
 
         l0_entry.set_is_valid(true);
         l0_entry.set_is_table();
-        l0_entry.set_address(table.as_ptr() as u64);
+        l0_entry.set_address(dmap_addr_to_phys(table.as_ptr() as u64));
 
         unsafe { table.as_mut() }
     };
@@ -105,14 +111,15 @@ fn map_l2_block<A: TableAllocator>(
     let l1_entry = &mut (l1_table.entries[i1]);
     let l2_table = if l1_entry.address() != 0 && l1_entry.is_table() {
         let l2_pa = l1_entry.address();
-        let mut z = unsafe { NonNull::new_unchecked(l2_pa as *mut _) };
+        let l2_va = allocator.phys_to_virt(l2_pa);
+        let mut z = unsafe { NonNull::new_unchecked(l2_va as *mut _) };
         unsafe { z.as_mut() }
     } else {
         let mut table = allocator.alloc_table();
 
         l1_entry.set_is_valid(true);
         l1_entry.set_is_table();
-        l1_entry.set_address(table.as_ptr() as u64);
+        l1_entry.set_address(dmap_addr_to_phys(table.as_ptr() as u64));
 
         unsafe { table.as_mut() }
     };
@@ -121,16 +128,17 @@ fn map_l2_block<A: TableAllocator>(
 
     if l2_entry.is_valid() && l2_entry.is_table() {
         let child_pa = l2_entry.address();
+        let child_va = allocator.phys_to_virt(child_pa);
         if child_pa != 0 {
             unsafe {
-                let child_ptr = NonNull::new_unchecked(child_pa as *mut TTable<TABLE_ENTRIES>);
+                let child_ptr = NonNull::new_unchecked(child_va as *mut TTable<TABLE_ENTRIES>);
             }
         }
     }
 
     l2_entry.set_is_valid(true);
     l2_entry.set_is_block();
-    l2_entry.set_address(pa as u64);
+    l2_entry.set_address(allocator.virt_to_phys(pa as *mut TTable<TABLE_ENTRIES>));
     l2_entry.set_access();
     l2_entry.set_access_permission(access);
     l2_entry.set_shareability(share);
@@ -150,7 +158,8 @@ fn unmap_l2_block<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize
     }
 
     let l1_pa = l0_entry.address();
-    let mut l1_table_ptr = unsafe { NonNull::new_unchecked(l1_pa as *mut TTable<TABLE_ENTRIES>) };
+    let l1_va = allocator.phys_to_virt(l1_pa);
+    let mut l1_table_ptr = unsafe { NonNull::new_unchecked(l1_va as *mut TTable<TABLE_ENTRIES>) };
     let l1_table = unsafe { l1_table_ptr.as_mut() };
     let l1_entry = &mut (l1_table.entries[i1]);
 
@@ -159,7 +168,8 @@ fn unmap_l2_block<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize
     }
 
     let l2_pa = l1_entry.address();
-    let mut l2_table_ptr = unsafe { NonNull::new_unchecked(l2_pa as *mut TTable<TABLE_ENTRIES>) };
+    let l2_va = allocator.phys_to_virt(l2_pa);
+    let mut l2_table_ptr = unsafe { NonNull::new_unchecked(l2_va as *mut TTable<TABLE_ENTRIES>) };
     let l2_table = unsafe { l2_table_ptr.as_mut() };
     let l2_entry = &mut (l2_table.entries[i2]);
 
@@ -204,14 +214,15 @@ fn map_page<A: TableAllocator>(
 
     let l1_table = if l0_entry.address() != 0 && l0_entry.is_table() {
         let l1_pa = l0_entry.address();
-        let mut z = unsafe { NonNull::new_unchecked(l1_pa as *mut _) };
+        let l1_va = allocator.phys_to_virt(l1_pa);
+        let mut z = unsafe { NonNull::new_unchecked(l1_va as *mut _) };
         unsafe { z.as_mut() }
     } else {
         let mut table = allocator.alloc_table();
 
         l0_entry.set_is_valid(true);
         l0_entry.set_is_table();
-        l0_entry.set_address(table.as_ptr() as u64);
+        l0_entry.set_address(dmap_addr_to_phys(table.as_ptr() as u64));
 
         unsafe { table.as_mut() }
     };
@@ -220,14 +231,15 @@ fn map_page<A: TableAllocator>(
 
     let l2_table = if l1_entry.address() != 0 && l1_entry.is_table() {
         let l2_pa = l1_entry.address();
-        let mut z = unsafe { NonNull::new_unchecked(l2_pa as *mut _) };
+        let l2_va = allocator.phys_to_virt(l2_pa);
+        let mut z = unsafe { NonNull::new_unchecked(l2_va as *mut _) };
         unsafe { z.as_mut() }
     } else {
         let mut table = allocator.alloc_table();
 
         l1_entry.set_is_valid(true);
         l1_entry.set_is_table();
-        l1_entry.set_address(table.as_ptr() as u64);
+        l1_entry.set_address(allocator.virt_to_phys(table.as_ptr()));
 
         unsafe { table.as_mut() }
     };
@@ -235,9 +247,10 @@ fn map_page<A: TableAllocator>(
     let l2_entry = &mut (l2_table.entries[i2]);
 
     let l3_table = if l2_entry.is_valid() {
-        let l3_pa = l2_entry.address() as *const TTable<TABLE_ENTRIES>;
+        let l3_pa = l2_entry.address();
+        let l3_va = allocator.phys_to_virt(l3_pa);
         let mut table: NonNull<TTable<TABLE_ENTRIES>> =
-            unsafe { NonNull::new_unchecked(l3_pa as *mut _) };
+            unsafe { NonNull::new_unchecked(l3_va as *mut _) };
 
         unsafe { table.as_mut() }
     } else {
@@ -245,7 +258,7 @@ fn map_page<A: TableAllocator>(
 
         l2_entry.set_is_valid(true);
         l2_entry.set_is_table();
-        l2_entry.set_address(table.as_ptr() as u64);
+        l2_entry.set_address(allocator.virt_to_phys(table.as_ptr()));
 
         unsafe { table.as_mut() }
     };
@@ -256,7 +269,7 @@ fn map_page<A: TableAllocator>(
     // the block/table bit acts counterintuitively at L3.
     // an L3 PTE must be marked as a table for the MMU to treat it as a PTE
     l3_entry.set_is_table();
-    l3_entry.set_address(pa as u64);
+    l3_entry.set_address(allocator.virt_to_phys(pa as *mut TTable<TABLE_ENTRIES>));
     l3_entry.set_access();
     l3_entry.set_access_permission(access);
     l3_entry.set_shareability(share);
@@ -278,7 +291,8 @@ fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, al
     }
 
     let l1_pa = l0_entry.address();
-    let mut l1_table_ptr = unsafe { NonNull::new_unchecked(l1_pa as *mut TTable<TABLE_ENTRIES>) };
+    let l1_va = allocator.phys_to_virt(l1_pa);
+    let mut l1_table_ptr = unsafe { NonNull::new_unchecked(l1_va as *mut TTable<TABLE_ENTRIES>) };
     let l1_table = unsafe { l1_table_ptr.as_mut() };
     let l1_entry = &mut (l1_table.entries[i1]);
 
@@ -287,7 +301,8 @@ fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, al
     }
 
     let l2_pa = l1_entry.address();
-    let mut l2_table_ptr = unsafe { NonNull::new_unchecked(l2_pa as *mut TTable<TABLE_ENTRIES>) };
+    let l2_va = allocator.phys_to_virt(l2_pa);
+    let mut l2_table_ptr = unsafe { NonNull::new_unchecked(l2_va as *mut TTable<TABLE_ENTRIES>) };
     let l2_table = unsafe { l2_table_ptr.as_mut() };
     let l2_entry = &mut (l2_table.entries[i2]);
 
@@ -296,7 +311,8 @@ fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, al
     }
 
     let l3_pa = l2_entry.address();
-    let mut l3_table_ptr = unsafe { NonNull::new_unchecked(l3_pa as *mut TTable<TABLE_ENTRIES>) };
+    let l3_va = allocator.phys_to_virt(l3_pa);
+    let mut l3_table_ptr = unsafe { NonNull::new_unchecked(l3_va as *mut TTable<TABLE_ENTRIES>) };
     let l3_table = unsafe { l3_table_ptr.as_mut() };
     let l3_entry = &mut (l3_table.entries[i3]);
 
@@ -324,6 +340,38 @@ fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, al
             }
         }
     }
+}
+
+pub fn free_tables<A: TableAllocator>(root: NonNull<TTable<TABLE_ENTRIES>>, allocator: &A) {
+    free_table_recurse(root, 0, allocator);
+}
+
+fn free_table_recurse<A: TableAllocator>(
+    mut table_ptr: NonNull<TTable<TABLE_ENTRIES>>,
+    level: usize,
+    allocator: &A,
+) {
+    // only 0, 1, and 2 can have children
+    if level < 3 {
+        let table = unsafe { table_ptr.as_mut() };
+
+        for i in 0..TABLE_ENTRIES {
+            let entry = &mut (table.entries[i]);
+
+            if entry.is_valid() && entry.is_table() {
+                let child_pa = entry.address();
+                let child_va = allocator.phys_to_virt(child_pa);
+                if child_pa != 0 {
+                    let child_ptr =
+                        unsafe { NonNull::new_unchecked(child_va as *mut TTable<TABLE_ENTRIES>) };
+
+                    free_table_recurse(child_ptr, level + 1, allocator);
+                }
+            }
+        }
+    }
+
+    allocator.free_table(table_ptr);
 }
 
 fn is_table_empty(table: &TTable<TABLE_ENTRIES>) -> bool {
