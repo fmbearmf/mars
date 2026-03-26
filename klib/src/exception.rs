@@ -2,6 +2,8 @@ use core::{borrow::Borrow, fmt, ops::Deref};
 
 use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Readable};
 
+use crate::cpu_interface::Mpidr;
+
 #[derive(Clone, Eq, PartialEq)]
 #[repr(C)]
 pub struct RegisterFile {
@@ -78,7 +80,8 @@ impl Deref for RegisterFileRef<'_> {
 pub trait ExceptionHandler {
     extern "C" fn sync_current(register_file: RegisterFileRef) {
         panic!(
-            "Unexpected sync exception (ESR: {:#x}, FAR: {:#x}) from current EL: {:?}",
+            "Unexpected sync exception from CPU MPIDR={} (ESR: {:#x}, FAR: {:#x}) from current EL: {:?}",
+            Mpidr::current().affinity_only(),
             ESR_EL1.get(),
             FAR_EL1.get(),
             register_file

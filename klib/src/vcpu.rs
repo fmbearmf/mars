@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use crate::{acpi::madt::CpuInfo, sync::Mutex};
 
 pub const MAX_CPUS: usize = 256;
@@ -17,16 +19,25 @@ impl VCpuList {
     }
 }
 
-static VCPUS: Mutex<VCpuList> = Mutex::new(VCpuList::new());
+const EMPTY_FLAG: AtomicBool = AtomicBool::new(false);
 
-pub fn add_cpu(cpu: CpuInfo) {
+static VCPUS: Mutex<VCpuList> = Mutex::new(VCpuList::new());
+static VCPU_INIT_FLAGS: [AtomicBool; MAX_CPUS] = [EMPTY_FLAG; MAX_CPUS];
+
+pub fn add_cpu(cpu: CpuInfo) -> usize {
     let mut vcpus = VCPUS.lock();
     let count = vcpus.count;
 
-    if count < MAX_CPUS {
-        vcpus.cpus[count] = cpu;
-        vcpus.count = count.checked_add(1).expect("ran out of CPU slots");
+    if count >= MAX_CPUS {
+        panic!("ran out of CPU slots");
     }
+
+    vcpus.cpus[count] = cpu;
+    vcpus.count = count.saturating_add(1);
+
+    VCPU_INIT_FLAGS[count].store(false, Ordering::Release);
+
+    count
 }
 
 pub fn with_cpus<F, R>(f: F) -> R
@@ -36,4 +47,14 @@ where
     let vcpus = VCPUS.lock();
     let count = vcpus.count;
     f(count, &vcpus.cpus[..count])
+}
+
+pub fn vcpu_wait_init(vcpu: usize) {
+    while !VCPU_INIT_FLAGS[vcpu].load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+}
+
+pub fn vcpu_signal_init(vcpu: usize) {
+    VCPU_INIT_FLAGS[vcpu].store(true, Ordering::Release);
 }

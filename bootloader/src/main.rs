@@ -22,6 +22,10 @@ use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use klib::{
     acpi::{
         self, SystemDescription,
+        madt::{
+            GicCpuInterface, GicDistributor, GicIts, GicRedistributor, MADT_GICC, MADT_GICD,
+            MADT_GICR, MADT_ITS,
+        },
         rsdp::{Rsdp, XsdtIter},
     },
     vec::{DynVec, RawVec, StaticVec},
@@ -187,6 +191,8 @@ fn main() -> Status {
                 }
             };
 
+            debug!("ACPI RSDP @ {:p}", rsdp);
+
             let xsdt = match rsdp.xsdt(false) {
                 Ok(x) => x,
                 Err(e) => {
@@ -194,6 +200,8 @@ fn main() -> Status {
                     return Status::ABORTED;
                 }
             };
+
+            debug!("ACPI XSDT @ {:p}", xsdt);
 
             let sys = SystemDescription::parse(xsdt, false);
             if let Some(spcr) = sys.spcr {
@@ -215,6 +223,70 @@ fn main() -> Status {
                     MAIR_DEVICE_INDEX,
                     &PT_ALLOCATOR,
                 );
+            }
+
+            if let Some(madt) = sys.madt {
+                debug!("MADT found");
+
+                let mut count = 0;
+                for (type_, data) in madt.entries() {
+                    count += 1;
+                    match type_ {
+                        MADT_GICC => {
+                            if data.len() >= mem::size_of::<GicCpuInterface>() {
+                                let gicc = unsafe { &*(data.as_ptr() as *const GicCpuInterface) };
+                                let flags = gicc.flags();
+
+                                let enabled = (flags & 0x1) != 0;
+                                let online_capable = (flags & 0x8) != 0;
+
+                                let mpidr = gicc.mpidr();
+                                debug!("     GICC CPU MPIDR={:#x}", mpidr);
+                            }
+                        }
+                        MADT_GICD => {
+                            if data.len() >= mem::size_of::<GicDistributor>() {
+                                let gicd = unsafe { &*(data.as_ptr() as *const GicDistributor) };
+                                let base = gicd.phys_base();
+                                debug!("     GICD Distributor Base={:#x}", base);
+                                kregions.push(MemoryRegion {
+                                    base: base as usize,
+                                    size: 64 * 1024,
+                                    region_type: MemoryRegionType::Mmio,
+                                });
+                            }
+                        }
+                        MADT_GICR => {
+                            if data.len() >= mem::size_of::<GicRedistributor>() {
+                                let gicr = unsafe { &*(data.as_ptr() as *const GicRedistributor) };
+                                let base = gicr.discovery_range_base();
+                                let size = gicr.discovery_range_len();
+                                debug!("     GICR Redistributor Base={:#x} Size={:#x}", base, size);
+                                kregions.push(MemoryRegion {
+                                    base: base as usize,
+                                    size: size as usize,
+                                    region_type: MemoryRegionType::Mmio,
+                                });
+                            }
+                        }
+                        MADT_ITS => {
+                            if data.len() >= mem::size_of::<GicIts>() {
+                                let its = unsafe { &*(data.as_ptr() as *const GicIts) };
+                                let id = its.translation_id();
+                                let base = its.phys_base();
+                                debug!("     ITS ID={}, Base={:#x}", id, base);
+                                kregions.push(MemoryRegion {
+                                    base: base as usize,
+                                    size: 128 * 1024,
+                                    region_type: MemoryRegionType::Mmio,
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                debug!("madt entry count: {}", count);
             }
         }
 
@@ -337,7 +409,7 @@ fn main() -> Status {
                         unsafe { root_table.as_mut() },
                         phys_start,
                         vaddr,
-                        size,
+                        align_up(size, PAGE_SIZE),
                         AccessPermission::PrivilegedReadWrite,
                         Shareability::OuterShareable,
                         true,
@@ -345,7 +417,7 @@ fn main() -> Status {
                         MAIR_DEVICE_INDEX,
                         &PT_ALLOCATOR,
                     );
-                    kregions.push(MemoryRegion { base: phys_start, size, region_type });
+                    kregions.push(MemoryRegion { base: phys_start, size: align_up(size, PAGE_SIZE), region_type });
                 }
 
                 _ => {

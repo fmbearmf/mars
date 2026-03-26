@@ -1,10 +1,14 @@
 use core::arch::{asm, naked_asm};
 
 use aarch64_cpu::{
-    asm::barrier::{self, isb},
-    registers::{CPACR_EL1, DAIF, ReadWriteable, Readable, Writeable},
+    asm::barrier::{self, dsb, isb},
+    registers::{CPACR_EL1, DAIF, ReadWriteable, Readable, TCR_EL1, TTBR0_EL1, Writeable},
 };
-use klib::cpu_interface::{Mpidr, SecondaryBootArgs};
+use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
+use klib::{
+    cpu_interface::{Mpidr, SecondaryBootArgs},
+    vcpu::vcpu_signal_init,
+};
 
 use crate::{busy_loop, earlycon_writeln};
 
@@ -55,10 +59,17 @@ pub fn secondary_init() -> ! {
     DAIF.write(DAIF::D::Masked + DAIF::A::Masked + DAIF::I::Masked + DAIF::F::Masked);
     isb(barrier::SY);
 
-    earlycon_writeln!(
-        "hello from secondary cpu mpidr={}",
-        Mpidr::current().affinity_only(),
-    );
+    TTBR0_EL1.set_baddr(0);
+    TCR_EL1.modify(TCR_EL1::EPD0::DisableTTBR0Walks);
+    tlbi(VMALLE1);
+    dsb(barrier::ISH);
+    isb(barrier::SY);
+
+    let mpidr = Mpidr::current();
+
+    earlycon_writeln!("hello from secondary cpu mpidr={}", mpidr.affinity_only());
+
+    vcpu_signal_init(mpidr.affinity_only() as usize);
 
     busy_loop()
 }

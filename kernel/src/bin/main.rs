@@ -35,18 +35,21 @@ use klib::{
             CpuInfo, GicCpuInterface, GicDistributor, GicIts, GicRedistributor, MADT_GICC,
             MADT_GICD, MADT_GICR, MADT_ITS,
         },
-        rsdp::{XsdtIter, find_rsdp_in_slice},
+        rsdp::{Rsdp, XsdtIter, find_rsdp_in_slice},
     },
     bytes_to_human_readable,
-    cpu_interface::{Mpidr, SecondaryBootArgs, mpidr_affinities, mpidr_key},
+    cpu_interface::{
+        Arm64InterruptInterface, Mpidr, SecondaryBootArgs, mpidr_affinities, mpidr_key,
+    },
     exception::ExceptionHandler,
+    interrupt::{InterruptController, gicv3::GicV3},
     smccc::cpu_on,
-    vcpu::{add_cpu, with_cpus},
+    vcpu::{add_cpu, vcpu_wait_init, with_cpus},
     vec::{DynVec, PMVec, RawVec, StaticVec},
     vm::{
-        DMAP_START, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType, PAGE_SIZE, TABLE_ENTRIES,
-        TTable, align_down, align_up, dmap_addr_to_phys,
-        map::map_region,
+        DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
+        PAGE_SIZE, TABLE_ENTRIES, TTable, align_down, align_up, dmap_addr_to_phys,
+        map::{TableAllocator, free_tables, map_region},
         page::{PageAllocator, table_allocator::PMTableAllocator},
         phys_addr_to_dmap,
         slab::SlabAllocator,
@@ -140,7 +143,16 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
 
     DAIF.write(DAIF::D::Masked + DAIF::A::Masked + DAIF::I::Masked + DAIF::F::Masked);
 
-    let boot_info: BootInfo = unsafe { boot_info_ref.assume_init() };
+    unsafe {
+        asm!(
+            "adr {x}, vector_table_el1",
+            "msr vbar_el1, {x}",
+            x = out(reg) _,
+            options(nomem, nostack),
+        );
+    }
+
+    let mut boot_info: BootInfo = unsafe { boot_info_ref.assume_init() };
 
     let kbase = unsafe { &__KBASE as *const _ as usize };
     let offset = kbase - boot_info.kernel_load_physical_address;
@@ -173,13 +185,26 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
         }
         if entry.ty == MemoryType::ACPI_RECLAIM {
             acpi_reg_opt = Some(MemoryRegion {
-                base: DMAP_START + entry.phys_start as usize,
+                base: phys_addr_to_dmap(entry.phys_start) as usize,
                 size: (entry.page_count as usize * UEFI_PS),
                 region_type: MemoryRegionType::AcpiTables,
             });
         }
     }
     earlycon_writeln!("total: {:#x}", total);
+
+    let acpi_reg = acpi_reg_opt.expect("no ACPI tables found.");
+    let slice = unsafe {
+        from_raw_parts(
+            dmap_addr_to_phys(acpi_reg.base as u64) as *const u8,
+            acpi_reg.size,
+        )
+    };
+
+    // scanning for the RSDP could be avoided by passing a pointer from UEFI via the boot protocol,
+    // but that creates dependence on ACPI (which i'd really rather avoid).
+    let rsdp = find_rsdp_in_slice(slice).expect("RSDP not found in ACPI tables.");
+    earlycon_writeln!("ACPI RSDP @ {:p}", rsdp);
 
     init_mmu(boot_info.kernel_load_physical_address, offset);
 
@@ -190,16 +215,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
 
     unsafe { KALLOCATOR.init(page_alloc_ref) };
 
-    // ditch lower half mappings
-    TTBR0_EL1.set(0);
-
-    let acpi_reg = acpi_reg_opt.expect("no ACPI tables found.");
-    let slice = unsafe { from_raw_parts(acpi_reg.base as *const u8, acpi_reg.size) };
-
-    // scanning for the RSDP could be avoided by passing a pointer from UEFI via the boot protocol,
-    // but that creates dependence on ACPI (which i'd really rather avoid).
-    let rsdp = find_rsdp_in_slice(slice).expect("RSDP not found in ACPI tables.");
-    earlycon_writeln!("ACPI RSDP @ {:p}", rsdp);
+    let table_allocator = KernelPTAllocator {};
 
     let xsdt = match rsdp.xsdt(true) {
         Ok(x) => x,
@@ -248,14 +264,14 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                             //efficiency_class: gicc.efficiency_class(),
                         });
 
-                        let mpidr = unsafe { ptr::read_unaligned(&raw const gicc.mpidr) };
+                        let mpidr = gicc.mpidr();
                         earlycon_writeln!("     GICC CPU MPIDR={:#x}", mpidr);
                     }
                 }
                 MADT_GICD => {
                     if data.len() >= mem::size_of::<GicDistributor>() {
                         let gicd = unsafe { &*(data.as_ptr() as *const GicDistributor) };
-                        let base = unsafe { ptr::read_unaligned(&raw const gicd.phys_base) };
+                        let base = gicd.phys_base();
                         earlycon_writeln!("     GICD Distributor Base={:#x}", base);
                     }
                 }
@@ -263,14 +279,20 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                     if data.len() >= mem::size_of::<GicRedistributor>() {
                         let gicr = unsafe { &*(data.as_ptr() as *const GicRedistributor) };
                         let base = gicr.discovery_range_base();
-                        earlycon_writeln!("     GICR Redistributor Base={:#x}", base);
+                        let size = gicr.discovery_range_len();
+                        earlycon_writeln!(
+                            "     GICR Redistributor Base={:#x} Size={:#x}",
+                            base,
+                            size
+                        );
                     }
                 }
                 MADT_ITS => {
                     if data.len() >= mem::size_of::<GicIts>() {
                         let its = unsafe { &*(data.as_ptr() as *const GicIts) };
-                        let id = unsafe { ptr::read_unaligned(&raw const its.translation_id) };
-                        let base = unsafe { ptr::read_unaligned(&raw const its.phys_base) };
+                        let id = its.translation_id();
+                        let base = its.phys_base();
+
                         earlycon_writeln!("     ITS ID={}, Base={:#x}", id, base);
                     }
                 }
@@ -296,6 +318,10 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
         earlycon_writeln!("GTDT timer GSIVs Virt={}, Phys={}", virt, phys);
     }
 
+    // ditch lower half mappings
+    TTBR0_EL1.set(0);
+    TCR_EL1.modify(TCR_EL1::EPD0::DisableTTBR0Walks);
+
     let this_mpidr = Mpidr::current();
     let is_uniprocessor = MPIDR_EL1::U.read(this_mpidr.affinity_only()) == 1;
     earlycon_writeln!("Uniprocessor?: {}", is_uniprocessor);
@@ -304,31 +330,38 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
         unimplemented!();
     }
 
-    let table_allocator = KernelPTAllocator {};
+    let interrupt_controller = Arm64InterruptInterface {};
 
-    with_cpus(|count, cpus| {
-        earlycon_writeln!("count: {}, cpus: {:#?}", count, cpus);
+    print_mem_usage();
+
+    with_cpus(|_, cpus| {
         for cpu in cpus {
             if cpu.mpidr == this_mpidr.affinity_only() {
                 continue;
             }
-            earlycon_writeln!("secondary cpu: {:#?}", cpu);
 
             let mpidr_tuple = mpidr_affinities(cpu.mpidr);
             let mpidr = Mpidr::new(mpidr_tuple.0, mpidr_tuple.1, mpidr_tuple.2, mpidr_tuple.3);
 
-            let bad_stack = Box::new([0u8; 4096]);
+            let stack = Box::new([0u8; 16384]);
+            let stack_ptr = Box::into_raw(stack);
 
-            let mut page_tables = Box::new(TTable::<TABLE_ENTRIES>::new());
+            // add(1) means add 16384 bytes because the size of `stack` is 16384
+            // i was VERY confused before i realized that...
+
+            let stack_ptr_aligned = align_down(unsafe { stack_ptr.add(1) } as usize, 16);
+
+            let page_tables = Box::new(TTable::<TABLE_ENTRIES>::new());
+            let page_tables_ref = unsafe { &mut *Box::into_raw(page_tables) };
             let paddr = align_down(boot_info.kernel_load_physical_address, PAGE_SIZE);
             earlycon_writeln!(
                 "root: {:p}, paddr: {:#x}, size: {:#x}",
-                page_tables.as_mut(),
+                page_tables_ref,
                 paddr,
                 boot_info.kernel_size
             );
             map_region(
-                page_tables.as_mut(),
+                page_tables_ref,
                 paddr,
                 paddr,
                 boot_info.kernel_size,
@@ -357,16 +390,15 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                 + TCR_EL1::T0SZ.val(16);
 
             let args = Box::new(SecondaryBootArgs {
-                ttbr0: dmap_addr_to_phys(Box::leak(page_tables) as *const _ as u64),
+                ttbr0: dmap_addr_to_phys(page_tables_ref as *const _ as u64),
                 ttbr1: TTBR1_EL1.get(),
                 tcr: secondary_tcr.value,
                 mair: MAIR_EL1.get(),
-                stack_top_virt: Box::leak(bad_stack) as *const _ as u64,
+                stack_top_virt: stack_ptr_aligned as u64,
                 entry_virt: secondary_init as *const () as u64,
                 sctlr: SCTLR_EL1.get(),
             });
-
-            earlycon_writeln!("args: {:#x?}", args);
+            let args_ptr = Box::into_raw(args);
 
             let result = cpu_on(
                 true,
@@ -375,20 +407,27 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                     boot_info.kernel_load_physical_address,
                     secondary_entry as *const () as usize,
                 ) as u64,
-                dmap_addr_to_phys(Box::leak(args) as *const _ as u64),
+                dmap_addr_to_phys(args_ptr as u64),
             );
 
-            earlycon_writeln!(
-                "cpu_on (entry: {:#x}) result: {:?}",
-                kaddr_to_paddr(
-                    boot_info.kernel_load_physical_address,
-                    secondary_entry as *const () as usize,
-                ) as u64,
-                result
-            );
+            result.expect("secondary cpu enable fail");
+
+            vcpu_wait_init(mpidr.affinity_only() as usize);
+
+            let pt_root_ptr = unsafe { NonNull::new_unchecked(page_tables_ref as *mut _) };
+
+            drop(unsafe { Box::from_raw(args_ptr) });
+            drop(unsafe { Box::from_raw(stack_ptr) });
+            free_tables(pt_root_ptr, &table_allocator);
         }
     });
 
+    print_mem_usage();
+
+    busy_loop()
+}
+
+fn print_mem_usage() {
     let mut bufs = [[0u8; 16]; 2];
     let bufs_tuple = bufs.split_at_mut(1);
 
@@ -397,8 +436,6 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
         bytes_to_human_readable(KALLOCATOR.heap_usage() as u64, &mut bufs_tuple.0[0]),
         bytes_to_human_readable(KALLOCATOR.heap_capacity() as u64, &mut bufs_tuple.1[0]),
     );
-
-    busy_loop()
 }
 
 pub extern "C" fn arm_init(
@@ -406,15 +443,6 @@ pub extern "C" fn arm_init(
     memory_regions: StaticVec<MemoryRegion>,
     mut root_pt: NonNull<TTable<TABLE_ENTRIES>>,
 ) -> PageAllocator {
-    unsafe {
-        asm!(
-            "adr {x}, vector_table_el1",
-            "msr vbar_el1, {x}",
-            x = out(reg) _,
-            options(nomem, nostack),
-        );
-    }
-
     let mut pmvec: PMVec<MemoryRegion> = PMVec::new();
 
     {
@@ -422,8 +450,9 @@ pub extern "C" fn arm_init(
         pmvec.extend_from_slice(slice);
     }
 
+    earlycon_writeln!("{:#x?}", pmvec.as_slice());
+
     for &region in uefi_mmap.entries() {
-        _ = pmvec.remove_containing(region.phys_start as usize);
         let region_type: MemoryRegionType = match region.ty {
             MemoryType::RUNTIME_SERVICES_CODE => MemoryRegionType::RtFirmwareCode,
             MemoryType::RUNTIME_SERVICES_DATA => MemoryRegionType::RtFirmwareData,
@@ -440,11 +469,27 @@ pub extern "C" fn arm_init(
                 MemoryRegionType::Unknown
             }
         };
-        pmvec.push(MemoryRegion {
-            base: region.phys_start as usize,
-            size: (region.page_count as usize * UEFI_PS),
-            region_type,
-        });
+
+        let size = if region_type == MemoryRegionType::Mmio {
+            align_up(region.page_count as usize * UEFI_PS, PAGE_SIZE)
+        } else {
+            region.page_count as usize * UEFI_PS
+        };
+
+        let prev_opt = pmvec.remove_containing(region.phys_start as usize);
+        if let Some(prev) = prev_opt {
+            pmvec.push(MemoryRegion {
+                base: prev.base.min(region.phys_start as usize),
+                size: prev.size.max(size),
+                region_type: prev.region_type,
+            });
+        } else {
+            pmvec.push(MemoryRegion {
+                base: region.phys_start as usize,
+                size,
+                region_type,
+            });
+        }
     }
 
     let mut pmvec_copy: PMVec<MemoryRegion> = PMVec::new();
@@ -468,6 +513,8 @@ pub extern "C" fn arm_init(
             //if !region.is_normal() {
             //    continue;
             //};
+            let aligned_base = align_up(region.base, PAGE_SIZE);
+
             if region.size < PAGE_SIZE {
                 continue;
             }
@@ -477,12 +524,12 @@ pub extern "C" fn arm_init(
             //    region.size,
             //    region.region_type
             //);
-            let aligned_base = align_up(region.base, PAGE_SIZE);
+
             unsafe {
                 map_region(
                     root_pt.as_mut(),
                     aligned_base,
-                    DMAP_START + aligned_base,
+                    phys_addr_to_dmap(aligned_base as u64) as usize,
                     align_down(region.size, PAGE_SIZE),
                     AccessPermission::PrivilegedReadWrite,
                     Shareability::InnerShareable,
@@ -505,8 +552,6 @@ pub extern "C" fn arm_init(
         }
     }
     pmvec_copy.compact();
-
-    //earlycon_writeln!("pmvec_copy: {:#x?}", pmvec_copy.as_slice());
 
     let mut page_allocator = unsafe { PageAllocator::init(&[]) };
 
