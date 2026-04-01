@@ -1,4 +1,11 @@
-use core::{ptr, slice, u32, u64};
+use core::{fmt::Debug, iter::FusedIterator, marker::PhantomData, ptr, slice, u32, u64};
+
+use crate::{
+    interrupt::{GicdRegisters, GicrRdRegisters, GicrSgiRegisters},
+    vm::phys_addr_to_dmap,
+};
+
+use tock_registers::interfaces::Debuggable;
 
 use super::{SystemDescription, header::SdtHeader};
 use getters::unaligned_getters;
@@ -9,6 +16,9 @@ pub const MADT_GICC: u8 = 0x0B;
 pub const MADT_GICD: u8 = 0x0C;
 pub const MADT_GICR: u8 = 0x0E;
 pub const MADT_ITS: u8 = 0x0F;
+
+pub const GICR_FRAME_SIZE: usize = 0x002_0000; // 128kib
+pub const GICR_SGI_OFFSET: usize = 0x001_0000;
 
 #[repr(C, packed)]
 #[unaligned_getters]
@@ -58,7 +68,92 @@ pub struct GicDistributor {
     pub gic_id: u32,
     pub phys_base: u64,
     pub system_vector_base: u32,
+    pub gic_version: u8,
     pub reserved2: [u8; 3],
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum GicrSplitError {
+    UnalignedBase { base: *mut u8 },
+    UnalignedLength { len: u64 },
+    BaseOOR,
+    LengthOOR,
+    Overflow,
+}
+
+#[derive(Debug)]
+pub struct GicrFrameBlock<'a> {
+    base: *mut u8,
+    count: usize,
+    _lifetime: PhantomData<&'a mut [u8]>,
+}
+
+#[derive(Copy, Clone)]
+pub struct GicrFrame<'a> {
+    pub rd: &'a GicrRdRegisters,
+    pub sgi: &'a GicrSgiRegisters,
+}
+
+impl<'a> Debug for GicrFrame<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "GicrFrame {{ rd: {:p}, sgi: {:p} }}", self.rd, self.sgi)
+    }
+}
+
+impl<'a> GicrFrameBlock<'a> {
+    pub unsafe fn new(entry: &GicRedistributor, virt: bool) -> Result<Self, GicrSplitError> {
+        let base = if virt {
+            phys_addr_to_dmap(entry.discovery_range_base())
+        } else {
+            entry.discovery_range_base()
+        };
+        let len = entry.discovery_range_len() as u64;
+
+        if base % GICR_FRAME_SIZE as u64 != 0 {
+            return Err(GicrSplitError::UnalignedBase {
+                base: base as *mut u8,
+            });
+        }
+
+        if len % GICR_FRAME_SIZE as u64 != 0 {
+            return Err(GicrSplitError::UnalignedLength { len });
+        }
+
+        let base = base as usize;
+        let len = len as usize;
+
+        let count = len / GICR_FRAME_SIZE;
+
+        base.checked_add(len).ok_or(GicrSplitError::Overflow)?;
+
+        Ok(Self {
+            base: base as *mut u8,
+            count,
+            _lifetime: PhantomData,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub fn get(&self, index: usize, virt: bool) -> Option<GicrFrame<'a>> {
+        if index >= self.count {
+            return None;
+        }
+
+        let frame_base = self.base as usize + index * GICR_FRAME_SIZE;
+
+        let rd = unsafe { &*(frame_base as *const GicrRdRegisters) };
+
+        let sgi = unsafe { &*((frame_base + GICR_SGI_OFFSET) as *const GicrSgiRegisters) };
+
+        Some(GicrFrame { rd, sgi })
+    }
 }
 
 #[repr(C, packed)]
@@ -70,6 +165,12 @@ pub struct GicRedistributor {
     pub reserved: u8,
     pub discovery_range_base: u64,
     pub discovery_range_len: u32,
+}
+
+impl GicRedistributor {
+    pub unsafe fn frames<'a>(&'a self, virt: bool) -> Result<GicrFrameBlock<'a>, GicrSplitError> {
+        unsafe { GicrFrameBlock::new(self, virt) }
+    }
 }
 
 #[repr(C, packed)]
@@ -115,26 +216,6 @@ impl Madt {
             let start = self.header.data_ptr().add(8);
             let end = (self as *const _ as *const u8).add(self.header.len() as usize);
             MadtIter { ptr: start, end }
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, Default)]
-pub struct CpuInfo {
-    pub acpi_cpu_uid: u32,
-    pub mpidr: u64,
-    pub available: bool,
-    // idk
-    //pub efficiency_class: u8,
-}
-
-impl CpuInfo {
-    pub const fn new() -> Self {
-        Self {
-            acpi_cpu_uid: u32::MAX,
-            mpidr: u64::MAX,
-            available: false,
-            //efficiency_class: 0,
         }
     }
 }

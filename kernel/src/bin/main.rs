@@ -13,18 +13,18 @@ use aarch64_cpu::{
         wfe,
     },
     registers::{
-        CPACR_EL1, DAIF, MAIR_EL1, MPIDR_EL1, ReadWriteable, Readable, SCTLR_EL1, TCR_EL1,
-        TTBR0_EL1, TTBR1_EL1, Writeable,
+        CNTFRQ_EL0, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0, CPACR_EL1, DAIF, MAIR_EL1, MPIDR_EL1,
+        ReadWriteable, Readable, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1, Writeable,
     },
 };
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 use core::{
     arch::{asm, naked_asm},
     mem::{self, MaybeUninit},
-    ops::Add,
+    ops::{Add, Index},
     panic::PanicInfo,
-    ptr::{self, NonNull},
+    ptr::{self, NonNull, read_volatile},
     slice::from_raw_parts,
     str::from_utf8,
 };
@@ -32,7 +32,7 @@ use klib::{
     acpi::{
         SystemDescription,
         madt::{
-            CpuInfo, GicCpuInterface, GicDistributor, GicIts, GicRedistributor, MADT_GICC,
+            GicCpuInterface, GicDistributor, GicIts, GicRedistributor, GicrFrame, MADT_GICC,
             MADT_GICD, MADT_GICR, MADT_ITS,
         },
         rsdp::{Rsdp, XsdtIter, find_rsdp_in_slice},
@@ -42,9 +42,9 @@ use klib::{
         Arm64InterruptInterface, Mpidr, SecondaryBootArgs, mpidr_affinities, mpidr_key,
     },
     exception::ExceptionHandler,
-    interrupt::{InterruptController, gicv3::GicV3},
+    interrupt::{GicdRegisters, InterruptController, gicv3::GicV3},
     smccc::cpu_on,
-    vcpu::{add_cpu, vcpu_wait_init, with_cpus},
+    vcpu::{CpuDescriptor, add_cpu, vcpu_wait_init, with_cpus},
     vec::{DynVec, PMVec, RawVec, StaticVec},
     vm::{
         DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
@@ -244,8 +244,96 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
         }
     }
 
+    let mut cpu_gicrs: Vec<GicrFrame> = Vec::new();
+    let mut cpu_gicd: Option<*const GicdRegisters> = None;
+
+    let mut timer_irq = None;
+
+    if let Some(gtdt) = sys.gtdt {
+        let virt = gtdt.virt_el1_gsiv();
+        let phys = gtdt.ns_el1_gsiv();
+        earlycon_writeln!("GTDT timer GSIVs Virt={}, Phys={}", virt, phys);
+        timer_irq = Some(virt);
+    }
+
     if let Some(madt) = sys.madt {
         earlycon_writeln!("MADT found");
+        let mut cpu_count = 0u32;
+
+        for (type_, data) in madt.entries() {
+            match type_ {
+                MADT_GICC => {
+                    if data.len() >= mem::size_of::<GicCpuInterface>() {
+                        let gicc = unsafe { &*(data.as_ptr() as *const GicCpuInterface) };
+
+                        cpu_count += 1;
+
+                        let mpidr = gicc.mpidr();
+                        earlycon_writeln!("     GICC CPU[{}] MPIDR={:#x}", cpu_count - 1, mpidr);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for (type_, data) in madt.entries() {
+            match type_ {
+                MADT_GICD => {
+                    if data.len() >= mem::size_of::<GicDistributor>() {
+                        let gicd = unsafe { &*(data.as_ptr() as *const GicDistributor) };
+                        let id = gicd.gic_id();
+                        let base = gicd.phys_base();
+                        earlycon_writeln!("     GICD Distributor ID={} Base={:#x}", id, base);
+
+                        let gicd_ptr = base as *const GicdRegisters;
+                        cpu_gicd = Some(phys_addr_to_dmap(gicd_ptr as u64) as *const _);
+                    }
+                }
+                MADT_GICR => {
+                    if data.len() >= mem::size_of::<GicRedistributor>() {
+                        let gicr = unsafe { &*(data.as_ptr() as *const GicRedistributor) };
+                        let base = gicr.discovery_range_base();
+                        let size = gicr.discovery_range_len();
+                        earlycon_writeln!(
+                            "     GICR Redistributors Base={:#x} Size={:#x}",
+                            base,
+                            size
+                        );
+
+                        let gicr_frames = unsafe { gicr.frames(true).expect("gicr split error") };
+
+                        for i in 0..gicr_frames.len().min(cpu_count as usize) {
+                            let frame = gicr_frames.get(i, true).unwrap();
+
+                            let rd = frame.rd;
+                            let sgi = frame.sgi;
+
+                            let type_r = rd.TYPER.get();
+
+                            earlycon_writeln!(
+                                "frame {}: sgi@{:p}, rd@{:p} type_r: {:064b}",
+                                i,
+                                sgi,
+                                rd,
+                                type_r
+                            );
+
+                            cpu_gicrs.push(frame);
+                        }
+                    }
+                }
+                MADT_ITS => {
+                    if data.len() >= mem::size_of::<GicIts>() {
+                        let its = unsafe { &*(data.as_ptr() as *const GicIts) };
+                        let id = its.translation_id();
+                        let base = its.phys_base();
+
+                        earlycon_writeln!("     ITS ID={}, Base={:#x}", id, base);
+                    }
+                }
+                _ => {}
+            }
+        }
 
         for (type_, data) in madt.entries() {
             match type_ {
@@ -257,43 +345,20 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                         let enabled = (flags & 0x1) != 0;
                         let online_capable = (flags & 0x8) != 0;
 
-                        add_cpu(CpuInfo {
+                        let mpidr_tuple = mpidr_affinities(gicc.mpidr());
+                        let mpidr =
+                            Mpidr::new(mpidr_tuple.0, mpidr_tuple.1, mpidr_tuple.2, mpidr_tuple.3);
+
+                        let gicr_frame = cpu_gicrs.index(mpidr.affinity_only() as usize);
+
+                        add_cpu(CpuDescriptor {
                             acpi_cpu_uid: gicc.acpi_cpu_uid(),
-                            mpidr: gicc.mpidr(),
+                            mpidr: mpidr.affinity_only(),
                             available: enabled || online_capable,
-                            //efficiency_class: gicc.efficiency_class(),
+                            efficiency_class: gicc.efficiency_class(),
+                            gicr: Some(*gicr_frame),
+                            timer_irq: timer_irq.expect("timer_irq not set") as u64,
                         });
-
-                        let mpidr = gicc.mpidr();
-                        earlycon_writeln!("     GICC CPU MPIDR={:#x}", mpidr);
-                    }
-                }
-                MADT_GICD => {
-                    if data.len() >= mem::size_of::<GicDistributor>() {
-                        let gicd = unsafe { &*(data.as_ptr() as *const GicDistributor) };
-                        let base = gicd.phys_base();
-                        earlycon_writeln!("     GICD Distributor Base={:#x}", base);
-                    }
-                }
-                MADT_GICR => {
-                    if data.len() >= mem::size_of::<GicRedistributor>() {
-                        let gicr = unsafe { &*(data.as_ptr() as *const GicRedistributor) };
-                        let base = gicr.discovery_range_base();
-                        let size = gicr.discovery_range_len();
-                        earlycon_writeln!(
-                            "     GICR Redistributor Base={:#x} Size={:#x}",
-                            base,
-                            size
-                        );
-                    }
-                }
-                MADT_ITS => {
-                    if data.len() >= mem::size_of::<GicIts>() {
-                        let its = unsafe { &*(data.as_ptr() as *const GicIts) };
-                        let id = its.translation_id();
-                        let base = its.phys_base();
-
-                        earlycon_writeln!("     ITS ID={}, Base={:#x}", id, base);
                     }
                 }
                 _ => {}
@@ -312,12 +377,6 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
         }
     }
 
-    if let Some(gtdt) = sys.gtdt {
-        let virt = gtdt.virt_el1_gsiv();
-        let phys = gtdt.ns_el1_gsiv();
-        earlycon_writeln!("GTDT timer GSIVs Virt={}, Phys={}", virt, phys);
-    }
-
     // ditch lower half mappings
     TTBR0_EL1.set(0);
     TCR_EL1.modify(TCR_EL1::EPD0::DisableTTBR0Walks);
@@ -333,6 +392,8 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     let interrupt_controller = Arm64InterruptInterface {};
 
     print_mem_usage();
+
+    //DAIF.modify(DAIF::I::Unmasked);
 
     with_cpus(|_, cpus| {
         for cpu in cpus {
@@ -354,17 +415,19 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
             let page_tables = Box::new(TTable::<TABLE_ENTRIES>::new());
             let page_tables_ref = unsafe { &mut *Box::into_raw(page_tables) };
             let paddr = align_down(boot_info.kernel_load_physical_address, PAGE_SIZE);
+            let size = align_up(boot_info.kernel_size, PAGE_SIZE);
+
             earlycon_writeln!(
                 "root: {:p}, paddr: {:#x}, size: {:#x}",
                 page_tables_ref,
                 paddr,
-                boot_info.kernel_size
+                size
             );
             map_region(
                 page_tables_ref,
                 paddr,
                 paddr,
-                boot_info.kernel_size,
+                size,
                 AccessPermission::PrivilegedReadWrite,
                 Shareability::InnerShareable,
                 true,
@@ -397,16 +460,23 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                 stack_top_virt: stack_ptr_aligned as u64,
                 entry_virt: secondary_init as *const () as u64,
                 sctlr: SCTLR_EL1.get(),
+                cpu_desc: cpu as *const _,
+                gicd: cpu_gicd.expect("no GIC distributor present"),
             });
+
             let args_ptr = Box::into_raw(args);
+
+            let entry = kaddr_to_paddr(
+                boot_info.kernel_load_physical_address,
+                secondary_entry as *const () as usize,
+            );
+
+            earlycon_writeln!("secondary entry @ {:#x}", entry);
 
             let result = cpu_on(
                 true,
                 mpidr,
-                kaddr_to_paddr(
-                    boot_info.kernel_load_physical_address,
-                    secondary_entry as *const () as usize,
-                ) as u64,
+                entry as u64,
                 dmap_addr_to_phys(args_ptr as u64),
             );
 
@@ -422,7 +492,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
         }
     });
 
-    print_mem_usage();
+    earlycon_writeln!("boot core finish");
 
     busy_loop()
 }
@@ -449,8 +519,6 @@ pub extern "C" fn arm_init(
         let slice = memory_regions.as_slice();
         pmvec.extend_from_slice(slice);
     }
-
-    earlycon_writeln!("{:#x?}", pmvec.as_slice());
 
     for &region in uefi_mmap.entries() {
         let region_type: MemoryRegionType = match region.ty {
@@ -507,6 +575,7 @@ pub extern "C" fn arm_init(
 
     let early_page_allocator = PMTableAllocator::new(pmvec);
 
+    earlycon_writeln!("{:#x?}", pmvec_copy.as_slice());
     {
         let mut total = 0usize;
         for &region in pmvec_copy.as_slice() {
@@ -518,12 +587,12 @@ pub extern "C" fn arm_init(
             if region.size < PAGE_SIZE {
                 continue;
             }
-            //earlycon_writeln!(
-            //    "MemoryRegion {{ base: {:#x}, size: {:#x}, region_type: {:?} }}",
-            //    region.base,
-            //    region.size,
-            //    region.region_type
-            //);
+
+            let mair = if region.region_type == MemoryRegionType::Mmio {
+                MAIR_DEVICE_INDEX
+            } else {
+                MAIR_NORMAL_INDEX
+            };
 
             unsafe {
                 map_region(
@@ -535,7 +604,7 @@ pub extern "C" fn arm_init(
                     Shareability::InnerShareable,
                     true,
                     true,
-                    MAIR_NORMAL_INDEX,
+                    mair,
                     &early_page_allocator,
                 )
             };

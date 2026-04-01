@@ -1,11 +1,23 @@
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::{
+    arch::asm,
+    sync::atomic::{AtomicU8, Ordering},
+};
 
-use aarch64_cpu::registers::{ReadWriteable, Readable, Writeable};
+use aarch64_cpu::{
+    asm::barrier::{self, dsb, isb},
+    registers::{HFGRTR_EL2::ICC_IGRPENn_EL1, ReadWriteable, Readable, Writeable},
+};
+
+use crate::interrupt::gicv3::registers::{
+    GICD_CTLR, GICD_TYPER, GICR_CTLR, icc_pmr_el1::ICC_PMR_EL1, icc_sre_el1::ICC_SRE_EL1,
+};
 
 use super::{
-    GICD_CTLR, GICR_WAKER, GicdRegisters, GicrRdRegisters, GicrSgiRegisters, InterruptController,
+    GICR_WAKER, GicdRegisters, GicrRdRegisters, GicrSgiRegisters, InterruptController,
     InterruptInterface,
 };
+
+pub mod registers;
 
 static INIT_STATE: AtomicU8 = AtomicU8::new(0);
 
@@ -30,19 +42,46 @@ impl<'a, I: InterruptInterface> GicV3<'a, I> {
             iface,
         }
     }
+
+    fn wait_for_distributor_rwp(&self) {
+        dsb(barrier::SY);
+        while self.distributor.CTLR.matches_all(GICD_CTLR::RWP::True) {
+            core::hint::spin_loop();
+        }
+    }
+
+    fn wait_for_redistributor_rwp(&self) {
+        dsb(barrier::SY);
+        while self.redistributor_rd.CTLR.matches_all(GICR_CTLR::RWP::True) {
+            core::hint::spin_loop();
+        }
+    }
 }
 
 impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
     type Error = GicError;
 
     fn init(&mut self) -> Result<(), Self::Error> {
+        ICC_SRE_EL1.modify(ICC_SRE_EL1::SRE::Enabled);
+        {
+            let value = 0;
+            unsafe { asm!("msr icc_bpr1_el1, {0}", in(reg) value) };
+        }
+        self.iface.enable_group1();
+        self.iface.set_priority_mask(0xFF); // unmask every level
+        isb(barrier::SY);
+
         match INIT_STATE.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed) {
             Ok(_) => {
                 self.distributor
                     .CTLR
-                    .modify(GICD_CTLR::ENABLE_G1A::Disable + GICD_CTLR::ENABLE_G1::Disable);
+                    .modify(GICD_CTLR::EnableGrp1::Disabled + GICD_CTLR::EnableGrp1A::Disabled);
 
-                self.distributor.CTLR.modify(GICD_CTLR::ARE_NS::Enable);
+                self.wait_for_distributor_rwp();
+
+                self.distributor.CTLR.modify(GICD_CTLR::ARE_NS::Enabled);
+
+                self.wait_for_distributor_rwp();
 
                 // shared peripheral interrupts
                 for i in 1..32 {
@@ -57,7 +96,9 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
 
                 self.distributor
                     .CTLR
-                    .modify(GICD_CTLR::ENABLE_G1A::Enable + GICD_CTLR::ENABLE_G1::Enable);
+                    .modify(GICD_CTLR::EnableGrp1::Enabled + GICD_CTLR::EnableGrp1A::Enabled);
+
+                self.wait_for_distributor_rwp();
 
                 INIT_STATE.store(2, Ordering::Release);
             }
@@ -71,6 +112,16 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
         self.redistributor_rd
             .WAKER
             .modify(GICR_WAKER::ProcessorAsleep::Awake);
+        dsb(barrier::SY);
+
+        while self
+            .redistributor_rd
+            .WAKER
+            .matches_all(GICR_WAKER::ProcessorAsleep::Sleep)
+        {
+            core::hint::spin_loop();
+        }
+
         while self
             .redistributor_rd
             .WAKER
@@ -83,13 +134,15 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
         self.redistributor_sgi.ICENABLER0.set(0xFFFF_FFFF); // disable SGI/PPI
         self.redistributor_sgi.ICPENDR0.set(0xFFFF_FFFF); // clear pending
         self.redistributor_sgi.IGROUPR0.set(0xFFFF_FFFF); // group 1 (non-secure)
+        self.redistributor_sgi.IGRPMODR0.set(0);
+
+        self.wait_for_redistributor_rwp();
 
         for i in 0..32 {
             self.redistributor_sgi.IPRIORITYR[i].set(0xA0); // default priority
         }
 
-        self.iface.set_priority_mask(0xFF); // unmask every level
-        self.iface.enable_group1();
+        isb(barrier::SY);
 
         Ok(())
     }
@@ -97,10 +150,12 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
     fn enable_interrupt(&mut self, int_id: u32) -> Result<(), Self::Error> {
         if int_id < 32 {
             self.redistributor_sgi.ISENABLER0.set(1 << int_id);
+            self.wait_for_redistributor_rwp();
         } else if int_id < 1020 {
             let reg_i = (int_id / 32) as usize;
             let bit = int_id % 32;
             self.distributor.ISENABLER[reg_i].set(1 << bit);
+            self.wait_for_distributor_rwp();
         } else {
             return Err(GicError::InvalidInterruptId);
         }
@@ -110,10 +165,12 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
     fn disable_interrupt(&mut self, int_id: u32) -> Result<(), Self::Error> {
         if int_id < 32 {
             self.redistributor_sgi.ICENABLER0.set(1 << int_id);
+            self.wait_for_redistributor_rwp();
         } else if int_id < 1020 {
             let reg_i = (int_id / 32) as usize;
             let bit = int_id % 32;
             self.distributor.ICENABLER[reg_i].set(1 << bit);
+            self.wait_for_distributor_rwp();
         } else {
             return Err(GicError::InvalidInterruptId);
         }

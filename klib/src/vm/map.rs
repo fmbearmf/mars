@@ -28,8 +28,16 @@ pub fn map_region<A: TableAllocator>(
     attr_index: u64,
     allocator: &A,
 ) {
-    if va & PAGE_MASK != 0 || pa & PAGE_MASK != 0 || size & PAGE_MASK != 0 {
-        panic!("addresses AND size must be page aligned");
+    if va & PAGE_MASK != 0 {
+        panic!("VA must be page aligned");
+    }
+
+    if pa & PAGE_MASK != 0 {
+        panic!("PA must be page aligned");
+    }
+
+    if size & PAGE_MASK != 0 {
+        panic!("size must be page aligned");
     }
 
     if size < PAGE_SIZE {
