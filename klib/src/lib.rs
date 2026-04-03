@@ -8,11 +8,15 @@ use core::{
 };
 
 pub mod acpi;
+pub mod context;
 pub mod cpu_interface;
 pub mod exception;
 pub mod interrupt;
+pub mod process;
+pub mod scheduler;
 pub mod smccc;
 pub mod sync;
+pub mod thread;
 pub mod vcpu;
 pub mod vec;
 pub mod vm;

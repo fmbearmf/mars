@@ -1,3 +1,5 @@
+use core::{fmt::Debug, mem::transmute};
+
 use aarch64_cpu_ext::structures::tte::{TTE4K48, TTE16K48};
 
 pub mod map;
@@ -34,6 +36,13 @@ pub const MAIR_DEVICE_INDEX: u64 = 0;
 #[repr(C, align(16384))]
 pub struct TTable<const N: usize> {
     pub entries: [TTENATIVE; N],
+}
+
+impl<const N: usize> Debug for TTable<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let entries: &[u64; N] = unsafe { transmute(&self.entries) };
+        f.debug_struct("TTable").field("entries", entries).finish()
+    }
 }
 
 #[derive(Copy, Clone)]

@@ -3,9 +3,10 @@ use core::{ffi::c_void, mem, ptr, slice};
 use getters::unaligned_getters;
 use uefi::{system, table::cfg::ConfigTableEntry};
 
-use crate::vm::{is_kernel_address, phys_addr_to_dmap};
-
-use super::{SdtHeader, checksum};
+use super::{
+    super::vm::{is_kernel_address, phys_addr_to_dmap},
+    SdtHeader, checksum,
+};
 
 #[repr(C, packed)]
 #[unaligned_getters]

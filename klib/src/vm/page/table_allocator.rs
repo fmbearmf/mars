@@ -5,13 +5,12 @@ use core::{
     ptr::{self, NonNull},
 };
 
-use crate::{
-    vec::{DynVec, PMVec, RawVec, StaticVec},
-    vm::{MemoryRegion, MemoryRegionType, align_up},
-};
-
 use super::{
-    super::{PAGE_MASK, PAGE_SIZE, TABLE_ENTRIES, TTable, map::TableAllocator},
+    super::{
+        super::vec::{DynVec, PMVec, RawVec, StaticVec},
+        MemoryRegion, MemoryRegionType, PAGE_MASK, PAGE_SIZE, TABLE_ENTRIES, TTable, align_up,
+        map::TableAllocator,
+    },
     PageAllocator,
 };
 

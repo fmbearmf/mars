@@ -1,7 +1,6 @@
 use core::ptr;
 
-use super::GenericAddress;
-use super::header::SdtHeader;
+use super::{GenericAddress, header::SdtHeader};
 use getters::unaligned_getters;
 
 #[repr(C, packed)]

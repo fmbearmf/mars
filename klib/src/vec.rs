@@ -5,7 +5,7 @@ use core::{
     slice::{from_raw_parts, from_raw_parts_mut},
 };
 
-use crate::vm::{MemoryRegion, align_up};
+use super::vm::{MemoryRegion, align_up};
 
 const PM_POOL_SIZE: usize = size_of::<MemoryRegion>() * 1024;
 

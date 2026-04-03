@@ -6,7 +6,7 @@ use tock_registers::{
     registers::{ReadOnly, ReadWrite, WriteOnly},
 };
 
-use crate::interrupt::gicv3::registers::{
+use super::interrupt::gicv3::registers::{
     GICD_CTLR, GICD_ICFGR, GICD_IIDR, GICD_INT, GICD_IROUTER, GICD_TYPER, GICR_CTLR,
 };
 

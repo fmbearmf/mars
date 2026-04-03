@@ -1,6 +1,14 @@
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::{
+    ops::Index,
+    sync::atomic::{AtomicU8, Ordering},
+};
 
-use crate::{acpi::madt::GicrFrame, interrupt::GicdRegisters, sync::Mutex};
+use crate::cpu_interface::Mpidr;
+
+use super::{cpu_interface::Arm64InterruptInterface, interrupt::gicv3::GicV3, sync::RwLock};
+
+extern crate alloc;
+use alloc::vec::Vec;
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -33,6 +41,7 @@ impl CpuState {
     }
 }
 
+#[derive(Debug)]
 pub struct CpuFsm {
     state: AtomicU8,
 }
@@ -79,7 +88,7 @@ pub struct CpuDescriptor {
     pub mpidr: u64,
     pub available: bool,
     pub efficiency_class: u8,
-    pub gicr: Option<GicrFrame<'static>>,
+    pub gic: Option<GicV3<'static, Arm64InterruptInterface>>,
     pub timer_irq: u64,
 }
 
@@ -90,67 +99,98 @@ impl CpuDescriptor {
             mpidr: u64::MAX,
             available: false,
             efficiency_class: 0,
-            gicr: None,
+            gic: None,
             timer_irq: 0_u64,
         }
     }
 }
 
-pub const MAX_CPUS: usize = 256;
-
 #[derive(Debug)]
 pub struct VCpuList {
-    pub cpus: [CpuDescriptor; MAX_CPUS],
-    pub count: usize,
+    pub cpus: Vec<CpuDescriptor>,
+    pub fsms: Vec<CpuFsm>,
 }
+
+unsafe impl Send for VCpuList {}
+unsafe impl Sync for VCpuList {}
 
 impl VCpuList {
     pub const fn new() -> Self {
         Self {
-            cpus: [CpuDescriptor::new(); MAX_CPUS],
-            count: 0,
+            cpus: Vec::new(),
+            fsms: Vec::new(),
         }
+    }
+
+    pub fn get_fsm(&self, vcpu: usize) -> Option<&CpuFsm> {
+        self.fsms.get(vcpu)
+    }
+
+    pub fn get_fsm_mut(&mut self, vcpu: usize) -> Option<&mut CpuFsm> {
+        self.fsms.get_mut(vcpu)
     }
 }
 
 const DEFAULT_FSM: CpuFsm = CpuFsm::new();
 
-static VCPUS: Mutex<VCpuList> = Mutex::new(VCpuList::new());
-static VCPU_FSM: [CpuFsm; MAX_CPUS] = [DEFAULT_FSM; MAX_CPUS];
+pub static VCPUS: RwLock<VCpuList> = RwLock::new(VCpuList::new());
+//static VCPU_FSM: Vec<CpuFsm> = Vec::new();
 
 pub fn add_cpu(cpu: CpuDescriptor) -> usize {
-    let mut vcpus = VCPUS.lock();
-    let count = vcpus.count;
+    let mut vcpus = VCPUS.write();
 
-    if count >= MAX_CPUS {
-        panic!("ran out of CPU slots");
-    }
+    vcpus.cpus.push(cpu);
 
-    vcpus.cpus[count] = cpu;
-    vcpus.count = count.saturating_add(1);
+    let state = CpuFsm::new();
+    state.advance();
 
-    let new_state = VCPU_FSM[count].advance();
-    assert_eq!(new_state, CpuState::Init);
+    assert_eq!(state.load(), CpuState::Init);
 
-    count
+    vcpus.fsms.push(state);
+
+    vcpus.cpus.len()
+}
+
+pub fn with_this_cpu<F, R>(f: F) -> R
+where
+    F: FnOnce(&CpuDescriptor) -> R,
+{
+    let vcpus = VCPUS.read();
+    let mpidr = Mpidr::current().affinity_only();
+    let cpu = vcpus.cpus.get(mpidr as usize).expect("mpidr OOB");
+
+    f(cpu)
 }
 
 pub fn with_cpus<F, R>(f: F) -> R
 where
     F: FnOnce(usize, &[CpuDescriptor]) -> R,
 {
-    let vcpus = VCPUS.lock();
-    let count = vcpus.count;
+    let vcpus = VCPUS.read();
+    let count = vcpus.cpus.len();
 
     f(count, &vcpus.cpus[0..count])
 }
 
 pub fn vcpu_wait_init(vcpu: usize) {
-    while !(VCPU_FSM[vcpu].load() == CpuState::Done) {
+    loop {
+        let fsm_done = {
+            let vcpus = VCPUS.read();
+            match vcpus.get_fsm(vcpu) {
+                Some(fsm) => fsm.load() == CpuState::Done,
+                None => false,
+            }
+        };
+
+        if fsm_done {
+            break;
+        }
+
         core::hint::spin_loop();
     }
 }
 
 pub fn vcpu_fsm_advance(vcpu: usize) -> CpuState {
-    VCPU_FSM[vcpu].advance()
+    let vcpus = VCPUS.read();
+    vcpus.get_fsm(vcpu).expect("vcpu index OOB").advance()
 }

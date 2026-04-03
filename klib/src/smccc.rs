@@ -1,6 +1,6 @@
 use core::arch::asm;
 
-use crate::cpu_interface::Mpidr;
+use super::cpu_interface::Mpidr;
 
 pub const PSCI_0_2_FN64_CPU_ON: u32 = 0xC400_0003;
 

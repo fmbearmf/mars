@@ -7,7 +7,7 @@ use core::{
 };
 use klib::vm::{TABLE_ENTRIES, TTable, dmap_addr_to_phys, map::TableAllocator, phys_addr_to_dmap};
 
-use crate::{busy_loop_ret, earlycon_writeln};
+use super::{busy_loop_ret, earlycon_writeln};
 
 pub struct KernelPTAllocator;
 

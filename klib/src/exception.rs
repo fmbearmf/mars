@@ -1,81 +1,8 @@
-use core::{borrow::Borrow, fmt, ops::Deref};
+use core::{borrow::Borrow, ops::Deref};
 
 use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Readable};
 
-use crate::cpu_interface::Mpidr;
-
-#[derive(Clone, Eq, PartialEq)]
-#[repr(C)]
-pub struct RegisterFile {
-    pub registers: [u64; 19],
-    padding: u64,
-    pub fp: u64,
-    pub sp: u64,
-    pub elr: usize,
-    pub spsr: u64,
-}
-
-impl fmt::Debug for RegisterFile {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        struct HexSlice<'a>(&'a [u64]);
-
-        impl fmt::Debug for HexSlice<'_> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                let mut list = f.debug_list();
-                for v in self.0 {
-                    list.entry(&format_args!("{:#x}", v));
-                }
-                list.finish()
-            }
-        }
-
-        f.debug_struct("RegisterFile")
-            .field("registers", &HexSlice(&self.registers))
-            .field("fp", &format_args!("{:#x}", self.fp))
-            .field("sp", &format_args!("{:#x}", self.sp))
-            .field("elr", &format_args!("{:#x}", self.elr))
-            .field("spsr", &format_args!("{:#x}", self.spsr))
-            .finish()
-    }
-}
-
-//const _: () = assert!(size_of::<RegisterFile>() == 8 * 24);
-
-#[derive(Eq, PartialEq)]
-#[repr(transparent)]
-pub struct RegisterFileRef<'a>(&'a mut RegisterFile);
-
-impl fmt::Debug for RegisterFileRef<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&*self.0, f)
-    }
-}
-
-impl RegisterFileRef<'_> {
-    pub unsafe fn get_mut(&mut self) -> &mut RegisterFile {
-        self.0
-    }
-}
-
-impl AsRef<RegisterFile> for RegisterFileRef<'_> {
-    fn as_ref(&self) -> &RegisterFile {
-        self.0
-    }
-}
-
-impl Borrow<RegisterFile> for RegisterFileRef<'_> {
-    fn borrow(&self) -> &RegisterFile {
-        self.0
-    }
-}
-
-impl Deref for RegisterFileRef<'_> {
-    type Target = RegisterFile;
-
-    fn deref(&self) -> &Self::Target {
-        self.0
-    }
-}
+use super::{context::RegisterFileRef, cpu_interface::Mpidr};
 
 pub trait ExceptionHandler {
     extern "C" fn sync_current(register_file: RegisterFileRef) {
@@ -89,13 +16,21 @@ pub trait ExceptionHandler {
     }
 
     extern "C" fn irq_current(register_file: RegisterFileRef) {
-        _ = register_file;
-        panic!("Unexpected IRQ from current EL");
+        panic!(
+            "Unexpected current EL IRQ from CPU MPIDR={} (FAR: {:#x}) from current EL: {:?}",
+            Mpidr::current().affinity_only(),
+            FAR_EL1.get(),
+            register_file
+        );
     }
 
     extern "C" fn fiq_current(register_file: RegisterFileRef) {
-        _ = register_file;
-        panic!("Unexpected FIQ from current EL");
+        panic!(
+            "Unexpected current EL FIQ from CPU MPIDR={} (FAR: {:#x}) from current EL: {:?}",
+            Mpidr::current().affinity_only(),
+            FAR_EL1.get(),
+            register_file
+        );
     }
 
     extern "C" fn serror_current(register_file: RegisterFileRef) {
@@ -130,7 +65,8 @@ macro_rules! exception_handlers {
         core::arch::global_asm!(
             r#"
 .macro save_volatile_to_stack el:req
-    stp x0, x1, [sp, #-(8 * 24)]!
+    stp x0, x1, [sp, #-(8 * 33)]!
+
     stp x2, x3, [sp, #8 * 2]
     stp x4, x5, [sp, #8 * 4]
     stp x6, x7, [sp, #8 * 6]
@@ -139,15 +75,24 @@ macro_rules! exception_handlers {
     stp x12, x13, [sp, #8 * 12]
     stp x14, x15, [sp, #8 * 14]
     stp x16, x17, [sp, #8 * 16]
-    str x18, [sp, #8 * 18]
-    stp x29, x30, [sp, #8 * 20]
+    stp x18, x19, [sp, #8 * 18]
+    stp x20, x21, [sp, #8 * 20]
+    stp x22, x23, [sp, #8 * 22]
+    stp x24, x25, [sp, #8 * 24]
+    stp x26, x27, [sp, #8 * 26]
+    stp x28, x29, [sp, #8 * 28]
+    str x30,      [sp, #8 * 30]
 
     mrs x0, elr_\el
     mrs x1, spsr_\el
-    stp x0, x1, [sp, #8 * 22]
+    stp x0, x1, [sp, #8 * 31]
 .endm
 
 .macro restore_volatile_from_stack el:req
+    ldp x0, x1, [sp, #8 * 31]
+    msr elr_\el, x0
+    msr spsr_\el, x1
+
     ldp x2, x3, [sp, #8 * 2]
     ldp x4, x5, [sp, #8 * 4]
     ldp x6, x7, [sp, #8 * 6]
@@ -156,14 +101,15 @@ macro_rules! exception_handlers {
     ldp x12, x13, [sp, #8 * 12]
     ldp x14, x15, [sp, #8 * 14]
     ldp x16, x17, [sp, #8 * 16]
-    ldr x18, [sp, #8 * 18]
-    ldp x29, x30, [sp, #8 * 20]
+    ldp x18, x19, [sp, #8 * 18]
+    ldp x20, x21, [sp, #8 * 20]
+    ldp x22, x23, [sp, #8 * 22]
+    ldp x24, x25, [sp, #8 * 24]
+    ldp x26, x27, [sp, #8 * 26]
+    ldp x28, x29, [sp, #8 * 28]
+    ldr x30,      [sp, #8 * 30]
 
-    ldp x0, x1, [sp, #8 * 22]
-    msr elr_\el, x0
-    msr spsr_\el, x1
-
-    ldp x0, x1, [sp, #8 * 24]
+    ldp x0, x1, [sp], #(8 * 33)
 .endm
 
 .macro current_exception handler:req el:req

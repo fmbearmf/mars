@@ -1,13 +1,15 @@
 use core::{fmt::Debug, iter::FusedIterator, marker::PhantomData, ptr, slice, u32, u64};
 
-use crate::{
-    interrupt::{GicdRegisters, GicrRdRegisters, GicrSgiRegisters},
-    vm::phys_addr_to_dmap,
-};
-
 use tock_registers::interfaces::Debuggable;
 
-use super::{SystemDescription, header::SdtHeader};
+use super::{
+    super::{
+        interrupt::{GicdRegisters, GicrRdRegisters, GicrSgiRegisters},
+        vm::phys_addr_to_dmap,
+    },
+    SystemDescription,
+    header::SdtHeader,
+};
 use getters::unaligned_getters;
 
 use zerocopy::{FromBytes, Immutable, Unaligned};

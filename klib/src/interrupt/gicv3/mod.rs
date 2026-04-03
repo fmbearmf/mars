@@ -1,5 +1,6 @@
 use core::{
     arch::asm,
+    fmt::Debug,
     sync::atomic::{AtomicU8, Ordering},
 };
 
@@ -8,24 +9,29 @@ use aarch64_cpu::{
     registers::{HFGRTR_EL2::ICC_IGRPENn_EL1, ReadWriteable, Readable, Writeable},
 };
 
-use crate::interrupt::gicv3::registers::{
-    GICD_CTLR, GICD_TYPER, GICR_CTLR, icc_pmr_el1::ICC_PMR_EL1, icc_sre_el1::ICC_SRE_EL1,
+use super::{
+    GICD_CTLR, GICD_TYPER, GICR_CTLR, GICR_WAKER, GicdRegisters, GicrRdRegisters, GicrSgiRegisters,
+    InterruptController, InterruptInterface,
 };
 
-use super::{
-    GICR_WAKER, GicdRegisters, GicrRdRegisters, GicrSgiRegisters, InterruptController,
-    InterruptInterface,
-};
+use self::registers::{icc_pmr_el1::ICC_PMR_EL1, icc_sre_el1::ICC_SRE_EL1};
 
 pub mod registers;
 
 static INIT_STATE: AtomicU8 = AtomicU8::new(0);
 
+#[derive(Copy, Clone)]
 pub struct GicV3<'a, I: InterruptInterface> {
-    distributor: &'a GicdRegisters,
-    redistributor_rd: &'a GicrRdRegisters,
-    redistributor_sgi: &'a GicrSgiRegisters,
-    iface: I,
+    pub distributor: &'a GicdRegisters,
+    pub redistributor_rd: &'a GicrRdRegisters,
+    pub redistributor_sgi: &'a GicrSgiRegisters,
+    pub iface: I,
+}
+
+impl<I: InterruptInterface> Debug for GicV3<'_, I> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GicV3").finish()
+    }
 }
 
 impl<'a, I: InterruptInterface> GicV3<'a, I> {

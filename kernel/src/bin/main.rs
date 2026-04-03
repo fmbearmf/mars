@@ -44,7 +44,7 @@ use klib::{
     exception::ExceptionHandler,
     interrupt::{GicdRegisters, InterruptController, gicv3::GicV3},
     smccc::cpu_on,
-    vcpu::{CpuDescriptor, add_cpu, vcpu_wait_init, with_cpus},
+    vcpu::{CpuDescriptor, VCPUS, add_cpu, vcpu_wait_init, with_cpus},
     vec::{DynVec, PMVec, RawVec, StaticVec},
     vm::{
         DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
@@ -61,17 +61,15 @@ use uefi::{
     mem::memory_map::{MemoryMap, MemoryMapMut, MemoryMapOwned},
 };
 
-use crate::{
+use self::{
     allocator::KernelPTAllocator,
     earlyinit::{
         earlycon::{EARLYCON, EarlyCon},
+        exception::Exceptions,
         mmu::init_mmu,
         smp::{secondary_entry, secondary_init},
     },
 };
-
-struct Exceptions;
-impl ExceptionHandler for Exceptions {}
 
 klib::exception_handlers!(Exceptions);
 
@@ -349,14 +347,17 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                         let mpidr =
                             Mpidr::new(mpidr_tuple.0, mpidr_tuple.1, mpidr_tuple.2, mpidr_tuple.3);
 
-                        let gicr_frame = cpu_gicrs.index(mpidr.affinity_only() as usize);
+                        let gicr = cpu_gicrs.index(mpidr.affinity_only() as usize);
+                        let gicd_ptr = cpu_gicd.expect("`None` gicd");
+                        let gicd = unsafe { &*gicd_ptr };
+                        let gic = GicV3::new(gicd, gicr.rd, gicr.sgi, Arm64InterruptInterface {});
 
                         add_cpu(CpuDescriptor {
                             acpi_cpu_uid: gicc.acpi_cpu_uid(),
                             mpidr: mpidr.affinity_only(),
                             available: enabled || online_capable,
                             efficiency_class: gicc.efficiency_class(),
-                            gicr: Some(*gicr_frame),
+                            gic: Some(gic),
                             timer_irq: timer_irq.expect("timer_irq not set") as u64,
                         });
                     }
@@ -461,7 +462,6 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                 entry_virt: secondary_init as *const () as u64,
                 sctlr: SCTLR_EL1.get(),
                 cpu_desc: cpu as *const _,
-                gicd: cpu_gicd.expect("no GIC distributor present"),
             });
 
             let args_ptr = Box::into_raw(args);
@@ -493,6 +493,8 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     });
 
     earlycon_writeln!("boot core finish");
+
+    print_mem_usage();
 
     busy_loop()
 }

@@ -2,10 +2,11 @@ use core::arch::asm;
 
 use aarch64_cpu::registers::{MPIDR_EL1, Readable};
 
-use crate::{interrupt::GicdRegisters, vcpu::CpuDescriptor, vm::TTable};
+use super::{
+    interrupt::GicdRegisters, interrupt::InterruptInterface, vcpu::CpuDescriptor, vm::TTable,
+};
 
-use super::interrupt::InterruptInterface;
-
+#[derive(Debug, Copy, Clone)]
 pub struct Arm64InterruptInterface;
 
 impl Arm64InterruptInterface {
@@ -90,7 +91,6 @@ pub struct SecondaryBootArgs {
     pub entry_virt: u64,
     pub sctlr: u64,
     pub cpu_desc: *const CpuDescriptor,
-    pub gicd: *const GicdRegisters,
 }
 
 pub fn mpidr_key(mpidr: u64) -> u64 {

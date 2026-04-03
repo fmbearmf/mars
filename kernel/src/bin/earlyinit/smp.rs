@@ -22,7 +22,7 @@ use klib::{
     vm::phys_addr_to_dmap,
 };
 
-use crate::{busy_loop, busy_loop_ret, earlycon_writeln};
+use super::super::{busy_loop, busy_loop_ret, earlycon_writeln};
 
 #[unsafe(naked)]
 pub unsafe extern "C" fn secondary_entry(context: *const SecondaryBootArgs) -> ! {
@@ -93,27 +93,7 @@ pub extern "C" fn secondary_init(context_phys: *const SecondaryBootArgs) -> ! {
 
     let interrupt_controller = Arm64InterruptInterface {};
 
-    let gicr = desc
-        .gicr
-        .expect("`None` GIC frame passed to secondary core");
-
-    earlycon_writeln!("rd: {:p}", gicr.rd);
-    earlycon_writeln!("sgi: {:p}", gicr.sgi);
-
-    let gicd = unsafe { &*context.gicd };
-
-    earlycon_writeln!(
-        "gicd: ctlr={:#x} typer={:#x}",
-        gicd.CTLR.get(),
-        gicd.TYPER.get()
-    );
-
-    let security_extension = gicd.TYPER.matches_all(GICD_TYPER::SecurityExtn::SET);
-    earlycon_writeln!("security extensions: {}", security_extension);
-
-    earlycon_writeln!("gicd: {:p}", gicd);
-
-    let mut gic = GicV3::new(gicd, gicr.rd, gicr.sgi, interrupt_controller);
+    let mut gic = desc.gic.expect("`None` gic in secondary_init");
 
     gic.init().expect("gic init fail");
 
@@ -145,10 +125,12 @@ pub extern "C" fn secondary_init(context_phys: *const SecondaryBootArgs) -> ! {
         let ctl = CNTV_CTL_EL0.matches_all(CNTV_CTL_EL0::ISTATUS::SET);
 
         if ctl {
-            let ispendr0 = gicr.sgi.ISPENDR0.get();
-            let isenabler0 = gicr.sgi.ISENABLER0.get();
-            let igroupr0 = gicr.sgi.IGROUPR0.get();
-            let waker = gicr.rd.WAKER.get();
+            let ispendr0 = gic.redistributor_sgi.ISPENDR0.get();
+            let isenabler0 = gic.redistributor_sgi.ISENABLER0.get();
+            let igroupr0 = gic.redistributor_sgi.IGROUPR0.get();
+            let waker = gic.redistributor_rd.WAKER.get();
+
+            earlycon_writeln!("timer interrupt not handled");
 
             busy_loop_ret();
         }

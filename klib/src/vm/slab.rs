@@ -5,12 +5,10 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
-use crate::{
-    sync::TicketLock,
-    vm::{PAGE_MASK, align_down, align_up},
+use super::{
+    super::sync::TicketLock, MemoryRegion, PAGE_MASK, PAGE_SIZE, align_down, align_up,
+    page::PageAllocator,
 };
-
-use super::{MemoryRegion, PAGE_SIZE, page::PageAllocator};
 
 const MIN_OBJ_SIZE: usize = mem::size_of::<usize>();
 
