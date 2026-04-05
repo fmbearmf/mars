@@ -1,8 +1,8 @@
 # Mars
-Mars is a WIP OS kernel, currently only targetting ARMv8.
+Mars is a WIP kernel targetting ARMv8.
 
 ## Prerequisites
-- Rust compiler (MSRV 1.94.0-nightly) with aarch64-unknown-none target support
+- Rust compiler (1.96.0-nightly) with aarch64-unknown-none target support
 - QEMU
 
 ## Features
@@ -10,4 +10,4 @@ Mars is a WIP OS kernel, currently only targetting ARMv8.
 - ACPI
 - SMP (PSCI)
 - Virtual Memory
-- Kernel Heap (slab allocator)
+- Slab Allocator
