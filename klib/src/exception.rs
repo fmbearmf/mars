@@ -64,8 +64,8 @@ macro_rules! exception_handlers {
     ($handlers:ty) => {
         core::arch::global_asm!(
             r#"
-.macro save_volatile_to_stack el:req
-    stp x0, x1, [sp, #-(8 * 33)]!
+.macro save_regs el:req
+    stp x0, x1, [sp, #-(8 * 34)]!
 
     stp x2, x3, [sp, #8 * 2]
     stp x4, x5, [sp, #8 * 4]
@@ -83,15 +83,20 @@ macro_rules! exception_handlers {
     stp x28, x29, [sp, #8 * 28]
     str x30,      [sp, #8 * 30]
 
+    add x2, sp, #(8 * 34)
+    str x2, [sp, #8 * 31]
+
     mrs x0, elr_\el
     mrs x1, spsr_\el
-    stp x0, x1, [sp, #8 * 31]
+    stp x0, x1, [sp, #8 * 32]
 .endm
 
-.macro restore_volatile_from_stack el:req
-    ldp x0, x1, [sp, #8 * 31]
+.macro restore_regs el:req
+    ldp x0, x1, [sp, #8 * 32]
     msr elr_\el, x0
     msr spsr_\el, x1
+
+    ldr x2,     [sp, #8 * 31]
 
     ldp x2, x3, [sp, #8 * 2]
     ldp x4, x5, [sp, #8 * 4]
@@ -109,15 +114,20 @@ macro_rules! exception_handlers {
     ldp x28, x29, [sp, #8 * 28]
     ldr x30,      [sp, #8 * 30]
 
-    ldp x0, x1, [sp], #(8 * 33)
+    ldp x0, x1, [sp], #(8 * 34)
 .endm
 
 .macro current_exception handler:req el:req
-    save_volatile_to_stack \el
+    save_regs \el
     mov x0, sp
     bl \handler
-    restore_volatile_from_stack \el
+    restore_regs \el
     eret
+.endm
+
+.macro vector_table_entry label:req
+.balign 0x80
+    b \label
 .endm
 
 .macro vector_table el:req
@@ -125,62 +135,60 @@ macro_rules! exception_handlers {
 .global vector_table_\el
 .balign 0x800
 vector_table_\el:
+
+vector_table_entry sync_cur_sp0_\el
+vector_table_entry irq_cur_sp0_\el
+vector_table_entry fiq_cur_sp0_\el
+vector_table_entry serr_cur_sp0_\el
+
+vector_table_entry sync_cur_spx_\el
+vector_table_entry irq_cur_spx_\el
+vector_table_entry fiq_cur_spx_\el
+vector_table_entry serr_cur_spx_\el
+
+vector_table_entry sync_lower_64_\el
+vector_table_entry irq_lower_64_\el
+vector_table_entry fiq_lower_64_\el
+vector_table_entry serr_lower_64_\el
+
+vector_table_entry sync_lower_32_\el
+vector_table_entry irq_lower_32_\el
+vector_table_entry fiq_lower_32_\el
+vector_table_entry serr_lower_32_\el
+
 sync_cur_sp0_\el:
     current_exception {sync_current} \el
-
-.balign 0x80
 irq_cur_sp0_\el:
     current_exception {irq_current} \el
-
-.balign 0x80
 fiq_cur_sp0_\el:
     current_exception {fiq_current} \el
-
-.balign 0x80
 serr_cur_sp0_\el:
     current_exception {serror_current} \el
 
-.balign 0x80
 sync_cur_spx_\el:
     current_exception {sync_current} \el
-
-.balign 0x80
 irq_cur_spx_\el:
     current_exception {irq_current} \el
-
-.balign 0x80
 fiq_cur_spx_\el:
     current_exception {fiq_current} \el
-
-.balign 0x80
 serr_cur_spx_\el:
     current_exception {serror_current} \el
 
-.balign 0x80
 sync_lower_64_\el:
     current_exception {sync_lower} \el
-
-.balign 0x80
 irq_lower_64_\el:
     current_exception {irq_lower} \el
-
-.balign 0x80
 fiq_lower_64_\el:
     current_exception {fiq_lower} \el
+serr_lower_64_\el:
+    current_exception {serror_lower} \el
 
-.balign 0x80
 sync_lower_32_\el:
     current_exception {sync_lower} \el
-
-.balign 0x80
 irq_lower_32_\el:
     current_exception {irq_lower} \el
-
-.balign 0x80
 fiq_lower_32_\el:
     current_exception {fiq_lower} \el
-
-.balign 0x80
 serr_lower_32_\el:
     current_exception {serror_lower} \el
 

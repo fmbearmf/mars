@@ -17,6 +17,7 @@ pub mod scheduler;
 pub mod smccc;
 pub mod sync;
 pub mod thread;
+pub mod timer;
 pub mod vcpu;
 pub mod vec;
 pub mod vm;

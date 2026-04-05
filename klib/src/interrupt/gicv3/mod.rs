@@ -6,7 +6,7 @@ use core::{
 
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
-    registers::{HFGRTR_EL2::ICC_IGRPENn_EL1, ReadWriteable, Readable, Writeable},
+    registers::{ReadWriteable, Readable, Writeable},
 };
 
 use super::{
@@ -71,7 +71,7 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
         ICC_SRE_EL1.modify(ICC_SRE_EL1::SRE::Enabled);
         {
             let value = 0;
-            unsafe { asm!("msr icc_bpr1_el1, {0}", in(reg) value) };
+            unsafe { asm!("msr icc_bpr1_el1, {0:x}", in(reg) value) };
         }
         self.iface.enable_group1();
         self.iface.set_priority_mask(0xFF); // unmask every level
@@ -140,7 +140,7 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
         self.redistributor_sgi.ICENABLER0.set(0xFFFF_FFFF); // disable SGI/PPI
         self.redistributor_sgi.ICPENDR0.set(0xFFFF_FFFF); // clear pending
         self.redistributor_sgi.IGROUPR0.set(0xFFFF_FFFF); // group 1 (non-secure)
-        self.redistributor_sgi.IGRPMODR0.set(0);
+        self.redistributor_sgi.IGRPMODR0.set(0xFFFF_FFFF);
 
         self.wait_for_redistributor_rwp();
 

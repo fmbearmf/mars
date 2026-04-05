@@ -11,7 +11,16 @@ pub struct Arm64InterruptInterface;
 
 impl Arm64InterruptInterface {
     #[inline(always)]
-    fn read_iar() -> u32 {
+    pub fn read_iar0() -> u32 {
+        let val: u32;
+        unsafe {
+            asm!("mrs {0:x}, ICC_IAR0_EL1", out(reg) val);
+        }
+        val
+    }
+
+    #[inline(always)]
+    pub fn read_iar1() -> u32 {
         let val: u32;
         unsafe {
             asm!("mrs {0:x}, ICC_IAR1_EL1", out(reg) val);
@@ -20,21 +29,42 @@ impl Arm64InterruptInterface {
     }
 
     #[inline(always)]
-    fn write_eoir1(val: u32) {
+    pub fn write_eoir0(val: u32) {
+        unsafe {
+            asm!("msr ICC_EOIR0_EL1, {}", in(reg) val as u64);
+        }
+    }
+
+    #[inline(always)]
+    pub fn write_eoir1(val: u32) {
         unsafe {
             asm!("msr ICC_EOIR1_EL1, {}", in(reg) val as u64);
         }
     }
 
     #[inline(always)]
-    fn write_pmr(val: u8) {
+    pub fn write_dir(val: u32) {
+        unsafe {
+            asm!("msr ICC_DIR_EL1, {}", in(reg) val as u64);
+        }
+    }
+
+    #[inline(always)]
+    pub fn write_pmr(val: u8) {
         unsafe {
             asm!("msr ICC_PMR_EL1, {}", in(reg) val as u64);
         }
     }
 
     #[inline(always)]
-    fn write_igrpen1(val: u64) {
+    pub fn write_igrpen0(val: u64) {
+        unsafe {
+            asm!("msr ICC_IGRPEN0_EL1, {}", in(reg) val);
+        }
+    }
+
+    #[inline(always)]
+    pub fn write_igrpen1(val: u64) {
         unsafe {
             asm!("msr ICC_IGRPEN1_EL1, {}", in(reg) val);
         }
@@ -43,11 +73,12 @@ impl Arm64InterruptInterface {
 
 impl InterruptInterface for Arm64InterruptInterface {
     fn read_iar(&self) -> u32 {
-        Arm64InterruptInterface::read_iar()
+        Arm64InterruptInterface::read_iar1()
     }
 
     fn write_eoir(&self, int_id: u32) {
         Arm64InterruptInterface::write_eoir1(int_id);
+        Arm64InterruptInterface::write_dir(int_id);
     }
 
     fn enable_group1(&self) {

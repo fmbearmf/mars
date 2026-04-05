@@ -2,27 +2,18 @@ use core::arch::{asm, naked_asm};
 
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
-    registers::{
-        CNTFRQ_EL0, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTV_TVAL_EL0, CNTVCT_EL0, CNTVOFF_EL2, CPACR_EL1,
-        DAIF, HFGRTR_EL2::ISR_EL1, ICC_SRE_EL2, ReadWriteable, Readable, TCR_EL1, TTBR0_EL1,
-        Writeable,
-    },
+    registers::{CPACR_EL1, DAIF, ReadWriteable, TCR_EL1, TTBR0_EL1, Writeable},
 };
 use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
 use klib::{
-    cpu_interface::{Arm64InterruptInterface, Mpidr, SecondaryBootArgs},
-    interrupt::{
-        GicdRegisters, GicrRdRegisters, GicrSgiRegisters, InterruptController,
-        gicv3::{
-            GicV3,
-            registers::{GICD_TYPER, icc_pmr_el1::ICC_PMR_EL1, icc_sre_el1::ICC_SRE_EL1},
-        },
-    },
+    cpu_interface::{Mpidr, SecondaryBootArgs},
+    interrupt::InterruptController,
+    timer::init_timer,
     vcpu::{CpuState, vcpu_fsm_advance},
     vm::phys_addr_to_dmap,
 };
 
-use super::super::{busy_loop, busy_loop_ret, earlycon_writeln};
+use super::super::busy_loop;
 
 #[unsafe(naked)]
 pub unsafe extern "C" fn secondary_entry(context: *const SecondaryBootArgs) -> ! {
@@ -85,55 +76,16 @@ pub extern "C" fn secondary_init(context_phys: *const SecondaryBootArgs) -> ! {
 
     let desc = unsafe { &*(context.cpu_desc) };
 
-    earlycon_writeln!(
-        "hello from secondary cpu mpidr={} timer_irq={}",
-        mpidr.affinity_only(),
-        desc.timer_irq
-    );
-
-    let interrupt_controller = Arm64InterruptInterface {};
-
-    let mut gic = desc.gic.expect("`None` gic in secondary_init");
+    let mut gic = desc.gic.expect("`None` gic");
 
     gic.init().expect("gic init fail");
+    gic.enable_interrupt(desc.timer_irq as u32)
+        .expect("error enabling timer IRQ");
 
-    gic.enable_interrupt(27).expect("error enabling int27");
-
-    let freq = CNTFRQ_EL0.get();
-
-    earlycon_writeln!("timer ticks per second: {}", freq);
-    earlycon_writeln!("timer compare value: {}", CNTV_CVAL_EL0.get());
-    earlycon_writeln!("timer value: {}", CNTVCT_EL0.get());
-    earlycon_writeln!("timer tval: {}", CNTV_TVAL_EL0.get());
-
-    let future_time = CNTVCT_EL0.get() + (2 * freq);
-
-    earlycon_writeln!("future time: {}", future_time);
-
-    CNTV_CTL_EL0.set(0);
-    isb(barrier::SY);
-    CNTV_CVAL_EL0.set(future_time);
-    isb(barrier::SY);
-
-    CNTV_CTL_EL0.modify(CNTV_CTL_EL0::ENABLE::SET + CNTV_CTL_EL0::IMASK::CLEAR);
-    isb(barrier::SY);
+    init_timer();
 
     let new_state = vcpu_fsm_advance(mpidr.affinity_only() as usize);
     assert_eq!(new_state, CpuState::Done);
 
-    loop {
-        let ctl = CNTV_CTL_EL0.matches_all(CNTV_CTL_EL0::ISTATUS::SET);
-
-        if ctl {
-            let ispendr0 = gic.redistributor_sgi.ISPENDR0.get();
-            let isenabler0 = gic.redistributor_sgi.ISENABLER0.get();
-            let igroupr0 = gic.redistributor_sgi.IGROUPR0.get();
-            let waker = gic.redistributor_rd.WAKER.get();
-
-            earlycon_writeln!("timer interrupt not handled");
-
-            busy_loop_ret();
-        }
-        isb(barrier::SY);
-    }
+    busy_loop()
 }

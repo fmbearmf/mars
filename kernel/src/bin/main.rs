@@ -14,10 +14,13 @@ use aarch64_cpu::{
     },
     registers::{
         CNTFRQ_EL0, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0, CPACR_EL1, DAIF, MAIR_EL1, MPIDR_EL1,
-        ReadWriteable, Readable, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1, Writeable,
+        ReadWriteable, Readable, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1, VBAR_EL1, Writeable,
     },
 };
-use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
+use aarch64_cpu_ext::{
+    asm::tlb::{VMALLE1, tlbi},
+    structures::tte::{AccessPermission, Shareability},
+};
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     arch::{asm, naked_asm},
@@ -44,7 +47,8 @@ use klib::{
     exception::ExceptionHandler,
     interrupt::{GicdRegisters, InterruptController, gicv3::GicV3},
     smccc::cpu_on,
-    vcpu::{CpuDescriptor, VCPUS, add_cpu, vcpu_wait_init, with_cpus},
+    timer::init_timer,
+    vcpu::{CpuDescriptor, VCPUS, add_cpu, vcpu_wait_init, with_cpus, with_this_cpu},
     vec::{DynVec, PMVec, RawVec, StaticVec},
     vm::{
         DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
@@ -381,6 +385,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     // ditch lower half mappings
     TTBR0_EL1.set(0);
     TCR_EL1.modify(TCR_EL1::EPD0::DisableTTBR0Walks);
+    tlbi(VMALLE1);
 
     let this_mpidr = Mpidr::current();
     let is_uniprocessor = MPIDR_EL1::U.read(this_mpidr.affinity_only()) == 1;
@@ -393,8 +398,6 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     let interrupt_controller = Arm64InterruptInterface {};
 
     print_mem_usage();
-
-    //DAIF.modify(DAIF::I::Unmasked);
 
     with_cpus(|_, cpus| {
         for cpu in cpus {
@@ -492,9 +495,23 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
         }
     });
 
-    earlycon_writeln!("boot core finish");
-
     print_mem_usage();
+
+    with_this_cpu(|cpu| {
+        assert_eq!(cpu.mpidr, this_mpidr.affinity_only());
+
+        let mut gic = cpu.gic.expect("`None` gic");
+
+        gic.init().expect("gic init fail");
+        gic.enable_interrupt(cpu.timer_irq as u32)
+            .expect("error enabling timer IRQ");
+
+        DAIF.modify(DAIF::D::Unmasked + DAIF::A::Unmasked + DAIF::I::Unmasked + DAIF::F::Unmasked);
+
+        init_timer();
+    });
+
+    earlycon_writeln!("boot core finish");
 
     busy_loop()
 }
