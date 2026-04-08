@@ -2,6 +2,8 @@ use core::{cell::UnsafeCell, ptr::NonNull};
 
 use super::vm::{MemoryRegion, align_up};
 
+pub mod page;
+
 #[repr(C, align(16))]
 pub struct PmPool<const S: usize> {
     buf: UnsafeCell<[u8; S]>,

@@ -5,7 +5,6 @@ use aarch64_cpu_ext::structures::tte::{TTE4K48, TTE16K48};
 pub mod backing;
 pub mod map;
 pub mod mapper;
-pub mod page;
 pub mod page_allocator;
 pub mod region;
 pub mod slab;

@@ -5,13 +5,12 @@ use core::{
     ptr::{self, NonNull},
 };
 
-use super::{
-    super::{
-        super::vec::{DynVec, PMVec, RawVec, StaticVec},
+use crate::{
+    vec::{DynVec, PMVec, RawVec, StaticVec},
+    vm::{
         MemoryRegion, MemoryRegionType, PAGE_MASK, PAGE_SIZE, TABLE_ENTRIES, TTable, align_up,
         mapper::TableAllocator,
     },
-    PageAllocator,
 };
 
 pub struct PMTableAllocator {

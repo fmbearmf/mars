@@ -6,8 +6,9 @@ use core::{
 };
 
 use super::{
-    super::sync::TicketLock, DMAP_START, MemoryRegion, PAGE_MASK, PAGE_SIZE, VmError, align_down,
-    align_up, page::PageAllocator, page_allocator::PhysicalPageAllocator,
+    super::{pm::page::PageAllocator, sync::TicketLock},
+    DMAP_START, MemoryRegion, PAGE_MASK, PAGE_SIZE, VmError, align_down, align_up,
+    page_allocator::PhysicalPageAllocator,
 };
 
 const MIN_OBJ_SIZE: usize = mem::size_of::<usize>();
