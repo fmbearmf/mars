@@ -6,7 +6,7 @@ use klib::{
     vec::{DynVec, RawVec},
     vm::{
         MemoryRegion, MemoryRegionType, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, TTableUEFI,
-        map::TableAllocator,
+        mapper::TableAllocator,
     },
 };
 use uefi::boot::{self, MemoryType, PAGE_SIZE as UEFI_PS};

@@ -53,7 +53,7 @@ use klib::{
     vm::{
         DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
         PAGE_SIZE, TABLE_ENTRIES, TTable, align_down, align_up, dmap_addr_to_phys,
-        map::{TableAllocator, free_tables, map_region},
+        mapper::{TableAllocator, free_tables, map_region},
         page::{PageAllocator, table_allocator::PMTableAllocator},
         phys_addr_to_dmap,
         slab::SlabAllocator,
@@ -79,6 +79,8 @@ klib::exception_handlers!(Exceptions);
 
 #[global_allocator]
 pub static KALLOCATOR: SlabAllocator = SlabAllocator::new();
+
+pub static KPAGE_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -208,7 +210,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     let rsdp = find_rsdp_in_slice(slice).expect("RSDP not found in ACPI tables.");
     earlycon_writeln!("ACPI RSDP @ {:p}", rsdp);
 
-    init_mmu(boot_info.kernel_load_physical_address, offset);
+    init_mmu();
 
     let page_allocator = &arm_init(uefi_mmap, boot_info.kernel_regions, boot_info.root_pt);
 

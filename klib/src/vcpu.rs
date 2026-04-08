@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicU8, Ordering},
 };
 
-use crate::cpu_interface::Mpidr;
+use crate::{cpu_interface::Mpidr, scheduler::SCHEDULER};
 
 use super::{cpu_interface::Arm64InterruptInterface, interrupt::gicv3::GicV3, sync::RwLock};
 
@@ -138,6 +138,8 @@ pub static VCPUS: RwLock<VCpuList> = RwLock::new(VCpuList::new());
 
 pub fn add_cpu(cpu: CpuDescriptor) -> usize {
     let mut vcpus = VCPUS.write();
+
+    SCHEDULER.register_cpu(cpu.mpidr);
 
     vcpus.cpus.push(cpu);
 

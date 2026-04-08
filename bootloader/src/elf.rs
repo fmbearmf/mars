@@ -11,7 +11,7 @@ use klib::{
     vec::DynVec,
     vm::{
         MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType, TABLE_ENTRIES, TTENATIVE, TTable,
-        align_up, map::map_region,
+        align_up, mapper::map_region,
     },
 };
 use log::{debug, error};

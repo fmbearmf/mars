@@ -5,9 +5,10 @@ use core::{
     slice::{from_raw_parts, from_raw_parts_mut},
 };
 
-use super::vm::{MemoryRegion, align_up};
-
-const PM_POOL_SIZE: usize = size_of::<MemoryRegion>() * 1024;
+use super::{
+    pm::PM_POOL,
+    vm::{MemoryRegion, align_up},
+};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -85,81 +86,6 @@ impl StaticVec<MemoryRegion> {
     }
 }
 
-#[repr(C, align(16))]
-struct PmPool {
-    buf: UnsafeCell<[u8; PM_POOL_SIZE]>,
-    offset: UnsafeCell<usize>,
-}
-
-unsafe impl Sync for PmPool {}
-
-static PM_POOL: PmPool = PmPool {
-    buf: UnsafeCell::new([0; PM_POOL_SIZE]),
-    offset: UnsafeCell::new(0),
-};
-
-fn pm_alloc<T>(count: usize) -> NonNull<T> {
-    if size_of::<T>() == 0 {
-        return NonNull::dangling();
-    }
-
-    let size = count
-        .checked_mul(size_of::<T>())
-        .expect("allocation size OOB");
-    let align = align_of::<T>();
-
-    unsafe {
-        let offset_ptr = PM_POOL.offset.get();
-        let offset = *offset_ptr;
-
-        let pool_ptr = PM_POOL.buf.get() as *mut u8;
-        let pool_addr = pool_ptr as usize;
-
-        let current_addr = pool_addr.checked_add(offset).expect("address OOB");
-        let aligned_addr = align_up(current_addr, align);
-        let pad = aligned_addr - current_addr;
-
-        let start = offset.checked_add(pad).expect("padding OOB");
-        let new_offset = start.checked_add(size).expect("size OOB");
-
-        if new_offset > PM_POOL_SIZE {
-            panic!(
-                "PMVec out of memory. req {} bytes, capacity {}",
-                size, PM_POOL_SIZE
-            );
-        }
-
-        *offset_ptr = new_offset;
-
-        let ptr = pool_ptr.add(start) as *mut T;
-        NonNull::new(ptr).expect("ptr shouldn't be null")
-    }
-}
-
-fn pm_free<T>(ptr: NonNull<T>, count: usize) {
-    if count == 0 || size_of::<T>() == 0 {
-        return;
-    }
-
-    let size = count.checked_mul(size_of::<T>()).expect("free size OOB");
-    let ptr_addr = ptr.as_ptr() as usize;
-
-    unsafe {
-        let pool_addr = PM_POOL.buf.get() as usize;
-        let pool_end = pool_addr.checked_add(PM_POOL_SIZE).unwrap();
-
-        if ptr_addr >= pool_addr && ptr_addr < pool_end {
-            let alloc_start = ptr_addr - pool_addr;
-            let expected_off = alloc_start.checked_add(size).unwrap();
-
-            let offset_ptr = PM_POOL.offset.get();
-            if *offset_ptr == expected_off {
-                *offset_ptr = alloc_start;
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct PMVec<T> {
     ptr: NonNull<T>,
@@ -183,12 +109,20 @@ impl<T> PMVec<T> {
             self.capacity.checked_mul(2).expect("capacity OOB")
         };
 
-        let new_ptr: NonNull<T> = pm_alloc(new_cap);
+        if size_of::<T>() == 0 {
+            self.capacity = new_cap;
+            return;
+        }
 
-        if self.capacity > 0 {
-            unsafe {
-                copy_nonoverlapping(self.ptr.as_ptr(), new_ptr.as_ptr(), self.len);
-                pm_free(self.ptr, self.capacity);
+        let new_ptr: NonNull<T> = PM_POOL.alloc();
+        for _ in 1..new_cap {
+            let _: NonNull<T> = PM_POOL.alloc();
+        }
+
+        unsafe {
+            copy_nonoverlapping(self.ptr.as_ptr(), new_ptr.as_ptr(), self.len);
+            for i in (0..self.capacity).rev() {
+                PM_POOL.free(NonNull::new_unchecked(self.ptr.as_ptr().add(i)));
             }
         }
 
@@ -241,8 +175,12 @@ impl<T> DynVec<T> for PMVec<T> {
 
 impl<T> Drop for PMVec<T> {
     fn drop(&mut self) {
-        if self.capacity > 0 {
-            pm_free(self.ptr, self.capacity);
+        if self.capacity > 0 && size_of::<T>() > 0 {
+            for i in (0..self.capacity).rev() {
+                unsafe {
+                    PM_POOL.free(NonNull::new_unchecked(self.ptr.as_ptr().add(i)));
+                }
+            }
         }
     }
 }

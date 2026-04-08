@@ -5,7 +5,7 @@ use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Readable};
 use super::{context::RegisterFileRef, cpu_interface::Mpidr};
 
 pub trait ExceptionHandler {
-    extern "C" fn sync_current(register_file: RegisterFileRef) {
+    extern "C" fn sync_current(register_file: RegisterFileRef) -> RegisterFileRef {
         panic!(
             "Unexpected sync exception from CPU MPIDR={} (ESR: {:#x}, FAR: {:#x}) from current EL: {:?}",
             Mpidr::current().affinity_only(),
@@ -15,7 +15,7 @@ pub trait ExceptionHandler {
         );
     }
 
-    extern "C" fn irq_current(register_file: RegisterFileRef) {
+    extern "C" fn irq_current(register_file: RegisterFileRef) -> RegisterFileRef {
         panic!(
             "Unexpected current EL IRQ from CPU MPIDR={} (FAR: {:#x}) from current EL: {:?}",
             Mpidr::current().affinity_only(),
@@ -24,7 +24,7 @@ pub trait ExceptionHandler {
         );
     }
 
-    extern "C" fn fiq_current(register_file: RegisterFileRef) {
+    extern "C" fn fiq_current(register_file: RegisterFileRef) -> RegisterFileRef {
         panic!(
             "Unexpected current EL FIQ from CPU MPIDR={} (FAR: {:#x}) from current EL: {:?}",
             Mpidr::current().affinity_only(),
@@ -33,27 +33,27 @@ pub trait ExceptionHandler {
         );
     }
 
-    extern "C" fn serror_current(register_file: RegisterFileRef) {
+    extern "C" fn serror_current(register_file: RegisterFileRef) -> RegisterFileRef {
         _ = register_file;
         panic!("Unexpected SError from current EL");
     }
 
-    extern "C" fn sync_lower(register_file: RegisterFileRef) {
+    extern "C" fn sync_lower(register_file: RegisterFileRef) -> RegisterFileRef {
         _ = register_file;
         panic!("Unexpected sync exception from lower EL");
     }
 
-    extern "C" fn irq_lower(register_file: RegisterFileRef) {
+    extern "C" fn irq_lower(register_file: RegisterFileRef) -> RegisterFileRef {
         _ = register_file;
         panic!("Unexpected IRQ from lower EL");
     }
 
-    extern "C" fn fiq_lower(register_file: RegisterFileRef) {
+    extern "C" fn fiq_lower(register_file: RegisterFileRef) -> RegisterFileRef {
         _ = register_file;
         panic!("Unexpected FIQ from lower EL");
     }
 
-    extern "C" fn serror_lower(register_file: RegisterFileRef) {
+    extern "C" fn serror_lower(register_file: RegisterFileRef) -> RegisterFileRef {
         _ = register_file;
         panic!("Unexpected SError from lower EL");
     }
@@ -121,6 +121,7 @@ macro_rules! exception_handlers {
     save_regs \el
     mov x0, sp
     bl \handler
+    mov sp, x0
     restore_regs \el
     eret
 .endm

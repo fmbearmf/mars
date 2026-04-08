@@ -1,3 +1,5 @@
+use crate::context::RegisterFileRef;
+
 use super::{
     context::RegisterFile,
     process::Process,

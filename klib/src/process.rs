@@ -1,13 +1,16 @@
 use super::{
     sync::RwLock,
     thread::{Thread, ThreadId},
-    vm::{TABLE_ENTRIES, TTable},
+    vm::{
+        TABLE_ENTRIES, TTable, VmError, map::Map as VmMap, mapper::TableAllocator,
+        page_allocator::PhysicalPageAllocator,
+    },
 };
 
 extern crate alloc;
 
+use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{
-    boxed::Box,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -25,7 +28,8 @@ pub enum ProcessState {
 struct ProcessInner<'a> {
     process_id: ProcessId,
     state: ProcessState,
-    address_space: &'a TTable<TABLE_ENTRIES>,
+    address_space: &'a mut TTable<TABLE_ENTRIES>,
+    vm_map: VmMap,
     threads: Vec<Arc<Thread<'a>>>,
     parent: Option<Weak<Process<'a>>>,
 }
@@ -38,13 +42,14 @@ pub struct Process<'a> {
 impl<'a> Process<'a> {
     pub fn new(
         process_id: ProcessId,
-        address_space: &'a TTable<TABLE_ENTRIES>,
+        address_space: &'a mut TTable<TABLE_ENTRIES>,
         parent: Option<&Arc<Process<'a>>>,
     ) -> Self {
         let inner = ProcessInner {
             process_id,
             state: ProcessState::Normal,
             address_space,
+            vm_map: VmMap::new(),
             threads: Vec::new(),
             parent: parent.map(Arc::downgrade),
         };
@@ -52,6 +57,83 @@ impl<'a> Process<'a> {
         Self {
             inner: Arc::new(RwLock::new(inner)),
         }
+    }
+
+    pub fn mmap_anonymous<A: TableAllocator, P: PhysicalPageAllocator>(
+        &self,
+        va_hint: Option<usize>,
+        size: usize,
+        ap: AccessPermission,
+        share: Shareability,
+        uxn: bool,
+        pxn: bool,
+        attr_index: u64,
+        table_alloc: &A,
+        page_alloc: &P,
+    ) -> Result<usize, VmError> {
+        let mut guard = self.inner.write();
+        let ProcessInner {
+            process_id,
+            state,
+            address_space,
+            vm_map,
+            threads,
+            parent,
+        } = &mut *guard;
+
+        vm_map.mmap_anonymous(
+            address_space,
+            va_hint,
+            size,
+            ap,
+            share,
+            uxn,
+            pxn,
+            attr_index,
+            table_alloc,
+            page_alloc,
+        )
+    }
+
+    pub fn munmap<A: TableAllocator, P: PhysicalPageAllocator>(
+        &self,
+        va: usize,
+        size: usize,
+        table_alloc: &A,
+        page_alloc: &P,
+    ) -> Result<(), VmError> {
+        let mut guard = self.inner.write();
+        let ProcessInner {
+            process_id,
+            state,
+            address_space,
+            vm_map,
+            threads,
+            parent,
+        } = &mut *guard;
+        //let root = &mut *guard.address_space;
+
+        vm_map.remove(address_space, va, size, table_alloc, page_alloc)
+    }
+
+    pub fn destroy<A: TableAllocator, P: PhysicalPageAllocator>(
+        &self,
+        table_alloc: &A,
+        page_alloc: &P,
+    ) -> Result<(), VmError> {
+        let mut guard = self.inner.write();
+        let ProcessInner {
+            process_id,
+            state,
+            address_space,
+            vm_map,
+            threads,
+            parent,
+        } = &mut *guard;
+
+        vm_map.clear(address_space, table_alloc, page_alloc)?;
+        guard.state = ProcessState::Zombie;
+        Ok(())
     }
 
     pub fn add_thread(&self, thread: Arc<Thread<'a>>) {
@@ -71,8 +153,13 @@ impl<'a> Process<'a> {
         self.inner.read().state
     }
 
-    pub fn address_space(&self) -> &TTable<TABLE_ENTRIES> {
-        self.inner.read().address_space
+    pub fn with_address_space<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&TTable<TABLE_ENTRIES>) -> R,
+    {
+        let guard = self.inner.read();
+
+        f(guard.address_space)
     }
 
     pub fn process_id(&self) -> ProcessId {

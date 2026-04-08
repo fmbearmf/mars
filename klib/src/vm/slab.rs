@@ -6,8 +6,8 @@ use core::{
 };
 
 use super::{
-    super::sync::TicketLock, MemoryRegion, PAGE_MASK, PAGE_SIZE, align_down, align_up,
-    page::PageAllocator,
+    super::sync::TicketLock, DMAP_START, MemoryRegion, PAGE_MASK, PAGE_SIZE, VmError, align_down,
+    align_up, page::PageAllocator, page_allocator::PhysicalPageAllocator,
 };
 
 const MIN_OBJ_SIZE: usize = mem::size_of::<usize>();
@@ -310,6 +310,24 @@ impl SlabAllocator {
     /// pages currently allocated by the slab allocator. includes slab overhead.
     pub fn page_usage(&self) -> usize {
         self.page_alloc().allocated_pages() * PAGE_SIZE
+    }
+}
+
+impl PhysicalPageAllocator for SlabAllocator {
+    fn alloc_page(&self) -> Result<usize, VmError> {
+        let mut virt_page = self.page_alloc().alloc_page() as usize;
+
+        virt_page = virt_page
+            .checked_sub(DMAP_START)
+            .ok_or(VmError::InvalidAddress)?;
+
+        Ok(virt_page as usize)
+    }
+
+    fn free_page(&self, pa: usize) {
+        let pa = pa.checked_add(DMAP_START).expect("invalid PA to free");
+
+        self.page_alloc().free_pages(pa as *mut u8);
     }
 }
 

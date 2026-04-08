@@ -2,8 +2,12 @@ use core::{fmt::Debug, mem::transmute};
 
 use aarch64_cpu_ext::structures::tte::{TTE4K48, TTE16K48};
 
+pub mod backing;
 pub mod map;
+pub mod mapper;
 pub mod page;
+pub mod page_allocator;
+pub mod region;
 pub mod slab;
 
 pub type TTENATIVE = TTE16K48;
@@ -65,6 +69,16 @@ impl<const N: usize> TTable<N> {
             entries: [TTENATIVE::invalid(); N],
         }
     }
+}
+
+#[derive(Debug)]
+pub enum VmError {
+    Overlap,
+    InvalidAddress,
+    InvalidSize,
+    OutOfMemory,
+    InvalidAlignment,
+    NotMapped,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

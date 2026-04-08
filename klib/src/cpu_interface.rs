@@ -95,6 +95,7 @@ impl InterruptInterface for Arm64InterruptInterface {
 }
 
 #[derive(Debug, Copy, Clone)]
+#[repr(transparent)]
 pub struct Mpidr(u64);
 
 impl Mpidr {

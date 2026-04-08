@@ -5,7 +5,9 @@ use core::{
     alloc::Layout,
     ptr::{NonNull, write_bytes, write_volatile},
 };
-use klib::vm::{TABLE_ENTRIES, TTable, dmap_addr_to_phys, map::TableAllocator, phys_addr_to_dmap};
+use klib::vm::{
+    TABLE_ENTRIES, TTable, dmap_addr_to_phys, mapper::TableAllocator, phys_addr_to_dmap,
+};
 
 use super::{busy_loop_ret, earlycon_writeln};
 

@@ -32,7 +32,7 @@ use klib::{
     vm::{
         DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
         TTENATIVE, align_down, align_up,
-        map::{TableAllocator, map_region},
+        mapper::{TableAllocator, map_region},
     },
 };
 use log::{debug, error, info};

@@ -9,7 +9,7 @@ use super::{
     super::{
         super::vec::{DynVec, PMVec, RawVec, StaticVec},
         MemoryRegion, MemoryRegionType, PAGE_MASK, PAGE_SIZE, TABLE_ENTRIES, TTable, align_up,
-        map::TableAllocator,
+        mapper::TableAllocator,
     },
     PageAllocator,
 };

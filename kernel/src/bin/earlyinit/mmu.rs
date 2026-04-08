@@ -11,7 +11,7 @@ unsafe extern "C" {
 //#[unsafe(link_section = ".reclaimable.bss")]
 //static mut PT_POOL: [TTable<TABLE_ENTRIES>; MAX_TABLES] = [TTable::new(); MAX_TABLES];
 
-pub extern "C" fn init_mmu(_load_addr: usize, _offset: usize) {
+pub extern "C" fn init_mmu() {
     // attr0=device, attr1=normal
     MAIR_EL1.write(
         MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck

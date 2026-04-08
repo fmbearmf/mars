@@ -1,7 +1,9 @@
+use core::sync::atomic::{AtomicU8, Ordering};
+
 use super::{
-    context::RegisterFile,
+    context::{RegisterFile, RegisterFileRef},
     cpu_interface::Mpidr,
-    sync::RwLock,
+    sync::{Mutex, RwLock},
     thread::{Thread, ThreadId, ThreadState},
 };
 
@@ -9,7 +11,7 @@ extern crate alloc;
 
 use aarch64_cpu::{
     asm::barrier::{self, isb},
-    registers::TTBR0_EL1,
+    registers::{TPIDR_EL1, TTBR0_EL1, Writeable},
 };
 use alloc::{
     collections::{BTreeMap, VecDeque},
@@ -19,32 +21,61 @@ use alloc::{
 pub static SCHEDULER: Scheduler<'static> = Scheduler::new();
 
 #[derive(Debug)]
+pub struct LocalScheduler<'a> {
+    thread_queue: VecDeque<Arc<Thread<'a>>>,
+    current_thread: Option<Arc<Thread<'a>>>,
+}
+
+impl<'a> LocalScheduler<'a> {
+    pub const fn new() -> Self {
+        Self {
+            thread_queue: VecDeque::new(),
+            current_thread: None,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Scheduler<'a> {
-    thread_queue: RwLock<VecDeque<Arc<Thread<'a>>>>,
-    current_threads: RwLock<BTreeMap<u64, Arc<Thread<'a>>>>,
+    queues: RwLock<BTreeMap<u64, Mutex<LocalScheduler<'a>>>>,
+    spawn_counter: AtomicU8,
 }
 
 impl<'a> Scheduler<'a> {
     pub const fn new() -> Self {
         Self {
-            thread_queue: RwLock::new(VecDeque::new()),
-            current_threads: RwLock::new(BTreeMap::new()),
+            queues: RwLock::new(BTreeMap::new()),
+            spawn_counter: AtomicU8::new(0),
         }
     }
 
-    pub fn spawn(&self, thread: Arc<Thread<'a>>) {
-        let mut tq = self.thread_queue.write();
-        thread.set_state(ThreadState::Ready);
-        tq.push_back(thread);
+    pub fn register_cpu(&self, mpidr: u64) {
+        let mut queues = self.queues.write();
+        queues.insert(mpidr, Mutex::new(LocalScheduler::new()));
     }
 
-    pub fn schedule(&self, ctx: &mut RegisterFile) {
-        let cpu_id = Mpidr::current().affinity_only();
+    pub fn spawn(&self, thread: Arc<Thread<'a>>) {
+        let queues = self.queues.read();
+        assert!(!queues.is_empty(), "scheduler has no CPUs");
 
-        let mut tq = self.thread_queue.write();
-        let mut current = self.current_threads.write();
+        let counter = self.spawn_counter.fetch_add(1, Ordering::Relaxed);
+        let cpu_i = counter as usize % queues.len();
 
-        let prev_thread = current.remove(&cpu_id);
+        let (_mpidr, target_queue) = queues.iter().nth(cpu_i as usize).expect("cpu index OOB");
+
+        thread.set_state(ThreadState::Ready);
+        target_queue.lock().thread_queue.push_back(thread);
+    }
+
+    pub fn schedule<'ctx>(&self, ctx: RegisterFileRef<'ctx>) -> RegisterFileRef<'ctx> {
+        let mpidr = Mpidr::current().affinity_only();
+
+        let queues_guard = self.queues.read();
+        let queue_mutex = queues_guard.get(&mpidr).expect("CPU not registered");
+
+        let mut local_queue = queue_mutex.lock();
+
+        let prev_thread = local_queue.current_thread.take();
 
         if let Some(ref prev) = prev_thread {
             prev.with_ctx_mut(|prev_ctx| {
@@ -53,29 +84,42 @@ impl<'a> Scheduler<'a> {
 
             if prev.get_state() == ThreadState::Running {
                 prev.set_state(ThreadState::Ready);
-                tq.push_back(prev.clone());
+                local_queue.thread_queue.push_back(prev.clone());
             }
         }
 
-        let next_thread = tq.pop_front().or(prev_thread);
+        let next_thread = local_queue
+            .thread_queue
+            .pop_front()
+            .or_else(|| prev_thread.clone());
 
         if let Some(next) = next_thread {
-            next.set_state(ThreadState::Running);
-
-            next.with_ctx_mut(|next_ctx| {
-                *ctx = *next_ctx;
-            });
-
-            if let Some(process) = next.process() {
-                let ttbr0 = process.address_space() as *const _ as u64;
-                TTBR0_EL1.set_baddr(ttbr0);
-
-                isb(barrier::SY);
+            if let Some(ref prev) = prev_thread {
+                if Arc::ptr_eq(prev, &next) {
+                    local_queue.current_thread = Some(next);
+                    return ctx;
+                }
             }
 
-            current.insert(cpu_id, next);
+            next.set_state(ThreadState::Running);
+            TPIDR_EL1.set(Arc::as_ptr(&next) as u64);
+
+            if let Some(process) = next.process() {
+                process.with_address_space(|ttbr0| {
+                    let addr = ttbr0 as *const _ as u64;
+                    TTBR0_EL1.set_baddr(addr);
+                    isb(barrier::SY);
+                });
+            }
+
+            local_queue.current_thread = Some(next.clone());
+
+            let next_ptr = next.with_ctx_mut(|next_ctx| next_ctx as *mut RegisterFile);
+
+            // theoretically this is safe. nothing else should mutate the `ctx`
+            unsafe { RegisterFileRef(&mut *next_ptr) }
         } else {
-            // uhhh idle thread here
+            ctx
         }
     }
 }

@@ -36,7 +36,7 @@ impl fmt::Debug for RegisterFile {
 
 #[derive(Eq, PartialEq)]
 #[repr(transparent)]
-pub struct RegisterFileRef<'a>(&'a mut RegisterFile);
+pub struct RegisterFileRef<'a>(pub &'a mut RegisterFile);
 
 impl fmt::Debug for RegisterFileRef<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

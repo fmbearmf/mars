@@ -1,423 +1,407 @@
-use core::ptr::NonNull;
+extern crate alloc;
 
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
+use alloc::{collections::BTreeMap, vec::Vec};
 
 use super::{
-    PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, dmap_addr_to_phys,
-    phys_addr_to_dmap,
+    PAGE_SIZE, TABLE_ENTRIES, TTable, VmError, align_down, align_up,
+    backing::Backing,
+    mapper::{TableAllocator, map_region, unmap_region},
+    page_allocator::PhysicalPageAllocator as PageAllocator,
+    region::Region,
 };
 
-pub trait TableAllocator {
-    fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>>;
-    fn free_table(&self, table: NonNull<TTable<TABLE_ENTRIES>>);
-
-    fn phys_to_virt(&self, phys: u64) -> *mut TTable<TABLE_ENTRIES>;
-    fn virt_to_phys(&self, virt: *mut TTable<TABLE_ENTRIES>) -> u64;
+#[derive(Debug)]
+pub struct Map {
+    regions: BTreeMap<usize, Region>,
 }
 
-pub fn map_region<A: TableAllocator>(
-    root: &mut TTable<TABLE_ENTRIES>,
-    pa: usize,
-    va: usize,
-    size: usize,
-    access: AccessPermission,
-    share: Shareability,
-    uxn: bool,
-    pxn: bool,
-    attr_index: u64,
-    allocator: &A,
-) {
-    if va & PAGE_MASK != 0 {
-        panic!("VA must be page aligned");
+impl Map {
+    pub const fn new() -> Self {
+        Self {
+            regions: BTreeMap::new(),
+        }
     }
 
-    if pa & PAGE_MASK != 0 {
-        panic!("PA must be page aligned");
+    fn check_range(&self, va: usize, size: usize) -> Result<usize, VmError> {
+        if size == 0 {
+            return Err(VmError::InvalidSize);
+        }
+
+        if va != align_down(va, PAGE_SIZE) {
+            return Err(VmError::InvalidAlignment);
+        }
+
+        let end = va
+            .checked_add(align_up(size, PAGE_SIZE))
+            .ok_or(VmError::InvalidAddress)?;
+
+        if end <= va {
+            return Err(VmError::InvalidAddress);
+        }
+
+        Ok(end)
     }
 
-    if size & PAGE_MASK != 0 {
-        panic!("size must be page aligned");
+    fn overlaps(&self, va: usize, end: usize) -> bool {
+        if let Some((_, prev)) = self.regions.range(..=va).next_back() {
+            if prev.end > va {
+                return true;
+            }
+        }
+
+        self.regions.range(va..end).next().is_some()
     }
 
-    if size < PAGE_SIZE {
-        panic!("can't map less than 1 page!");
+    fn map_pages<A: TableAllocator>(
+        root: &mut TTable<TABLE_ENTRIES>,
+        va: usize,
+        pages: &[usize],
+        ap: AccessPermission,
+        share: Shareability,
+        uxn: bool,
+        pxn: bool,
+        attr_index: u64,
+        allocator: &A,
+    ) -> Result<(), VmError> {
+        for (i, &pa) in pages.iter().enumerate() {
+            let page_va = va + i * PAGE_SIZE;
+
+            map_region(
+                root, pa, page_va, PAGE_SIZE, ap, share, uxn, pxn, attr_index, allocator,
+            );
+        }
+
+        Ok(())
     }
 
-    //if va & L2_BLOCK_MASK == 0 && size & L2_BLOCK_MASK == 0 {
-    //    let num_blocks = size >> L2_BLOCK_SHIFT;
+    fn unmap_pages<A: TableAllocator>(
+        root: &mut TTable<TABLE_ENTRIES>,
+        va: usize,
+        pages: usize,
+        allocator: &A,
+    ) {
+        for i in 0..pages {
+            let page_va = va + i * PAGE_SIZE;
+            unmap_region(root, page_va, PAGE_SIZE, allocator);
+        }
+    }
 
-    //    for i in 0..num_blocks {
-    //        let vaddr = va + (i << L2_BLOCK_SHIFT);
-    //        let paddr = pa + (i << L2_BLOCK_SHIFT);
-    //        map_l2_block(root, paddr, vaddr, access, share, uxn, pxn, attr_index);
-    //    }
+    pub fn mmap_anonymous<A: TableAllocator, P: PageAllocator>(
+        &mut self,
+        root: &mut TTable<TABLE_ENTRIES>,
+        va_hint: Option<usize>,
+        size: usize,
+        ap: AccessPermission,
+        share: Shareability,
+        uxn: bool,
+        pxn: bool,
+        attr_index: u64,
+        table_alloc: &A,
+        page_alloc: &P,
+    ) -> Result<usize, VmError> {
+        let size = align_up(size, PAGE_SIZE);
+        let pages = size / PAGE_SIZE;
 
-    //    return;
-    //} else {
-    let num_pages = size >> PAGE_SHIFT;
+        let va = match va_hint {
+            Some(hint) => align_down(hint, PAGE_SIZE),
+            None => self
+                .find_space(0, size)
+                .map(|s| align_down(s, PAGE_SIZE))
+                .ok_or(VmError::OutOfMemory)?,
+        };
 
-    for i in 0..num_pages {
-        let vaddr = va + (i << PAGE_SHIFT);
-        let paddr = pa + (i << PAGE_SHIFT);
-        map_page(
-            root, paddr, vaddr, access, share, uxn, pxn, attr_index, allocator,
+        let end = va.checked_add(size).ok_or(VmError::InvalidAddress)?;
+        if self.overlaps(va, end) {
+            return Err(VmError::Overlap);
+        }
+
+        let mut owned_pages = Vec::with_capacity(pages);
+
+        for _ in 0..pages {
+            let pa = page_alloc.alloc_page()?;
+            owned_pages.push(pa);
+        }
+
+        if let Err(e) = Self::map_pages(
+            root,
+            va,
+            &owned_pages,
+            ap,
+            share,
+            uxn,
+            pxn,
+            attr_index,
+            table_alloc,
+        ) {
+            for pa in owned_pages.drain(..) {
+                page_alloc.free_page(pa);
+            }
+
+            return Err(e);
+        }
+
+        let region = Region {
+            start: va,
+            end,
+            ap,
+            share,
+            uxn,
+            pxn,
+            attr_index,
+            backing: Backing::Owned { pages: owned_pages },
+        };
+
+        self.regions.insert(va, region);
+        Ok(va)
+    }
+
+    pub fn enter_borrowed<A: TableAllocator>(
+        &mut self,
+        root: &mut TTable<TABLE_ENTRIES>,
+        pa: usize,
+        va: usize,
+        size: usize,
+        access: AccessPermission,
+        share: Shareability,
+        uxn: bool,
+        pxn: bool,
+        attr_index: u64,
+        allocator: &A,
+    ) -> Result<(), VmError> {
+        let size = align_up(size, PAGE_SIZE);
+        let va = align_down(va, PAGE_SIZE);
+        let end = va.checked_add(size).ok_or(VmError::InvalidAddress)?;
+
+        if self.overlaps(va, end) {
+            return Err(VmError::Overlap);
+        }
+
+        let pages = size / PAGE_SIZE;
+        let mut phys = Vec::with_capacity(pages);
+        for i in 0..pages {
+            phys.push(pa + i * PAGE_SIZE);
+        }
+
+        Self::map_pages(
+            root, va, &phys, access, share, uxn, pxn, attr_index, allocator,
+        )?;
+
+        self.regions.insert(
+            va,
+            Region {
+                start: va,
+                end,
+                ap: access,
+                share,
+                uxn,
+                pxn,
+                attr_index,
+                backing: Backing::Shared { pa },
+            },
         );
-    }
-    //}
-}
 
-pub fn unmap_region<A: TableAllocator>(
-    root: &mut TTable<TABLE_ENTRIES>,
-    va: usize,
-    size: usize,
-    allocator: &A,
-) {
-    if va & PAGE_MASK != 0 || size & PAGE_MASK != 0 {
-        panic!("addresses AND size must be page aligned");
+        Ok(())
     }
 
-    let num_pages = size >> PAGE_SHIFT;
-
-    for i in 0..num_pages {
-        let vaddr = va + (i << PAGE_SHIFT);
-        unmap_page(root, vaddr, allocator);
-    }
-}
-
-fn map_l2_block<A: TableAllocator>(
-    root: &mut TTable<TABLE_ENTRIES>,
-    pa: usize,
-    va: usize,
-    access: AccessPermission,
-    share: Shareability,
-    uxn: bool,
-    pxn: bool,
-    attr_index: u64,
-    allocator: &A,
-) {
-    let i0 = TTENATIVE::calculate_index(va as u64, 0);
-    let i1 = TTENATIVE::calculate_index(va as u64, 1);
-    let i2 = TTENATIVE::calculate_index(va as u64, 2);
-
-    let l0_entry = &mut (root.entries[i0]);
-    let l1_table = if l0_entry.address() != 0 && l0_entry.is_table() {
-        let l1_pa = l0_entry.address();
-        let l1_va = allocator.phys_to_virt(l1_pa);
-        let mut z = unsafe { NonNull::new_unchecked(l1_va as *mut _) };
-        unsafe { z.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-
-        l0_entry.set_is_valid(true);
-        l0_entry.set_is_table();
-        l0_entry.set_address(dmap_addr_to_phys(table.as_ptr() as u64));
-
-        unsafe { table.as_mut() }
-    };
-
-    let l1_entry = &mut (l1_table.entries[i1]);
-    let l2_table = if l1_entry.address() != 0 && l1_entry.is_table() {
-        let l2_pa = l1_entry.address();
-        let l2_va = allocator.phys_to_virt(l2_pa);
-        let mut z = unsafe { NonNull::new_unchecked(l2_va as *mut _) };
-        unsafe { z.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-
-        l1_entry.set_is_valid(true);
-        l1_entry.set_is_table();
-        l1_entry.set_address(dmap_addr_to_phys(table.as_ptr() as u64));
-
-        unsafe { table.as_mut() }
-    };
-
-    let l2_entry = &mut (l2_table.entries[i2]);
-
-    if l2_entry.is_valid() && l2_entry.is_table() {
-        let child_pa = l2_entry.address();
-        let child_va = allocator.phys_to_virt(child_pa);
-        if child_pa != 0 {
-            unsafe {
-                let child_ptr = NonNull::new_unchecked(child_va as *mut TTable<TABLE_ENTRIES>);
-            }
-        }
-    }
-
-    l2_entry.set_is_valid(true);
-    l2_entry.set_is_block();
-    l2_entry.set_address(allocator.virt_to_phys(pa as *mut TTable<TABLE_ENTRIES>));
-    l2_entry.set_access();
-    l2_entry.set_access_permission(access);
-    l2_entry.set_shareability(share);
-    l2_entry.set_attr_index(attr_index);
-    l2_entry.set_executable(!uxn);
-    l2_entry.set_privileged_executable(!pxn);
-}
-
-fn unmap_l2_block<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, allocator: &A) {
-    let i0 = TTENATIVE::calculate_index(va as u64, 0);
-    let i1 = TTENATIVE::calculate_index(va as u64, 1);
-    let i2 = TTENATIVE::calculate_index(va as u64, 2);
-
-    let l0_entry = &mut (root.entries[i0]);
-    if !l0_entry.is_valid() || !l0_entry.is_table() {
-        return;
-    }
-
-    let l1_pa = l0_entry.address();
-    let l1_va = allocator.phys_to_virt(l1_pa);
-    let mut l1_table_ptr = unsafe { NonNull::new_unchecked(l1_va as *mut TTable<TABLE_ENTRIES>) };
-    let l1_table = unsafe { l1_table_ptr.as_mut() };
-    let l1_entry = &mut (l1_table.entries[i1]);
-
-    if !l1_entry.is_valid() || !l1_entry.is_table() {
-        return;
-    }
-
-    let l2_pa = l1_entry.address();
-    let l2_va = allocator.phys_to_virt(l2_pa);
-    let mut l2_table_ptr = unsafe { NonNull::new_unchecked(l2_va as *mut TTable<TABLE_ENTRIES>) };
-    let l2_table = unsafe { l2_table_ptr.as_mut() };
-    let l2_entry = &mut (l2_table.entries[i2]);
-
-    if !l2_entry.is_valid() {
-        return;
-    }
-
-    l2_entry.set_is_valid(false);
-    l2_entry.set_address(0);
-
-    if is_table_empty(l2_table) {
-        allocator.free_table(l2_table_ptr);
-        l1_entry.set_is_valid(false);
-        l1_entry.set_address(0);
-
-        if is_table_empty(l1_table) {
-            allocator.free_table(l1_table_ptr);
-            l0_entry.set_is_valid(false);
-            l0_entry.set_address(0);
-        }
-    }
-}
-
-#[inline]
-fn map_page<A: TableAllocator>(
-    root: &mut TTable<TABLE_ENTRIES>,
-    pa: usize,
-    va: usize,
-    access: AccessPermission,
-    share: Shareability,
-    uxn: bool,
-    pxn: bool,
-    attr_index: u64,
-    allocator: &A,
-) {
-    let i0 = TTENATIVE::calculate_index(va as u64, 0);
-    let i1 = TTENATIVE::calculate_index(va as u64, 1);
-    let i2 = TTENATIVE::calculate_index(va as u64, 2);
-    let i3 = TTENATIVE::calculate_index(va as u64, 3);
-
-    let l0_entry = &mut (root.entries[i0]);
-
-    let l1_table = if l0_entry.address() != 0 && l0_entry.is_table() {
-        let l1_pa = l0_entry.address();
-        let l1_va = allocator.phys_to_virt(l1_pa);
-        let mut z = unsafe { NonNull::new_unchecked(l1_va as *mut _) };
-        unsafe { z.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-
-        l0_entry.set_is_valid(true);
-        l0_entry.set_is_table();
-        l0_entry.set_address(dmap_addr_to_phys(table.as_ptr() as u64));
-
-        unsafe { table.as_mut() }
-    };
-
-    let l1_entry = &mut (l1_table.entries[i1]);
-
-    let l2_table = if l1_entry.address() != 0 && l1_entry.is_table() {
-        let l2_pa = l1_entry.address();
-        let l2_va = allocator.phys_to_virt(l2_pa);
-        let mut z = unsafe { NonNull::new_unchecked(l2_va as *mut _) };
-        unsafe { z.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-
-        l1_entry.set_is_valid(true);
-        l1_entry.set_is_table();
-        l1_entry.set_address(allocator.virt_to_phys(table.as_ptr()));
-
-        unsafe { table.as_mut() }
-    };
-
-    let l2_entry = &mut (l2_table.entries[i2]);
-
-    let l3_table = if l2_entry.is_valid() {
-        let l3_pa = l2_entry.address();
-        let l3_va = allocator.phys_to_virt(l3_pa);
-        let mut table: NonNull<TTable<TABLE_ENTRIES>> =
-            unsafe { NonNull::new_unchecked(l3_va as *mut _) };
-
-        unsafe { table.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-
-        l2_entry.set_is_valid(true);
-        l2_entry.set_is_table();
-        l2_entry.set_address(allocator.virt_to_phys(table.as_ptr()));
-
-        unsafe { table.as_mut() }
-    };
-
-    let l3_entry = &mut (l3_table.entries[i3]);
-
-    l3_entry.set_is_valid(true);
-    // the block/table bit acts counterintuitively at L3.
-    // an L3 PTE must be marked as a table for the MMU to treat it as a PTE
-    l3_entry.set_is_table();
-    l3_entry.set_address(pa as u64);
-    l3_entry.set_access();
-    l3_entry.set_access_permission(access);
-    l3_entry.set_shareability(share);
-    l3_entry.set_attr_index(attr_index);
-    l3_entry.set_executable(!uxn);
-    l3_entry.set_privileged_executable(!pxn);
-}
-
-#[inline]
-fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, allocator: &A) {
-    let i0 = TTENATIVE::calculate_index(va as u64, 0);
-    let i1 = TTENATIVE::calculate_index(va as u64, 1);
-    let i2 = TTENATIVE::calculate_index(va as u64, 2);
-    let i3 = TTENATIVE::calculate_index(va as u64, 3);
-
-    let l0_entry = &mut (root.entries[i0]);
-    if !l0_entry.is_valid() || !l0_entry.is_table() {
-        return;
-    }
-
-    let l1_pa = l0_entry.address();
-    let l1_va = allocator.phys_to_virt(l1_pa);
-    let mut l1_table_ptr = unsafe { NonNull::new_unchecked(l1_va as *mut TTable<TABLE_ENTRIES>) };
-    let l1_table = unsafe { l1_table_ptr.as_mut() };
-    let l1_entry = &mut (l1_table.entries[i1]);
-
-    if !l1_entry.is_valid() || !l1_entry.is_table() {
-        return;
-    }
-
-    let l2_pa = l1_entry.address();
-    let l2_va = allocator.phys_to_virt(l2_pa);
-    let mut l2_table_ptr = unsafe { NonNull::new_unchecked(l2_va as *mut TTable<TABLE_ENTRIES>) };
-    let l2_table = unsafe { l2_table_ptr.as_mut() };
-    let l2_entry = &mut (l2_table.entries[i2]);
-
-    if !l2_entry.is_valid() || !l2_entry.is_table() {
-        return;
-    }
-
-    let l3_pa = l2_entry.address();
-    let l3_va = allocator.phys_to_virt(l3_pa);
-    let mut l3_table_ptr = unsafe { NonNull::new_unchecked(l3_va as *mut TTable<TABLE_ENTRIES>) };
-    let l3_table = unsafe { l3_table_ptr.as_mut() };
-    let l3_entry = &mut (l3_table.entries[i3]);
-
-    if !l3_entry.is_valid() {
-        return;
-    }
-
-    l3_entry.set_is_valid(false);
-    l3_entry.set_address(0);
-
-    if is_table_empty(l3_table) {
-        allocator.free_table(l3_table_ptr);
-        l2_entry.set_is_valid(false);
-        l2_entry.set_address(0);
-
-        if is_table_empty(l2_table) {
-            allocator.free_table(l2_table_ptr);
-            l1_entry.set_is_valid(false);
-            l1_entry.set_address(0);
-
-            if is_table_empty(l1_table) {
-                allocator.free_table(l1_table_ptr);
-                l0_entry.set_is_valid(false);
-                l0_entry.set_address(0);
-            }
-        }
-    }
-}
-
-pub fn free_tables<A: TableAllocator>(mut root: NonNull<TTable<TABLE_ENTRIES>>, allocator: &A) {
-    let root_table = unsafe { root.as_mut() };
-    for i0 in 0..2 {
-        let l0_entry = &mut (root_table.entries[i0]);
-
-        if !l0_entry.is_valid() || !l0_entry.is_table() {
-            continue;
+    pub fn remove<A: TableAllocator, P: PageAllocator>(
+        &mut self,
+        root: &mut TTable<TABLE_ENTRIES>,
+        va: usize,
+        size: usize,
+        table_alloc: &A,
+        page_alloc: &P,
+    ) -> Result<(), VmError> {
+        if size == 0 {
+            return Ok(());
         }
 
-        let l1_pa = l0_entry.address();
-        let l1_va = phys_addr_to_dmap(l1_pa);
+        if va != align_down(va, PAGE_SIZE) {
+            return Err(VmError::InvalidAlignment);
+        }
 
-        let mut l1_table_ptr =
-            unsafe { NonNull::new_unchecked(l1_va as *mut TTable<TABLE_ENTRIES>) };
-        let l1_table = unsafe { l1_table_ptr.as_mut() };
+        let size = align_up(size, PAGE_SIZE);
+        let end = va.checked_add(size).ok_or(VmError::InvalidAddress)?;
 
-        for i1 in 0..TABLE_ENTRIES {
-            let l1_entry = &mut (l1_table.entries[i1]);
+        let affected: Vec<usize> = self
+            .regions
+            .range(..end)
+            .filter(|(_, r)| r.end > va && r.start < end)
+            .map(|(&k, _)| k)
+            .collect();
 
-            if !l1_entry.is_valid() || !l1_entry.is_table() {
-                continue;
-            }
+        let mut reinsert: Vec<Region> = Vec::new();
 
-            let l2_pa = l1_entry.address();
-            let l2_va = phys_addr_to_dmap(l2_pa);
+        for key in affected {
+            let region = self.regions.remove(&key).ok_or(VmError::NotMapped)?;
 
-            let mut l2_table_ptr =
-                unsafe { NonNull::new_unchecked(l2_va as *mut TTable<TABLE_ENTRIES>) };
-            let l2_table = unsafe { l2_table_ptr.as_mut() };
+            let r_start = region.start;
+            let r_end = region.end;
 
-            for i2 in 0..TABLE_ENTRIES {
-                let l2_entry = &mut (l2_table.entries[i2]);
+            let unmap_start = r_start.max(va);
+            let unmap_end = r_end.min(end);
+            let unmap_size = unmap_end - unmap_start;
+            let unmap_pages = unmap_size / PAGE_SIZE;
 
-                if !l2_entry.is_valid() || !l2_entry.is_table() {
-                    continue;
-                }
+            if unmap_pages > 0 {
+                let first = (unmap_start - r_start) / PAGE_SIZE;
 
-                let l3_pa = l2_entry.address();
-                let l3_va = phys_addr_to_dmap(l3_pa);
+                Self::unmap_pages(root, unmap_start, unmap_pages, table_alloc);
 
-                let mut l3_table_ptr =
-                    unsafe { NonNull::new_unchecked(l3_va as *mut TTable<TABLE_ENTRIES>) };
-                let l3_table = unsafe { l3_table_ptr.as_mut() };
-
-                for i3 in 0..TABLE_ENTRIES {
-                    let l3_entry = &mut (l3_table.entries[i3]);
-
-                    if !l3_entry.is_valid() || !l3_entry.is_table() {
-                        continue;
+                if let Backing::Owned { pages } = region.backing {
+                    for pa in pages[first..first + unmap_pages].iter().copied() {
+                        page_alloc.free_page(pa);
                     }
 
-                    l3_entry.set_is_valid(false);
+                    let left = first;
+                    let right = pages.len() - first - unmap_pages;
+
+                    if left > 0 {
+                        let left_backing = Backing::Owned {
+                            pages: pages[..left].to_vec(),
+                        };
+
+                        reinsert.push(Region {
+                            start: r_start,
+                            end: unmap_start,
+                            ap: region.ap,
+                            share: region.share,
+                            uxn: region.uxn,
+                            pxn: region.pxn,
+                            attr_index: region.attr_index,
+                            backing: left_backing,
+                        });
+                    }
+
+                    if right > 0 {
+                        let right_backing = Backing::Owned {
+                            pages: pages[first + unmap_pages..].to_vec(),
+                        };
+
+                        reinsert.push(Region {
+                            start: unmap_end,
+                            end: r_end,
+                            ap: region.ap,
+                            share: region.share,
+                            uxn: region.uxn,
+                            pxn: region.pxn,
+                            attr_index: region.attr_index,
+                            backing: right_backing,
+                        });
+                    }
+                } else {
+                    let left_size = unmap_start - r_start;
+                    let right_size = r_end - unmap_end;
+
+                    if left_size > 0 {
+                        reinsert.push(Region {
+                            start: r_start,
+                            end: unmap_start,
+                            ap: region.ap,
+                            share: region.share,
+                            uxn: region.uxn,
+                            pxn: region.pxn,
+                            attr_index: region.attr_index,
+                            backing: Backing::Shared {
+                                pa: match region.backing {
+                                    Backing::Shared { pa } => pa,
+                                    _ => unreachable!(),
+                                },
+                            },
+                        });
+                    }
+
+                    if right_size > 0 {
+                        let base_pa = match region.backing {
+                            Backing::Shared { pa } => pa + (unmap_end - r_start),
+                            _ => unreachable!(),
+                        };
+
+                        reinsert.push(Region {
+                            start: unmap_end,
+                            end: r_end,
+                            ap: region.ap,
+                            share: region.share,
+                            uxn: region.uxn,
+                            pxn: region.pxn,
+                            attr_index: region.attr_index,
+                            backing: Backing::Shared { pa: base_pa },
+                        });
+                    }
                 }
-
-                allocator.free_table(unsafe { NonNull::new_unchecked(l3_table) });
+            } else {
+                reinsert.push(region);
             }
-            allocator.free_table(unsafe { NonNull::new_unchecked(l2_table) });
         }
-        allocator.free_table(unsafe { NonNull::new_unchecked(l1_table) });
-    }
-    allocator.free_table(unsafe { NonNull::new_unchecked(root_table) });
-}
 
-fn is_table_empty(table: &TTable<TABLE_ENTRIES>) -> bool {
-    for i in 0..TABLE_ENTRIES {
-        let entry = &table.entries[i];
-        if entry.is_valid() {
-            return false;
+        for region in reinsert {
+            self.regions.insert(region.start, region);
         }
+
+        Ok(())
     }
-    true
+
+    pub fn lookup(&self, va: usize) -> Option<&Region> {
+        if let Some((_, region)) = self.regions.range(..=va).next_back() {
+            if va < region.end {
+                return Some(region);
+            }
+        }
+        None
+    }
+
+    pub fn find_space(&self, min_va: usize, size: usize) -> Option<usize> {
+        if size == 0 {
+            return Some(min_va);
+        }
+
+        let size = align_up(size, PAGE_SIZE);
+        let mut current = align_up(min_va, PAGE_SIZE);
+
+        if let Some((_, region)) = self.regions.range(..=current).next_back() {
+            if region.end > current {
+                current = region.end;
+            }
+        }
+
+        for (&start, region) in self.regions.range(current..) {
+            if start > current {
+                let gap = start - current;
+                if gap >= size {
+                    return Some(current);
+                }
+            }
+            current = region.end;
+        }
+
+        Some(current)
+    }
+
+    pub fn clear<A: TableAllocator, P: PageAllocator>(
+        &mut self,
+        root: &mut TTable<TABLE_ENTRIES>,
+        table_alloc: &A,
+        page_alloc: &P,
+    ) -> Result<(), VmError> {
+        let regions: Vec<(usize, Region)> = self.regions.clone().into_iter().collect();
+        self.regions.clear();
+
+        for (_, region) in regions {
+            let pages = (region.end - region.start) / PAGE_SIZE;
+
+            Self::unmap_pages(root, region.start, pages, table_alloc);
+
+            if let Backing::Owned { pages } = &region.backing {
+                for &pa in pages {
+                    page_alloc.free_page(pa);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn regions_count(&self) -> usize {
+        self.regions.len()
+    }
 }
