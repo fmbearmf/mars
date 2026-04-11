@@ -7,11 +7,9 @@ use core::{
 
 use super::{
     super::{pm::page::PageAllocator, sync::TicketLock},
-    DMAP_START, MemoryRegion, PAGE_MASK, PAGE_SIZE, VmError, align_down, align_up,
+    DMAP_START, PAGE_SIZE, VmError, align_down, align_up,
     page_allocator::PhysicalPageAllocator,
 };
-
-const MIN_OBJ_SIZE: usize = mem::size_of::<usize>();
 
 const fn build_class_sizes() -> [usize; 9] {
     [
@@ -28,7 +26,6 @@ const fn build_class_sizes() -> [usize; 9] {
 }
 
 const CLASS_SIZES: [usize; 9] = build_class_sizes();
-const NUM_CLASSES: usize = CLASS_SIZES.len();
 
 #[inline]
 fn size_class_index(size: usize) -> Option<usize> {

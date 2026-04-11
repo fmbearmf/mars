@@ -13,26 +13,24 @@ mod vec;
 use core::{
     arch::aarch64::__wfe,
     mem::{self, MaybeUninit, transmute},
-    ptr::{self},
-    str::from_utf8,
 };
 
 use aarch64_cpu::asm::barrier::{self, dsb};
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use klib::{
     acpi::{
-        self, SystemDescription,
+        SystemDescription,
         madt::{
             GicCpuInterface, GicDistributor, GicIts, GicRedistributor, MADT_GICC, MADT_GICD,
             MADT_GICR, MADT_ITS,
         },
-        rsdp::{Rsdp, XsdtIter},
+        rsdp::Rsdp,
     },
+    pm::page::mapper::{TableAllocator, map_region},
     vec::{DynVec, RawVec, StaticVec},
     vm::{
         DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
         TTENATIVE, align_down, align_up,
-        mapper::{TableAllocator, map_region},
     },
 };
 use log::{debug, error, info};
@@ -235,10 +233,6 @@ fn main() -> Status {
                         MADT_GICC => {
                             if data.len() >= mem::size_of::<GicCpuInterface>() {
                                 let gicc = unsafe { &*(data.as_ptr() as *const GicCpuInterface) };
-                                let flags = gicc.flags();
-
-                                let enabled = (flags & 0x1) != 0;
-                                let online_capable = (flags & 0x8) != 0;
 
                                 let mpidr = gicc.mpidr();
                                 debug!("     GICC CPU MPIDR={:#x}", mpidr);

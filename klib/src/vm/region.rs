@@ -15,6 +15,7 @@ pub struct Region {
 }
 
 impl Region {
+    #![allow(dead_code)]
     fn size(&self) -> usize {
         self.end - self.start
     }

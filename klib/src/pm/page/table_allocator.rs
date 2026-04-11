@@ -1,17 +1,11 @@
-use core::{
-    alloc::Layout,
-    cell::RefCell,
-    mem::forget,
-    ptr::{self, NonNull},
-};
+use core::{cell::RefCell, ptr::NonNull};
 
 use crate::{
-    vec::{DynVec, PMVec, RawVec, StaticVec},
-    vm::{
-        MemoryRegion, MemoryRegionType, PAGE_MASK, PAGE_SIZE, TABLE_ENTRIES, TTable, align_up,
-        mapper::TableAllocator,
-    },
+    vec::{DynVec, PMVec, RawVec},
+    vm::{MemoryRegion, MemoryRegionType, TABLE_ENTRIES, TTable, align_up},
 };
+
+use super::mapper::TableAllocator;
 
 pub struct PMTableAllocator {
     pub free_regions: RefCell<PMVec<MemoryRegion>>,

@@ -4,12 +4,11 @@ use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{collections::BTreeMap, vec::Vec};
 
 use super::{
-    PAGE_SIZE, TABLE_ENTRIES, TTable, VmError, align_down, align_up,
-    backing::Backing,
-    mapper::{TableAllocator, map_region, unmap_region},
-    page_allocator::PhysicalPageAllocator as PageAllocator,
-    region::Region,
+    PAGE_SIZE, TABLE_ENTRIES, TTable, VmError, align_down, align_up, backing::Backing,
+    page_allocator::PhysicalPageAllocator as PageAllocator, region::Region,
 };
+
+use crate::pm::page::mapper::{TableAllocator, map_region, unmap_region};
 
 #[derive(Debug)]
 pub struct Map {

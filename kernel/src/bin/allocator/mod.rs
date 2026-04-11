@@ -1,15 +1,9 @@
 extern crate alloc;
 
-use alloc::alloc::{alloc, alloc_zeroed, dealloc, handle_alloc_error};
-use core::{
-    alloc::Layout,
-    ptr::{NonNull, write_bytes, write_volatile},
-};
-use klib::vm::{
-    TABLE_ENTRIES, TTable, dmap_addr_to_phys, mapper::TableAllocator, phys_addr_to_dmap,
-};
-
-use super::{busy_loop_ret, earlycon_writeln};
+use alloc::alloc::{alloc, dealloc, handle_alloc_error};
+use core::{alloc::Layout, ptr::NonNull};
+use klib::pm::page::mapper::TableAllocator;
+use klib::vm::{TABLE_ENTRIES, TTable, dmap_addr_to_phys, phys_addr_to_dmap};
 
 pub struct KernelPTAllocator;
 

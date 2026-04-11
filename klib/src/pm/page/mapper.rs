@@ -2,7 +2,7 @@ use core::ptr::NonNull;
 
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 
-use super::{
+use crate::vm::{
     PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, dmap_addr_to_phys,
     phys_addr_to_dmap,
 };

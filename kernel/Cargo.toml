@@ -18,5 +18,5 @@ arm-pl011-uart = { version = "0.4.0", default-features = false }
 spin = { workspace = true }
 tock-registers = { workspace = true }
 protocol = { path = "../protocol" }
-uefi = { workspace = true }
 klib = { path = "../klib" }
+uefi = { version = "0.37.0", default-features = false }

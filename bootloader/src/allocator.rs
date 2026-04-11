@@ -3,11 +3,9 @@ use core::{cell::RefCell, ptr::NonNull};
 use super::vec::UefiVec;
 use aarch64_cpu::registers::TTBR0_EL1;
 use klib::{
-    vec::{DynVec, RawVec},
-    vm::{
-        MemoryRegion, MemoryRegionType, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, TTableUEFI,
-        mapper::TableAllocator,
-    },
+    pm::page::mapper::TableAllocator,
+    vec::RawVec,
+    vm::{MemoryRegion, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, TTableUEFI},
 };
 use uefi::boot::{self, MemoryType, PAGE_SIZE as UEFI_PS};
 
@@ -90,7 +88,6 @@ impl TableAllocator for UefiPTAllocator {
         let table: NonNull<TTable<TABLE_ENTRIES>> = table_result.expect("table alloc fail").cast();
 
         let addr = table.as_ptr() as usize;
-        const TOTAL_SIZE: usize = PAGES * UEFI_PS;
 
         let aligned = TTENATIVE::align_up(addr as u64) as *mut TTable<TABLE_ENTRIES>;
         let mut table_aligned = NonNull::new(aligned).unwrap();

@@ -1,5 +1,3 @@
-use core::{borrow::Borrow, ops::Deref};
-
 use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Readable};
 
 use super::{context::RegisterFileRef, cpu_interface::Mpidr};

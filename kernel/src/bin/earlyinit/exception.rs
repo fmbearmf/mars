@@ -1,7 +1,7 @@
 use aarch64_cpu::registers::{DAIF, ReadWriteable, Readable, Writeable};
 use klib::{
-    context::RegisterFileRef, cpu_interface::Mpidr, exception::ExceptionHandler,
-    interrupt::InterruptController, scheduler::SCHEDULER, timer::timer_irq, vcpu::with_this_cpu,
+    context::RegisterFileRef, exception::ExceptionHandler, interrupt::InterruptController,
+    scheduler::SCHEDULER, timer::timer_irq, vcpu::with_this_cpu,
 };
 
 use super::super::earlycon_writeln;

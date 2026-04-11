@@ -1,15 +1,15 @@
 use core::{
     cell::UnsafeCell,
-    mem,
-    ptr::{self},
-    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
+    ptr::{self, addr_eq},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use super::super::{
     sync::TicketLock,
-    vm::{MemoryRegion, PAGE_MASK, PAGE_SIZE, align_up},
+    vm::{MemoryRegion, PAGE_MASK, PAGE_SIZE},
 };
 
+pub mod mapper;
 pub mod table_allocator;
 
 const MAX_ORDER: usize = 11;
@@ -149,7 +149,7 @@ impl PageAllocator {
                 }
 
                 free_area[order] = block;
-                current_index += (1 << order);
+                current_index += 1 << order;
             }
         }
 
@@ -226,12 +226,12 @@ impl PageAllocator {
         ptr::null_mut()
     }
 
-    pub fn free_pages(&self, page_ptr: *mut u8) {
-        if page_ptr.is_null() {
+    pub fn free_pages(&self, pages_ptr: *mut u8) {
+        if pages_ptr.is_null() {
             return;
         }
 
-        let addr = page_ptr as usize;
+        let addr = pages_ptr as usize;
         self.lock.lock();
 
         unsafe {

@@ -3,7 +3,6 @@ rustflags = [
     "-C", "link-arg=-static",
     "-C", "relocation-model=static",
 ]
-runner = "./qemu-arm.sh"
 
 [target.aarch64-unknown-uefi]
 rustflags = [

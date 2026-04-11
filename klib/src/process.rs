@@ -1,9 +1,9 @@
 use super::{
+    pm::page::mapper::TableAllocator,
     sync::RwLock,
     thread::{Thread, ThreadId},
     vm::{
-        TABLE_ENTRIES, TTable, VmError, map::Map as VmMap, mapper::TableAllocator,
-        page_allocator::PhysicalPageAllocator,
+        TABLE_ENTRIES, TTable, VmError, map::Map as VmMap, page_allocator::PhysicalPageAllocator,
     },
 };
 
@@ -73,12 +73,9 @@ impl<'a> Process<'a> {
     ) -> Result<usize, VmError> {
         let mut guard = self.inner.write();
         let ProcessInner {
-            process_id,
-            state,
             address_space,
             vm_map,
-            threads,
-            parent,
+            ..
         } = &mut *guard;
 
         vm_map.mmap_anonymous(
@@ -104,12 +101,9 @@ impl<'a> Process<'a> {
     ) -> Result<(), VmError> {
         let mut guard = self.inner.write();
         let ProcessInner {
-            process_id,
-            state,
             address_space,
             vm_map,
-            threads,
-            parent,
+            ..
         } = &mut *guard;
         //let root = &mut *guard.address_space;
 
@@ -123,12 +117,9 @@ impl<'a> Process<'a> {
     ) -> Result<(), VmError> {
         let mut guard = self.inner.write();
         let ProcessInner {
-            process_id,
-            state,
             address_space,
             vm_map,
-            threads,
-            parent,
+            ..
         } = &mut *guard;
 
         vm_map.clear(address_space, table_alloc, page_alloc)?;

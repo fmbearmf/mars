@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(fn_traits)]
 
 mod allocator;
 mod earlyinit;
@@ -13,8 +12,8 @@ use aarch64_cpu::{
         wfe,
     },
     registers::{
-        CNTFRQ_EL0, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0, CPACR_EL1, DAIF, MAIR_EL1, MPIDR_EL1,
-        ReadWriteable, Readable, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1, VBAR_EL1, Writeable,
+        CPACR_EL1, DAIF, MAIR_EL1, MPIDR_EL1, ReadWriteable, Readable, SCTLR_EL1, TCR_EL1,
+        TTBR0_EL1, TTBR1_EL1, Writeable,
     },
 };
 use aarch64_cpu_ext::{
@@ -27,7 +26,7 @@ use core::{
     mem::{self, MaybeUninit},
     ops::{Add, Index},
     panic::PanicInfo,
-    ptr::{self, NonNull, read_volatile},
+    ptr::{self, NonNull},
     slice::from_raw_parts,
     str::from_utf8,
 };
@@ -38,25 +37,21 @@ use klib::{
             GicCpuInterface, GicDistributor, GicIts, GicRedistributor, GicrFrame, MADT_GICC,
             MADT_GICD, MADT_GICR, MADT_ITS,
         },
-        rsdp::{Rsdp, XsdtIter, find_rsdp_in_slice},
+        rsdp::{XsdtIter, find_rsdp_in_slice},
     },
     bytes_to_human_readable,
-    cpu_interface::{
-        Arm64InterruptInterface, Mpidr, SecondaryBootArgs, mpidr_affinities, mpidr_key,
-    },
-    exception::ExceptionHandler,
+    cpu_interface::{Arm64InterruptInterface, Mpidr, SecondaryBootArgs, mpidr_affinities},
     interrupt::{GicdRegisters, InterruptController, gicv3::GicV3},
+    pm::page::mapper::{free_tables, map_region},
     pm::page::{PageAllocator, table_allocator::PMTableAllocator},
     smccc::cpu_on,
     timer::init_timer,
-    vcpu::{CpuDescriptor, VCPUS, add_cpu, vcpu_wait_init, with_cpus, with_this_cpu},
+    vcpu::{CpuDescriptor, add_cpu, vcpu_wait_init, with_cpus, with_this_cpu},
     vec::{DynVec, PMVec, RawVec, StaticVec},
     vm::{
         DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
         PAGE_SIZE, TABLE_ENTRIES, TTable, align_down, align_up, dmap_addr_to_phys,
-        mapper::{TableAllocator, free_tables, map_region},
-        phys_addr_to_dmap,
-        slab::SlabAllocator,
+        phys_addr_to_dmap, slab::SlabAllocator,
     },
 };
 use protocol::BootInfo;
@@ -156,10 +151,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
         );
     }
 
-    let mut boot_info: BootInfo = unsafe { boot_info_ref.assume_init() };
-
-    let kbase = unsafe { &__KBASE as *const _ as usize };
-    let offset = kbase - boot_info.kernel_load_physical_address;
+    let boot_info: BootInfo = unsafe { boot_info_ref.assume_init() };
 
     {
         let mut lock = EARLYCON.lock();
@@ -396,8 +388,6 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     if is_uniprocessor {
         unimplemented!();
     }
-
-    let interrupt_controller = Arm64InterruptInterface {};
 
     print_mem_usage();
 
@@ -637,7 +627,7 @@ pub extern "C" fn arm_init(
     let mmap_swiss_cheese = early_page_allocator.free_regions.into_inner();
 
     for &region in mmap_swiss_cheese.as_slice() {
-        if let Some(popped) = pmvec_copy.remove_containing(region.base) {
+        if let Some(_) = pmvec_copy.remove_containing(region.base) {
             pmvec_copy.push(region);
         }
     }

@@ -2,9 +2,7 @@ use core::arch::asm;
 
 use aarch64_cpu::registers::{MPIDR_EL1, Readable};
 
-use super::{
-    interrupt::GicdRegisters, interrupt::InterruptInterface, vcpu::CpuDescriptor, vm::TTable,
-};
+use super::{interrupt::InterruptInterface, vcpu::CpuDescriptor};
 
 #[derive(Debug, Copy, Clone)]
 pub struct Arm64InterruptInterface;

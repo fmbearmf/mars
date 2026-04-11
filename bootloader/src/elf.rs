@@ -8,10 +8,11 @@ use core::{
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::alloc::alloc;
 use klib::{
+    pm::page::mapper::map_region,
     vec::DynVec,
     vm::{
         MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType, TABLE_ENTRIES, TTENATIVE, TTable,
-        align_up, mapper::map_region,
+        align_up,
     },
 };
 use log::{debug, error};
