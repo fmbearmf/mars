@@ -11,6 +11,15 @@ name = "kernel"
 path = "src/bin/main.rs"
 test = false
 
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = 0
+incremental = false
+
 [dependencies]
 aarch64-cpu = { workspace = true }
 aarch64-cpu-ext = { workspace = true }

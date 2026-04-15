@@ -42,8 +42,12 @@ use klib::{
     bytes_to_human_readable,
     cpu_interface::{Arm64InterruptInterface, Mpidr, SecondaryBootArgs, mpidr_affinities},
     interrupt::{GicdRegisters, InterruptController, gicv3::GicV3},
-    pm::page::mapper::{free_tables, map_region},
-    pm::page::{PageAllocator, table_allocator::PMTableAllocator},
+    pm::page::{
+        PageAllocator,
+        mapper::{free_tables, map_region},
+        table_allocator::PMTableAllocator,
+    },
+    scheduler::Scheduler,
     smccc::cpu_on,
     timer::init_timer,
     vcpu::{CpuDescriptor, add_cpu, vcpu_wait_init, with_cpus, with_this_cpu},
@@ -75,7 +79,9 @@ klib::exception_handlers!(Exceptions);
 #[global_allocator]
 pub static KALLOCATOR: SlabAllocator = SlabAllocator::new();
 
-pub static KPAGE_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
+pub static KPT_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
+
+pub static GLOBAL_SCHEDULER: Scheduler<KernelPTAllocator, SlabAllocator> = Scheduler::new();
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -350,14 +356,17 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                         let gicd = unsafe { &*gicd_ptr };
                         let gic = GicV3::new(gicd, gicr.rd, gicr.sgi, Arm64InterruptInterface {});
 
-                        add_cpu(CpuDescriptor {
-                            acpi_cpu_uid: gicc.acpi_cpu_uid(),
-                            mpidr: mpidr.affinity_only(),
-                            available: enabled || online_capable,
-                            efficiency_class: gicc.efficiency_class(),
-                            gic: Some(gic),
-                            timer_irq: timer_irq.expect("timer_irq not set") as u64,
-                        });
+                        add_cpu(
+                            CpuDescriptor {
+                                acpi_cpu_uid: gicc.acpi_cpu_uid(),
+                                mpidr: mpidr.affinity_only(),
+                                available: enabled || online_capable,
+                                efficiency_class: gicc.efficiency_class(),
+                                gic: Some(gic),
+                                timer_irq: timer_irq.expect("timer_irq not set") as u64,
+                            },
+                            &GLOBAL_SCHEDULER,
+                        );
                     }
                 }
                 _ => {}

@@ -1,9 +1,9 @@
-use crate::context::RegisterFileRef;
-
 use super::{
     context::RegisterFile,
+    pm::page::mapper::TableAllocator,
     process::Process,
     sync::{Mutex, RwLock},
+    vm::page_allocator::PhysicalPageAllocator,
 };
 
 extern crate alloc;
@@ -25,30 +25,30 @@ pub enum ThreadState {
 }
 
 #[derive(Debug)]
-struct ThreadInner<'a> {
+struct ThreadInner<'a, A: TableAllocator, P: PhysicalPageAllocator> {
     thread_id: ThreadId,
     state: ThreadState,
     priority: u8,
     ctx: RegisterFile,
     stack: Option<Box<[u8]>>,
-    process: Weak<Process<'a>>, // avoids a ref count
+    process: Weak<Process<'a, A, P>>, // avoids a ref count
 }
 
 #[derive(Debug, Clone)]
-pub struct Thread<'a> {
-    inner: Arc<RwLock<ThreadInner<'a>>>,
+pub struct Thread<'a, A: TableAllocator, P: PhysicalPageAllocator> {
+    inner: Arc<RwLock<ThreadInner<'a, A, P>>>,
 }
 
-impl<'a> Thread<'a> {
+impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Thread<'a, A, P> {
     pub fn new(
         thread_id: ThreadId,
-        process: &Arc<Process<'a>>,
+        process: &Arc<Process<'a, A, P>>,
         stack_size: usize,
         pc: u64,
         priority: u8,
     ) -> Self {
         let stack = if stack_size > 0 {
-            let mut stack = alloc::vec![0u8; stack_size].into_boxed_slice();
+            let stack = alloc::vec![0u8; stack_size].into_boxed_slice();
             Some(stack)
         } else {
             None
@@ -95,7 +95,15 @@ impl<'a> Thread<'a> {
         f(&mut guard.ctx)
     }
 
-    pub fn process(&self) -> Option<Arc<Process<'a>>> {
+    pub fn with_ctx<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&RegisterFile) -> R,
+    {
+        let guard = self.inner.read();
+        f(&guard.ctx)
+    }
+
+    pub fn process(&self) -> Option<Arc<Process<'a, A, P>>> {
         self.inner.read().process.upgrade()
     }
 

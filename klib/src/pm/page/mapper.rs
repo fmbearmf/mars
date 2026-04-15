@@ -200,8 +200,7 @@ fn unmap_l2_block<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize
     }
 }
 
-#[inline]
-fn map_page<A: TableAllocator>(
+pub fn map_page<A: TableAllocator>(
     root: &mut TTable<TABLE_ENTRIES>,
     pa: usize,
     va: usize,
@@ -285,8 +284,7 @@ fn map_page<A: TableAllocator>(
     l3_entry.set_privileged_executable(!pxn);
 }
 
-#[inline]
-fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, allocator: &A) {
+pub fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, allocator: &A) {
     let i0 = TTENATIVE::calculate_index(va as u64, 0);
     let i1 = TTENATIVE::calculate_index(va as u64, 1);
     let i2 = TTENATIVE::calculate_index(va as u64, 2);

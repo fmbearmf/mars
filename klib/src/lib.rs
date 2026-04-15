@@ -11,6 +11,7 @@ pub mod acpi;
 pub mod context;
 pub mod cpu_interface;
 pub mod exception;
+pub mod hash_map;
 pub mod interrupt;
 pub mod pm;
 pub mod process;

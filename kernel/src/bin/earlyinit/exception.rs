@@ -1,8 +1,10 @@
 use aarch64_cpu::registers::{DAIF, ReadWriteable, Readable, Writeable};
 use klib::{
     context::RegisterFileRef, exception::ExceptionHandler, interrupt::InterruptController,
-    scheduler::SCHEDULER, timer::timer_irq, vcpu::with_this_cpu,
+    timer::timer_irq, vcpu::with_this_cpu,
 };
+
+use crate::GLOBAL_SCHEDULER;
 
 use super::super::earlycon_writeln;
 
@@ -34,7 +36,7 @@ impl ExceptionHandler for Exceptions {
                     timer_irq();
 
                     let regs = if int as u64 == cpu.timer_irq {
-                        SCHEDULER.schedule(register_file)
+                        GLOBAL_SCHEDULER.schedule(register_file)
                     } else {
                         register_file
                     };
@@ -69,7 +71,7 @@ impl ExceptionHandler for Exceptions {
                     timer_irq();
 
                     let regs = if int as u64 == cpu.timer_irq {
-                        SCHEDULER.schedule(register_file)
+                        GLOBAL_SCHEDULER.schedule(register_file)
                     } else {
                         register_file
                     };

@@ -1,10 +1,15 @@
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::{
+    sync::atomic::{AtomicU8, Ordering},
+    usize,
+};
 
 use super::{
-    context::{RegisterFile, RegisterFileRef},
+    context::RegisterFileRef,
     cpu_interface::Mpidr,
+    pm::page::mapper::TableAllocator,
     sync::{Mutex, RwLock},
-    thread::{Thread, ThreadId, ThreadState},
+    thread::{Thread, ThreadState},
+    vm::page_allocator::PhysicalPageAllocator,
 };
 
 extern crate alloc;
@@ -18,15 +23,13 @@ use alloc::{
     sync::Arc,
 };
 
-pub static SCHEDULER: Scheduler<'static> = Scheduler::new();
-
 #[derive(Debug)]
-pub struct LocalScheduler<'a> {
-    thread_queue: VecDeque<Arc<Thread<'a>>>,
-    current_thread: Option<Arc<Thread<'a>>>,
+pub struct LocalScheduler<'a, A: TableAllocator, P: PhysicalPageAllocator> {
+    thread_queue: VecDeque<Arc<Thread<'a, A, P>>>,
+    current_thread: Option<Arc<Thread<'a, A, P>>>,
 }
 
-impl<'a> LocalScheduler<'a> {
+impl<'a, A: TableAllocator, P: PhysicalPageAllocator> LocalScheduler<'a, A, P> {
     pub const fn new() -> Self {
         Self {
             thread_queue: VecDeque::new(),
@@ -36,12 +39,15 @@ impl<'a> LocalScheduler<'a> {
 }
 
 #[derive(Debug)]
-pub struct Scheduler<'a> {
-    queues: RwLock<BTreeMap<u64, Mutex<LocalScheduler<'a>>>>,
+pub struct Scheduler<'a, A: TableAllocator, P: PhysicalPageAllocator> {
+    queues: RwLock<BTreeMap<u64, Mutex<LocalScheduler<'a, A, P>>>>,
     spawn_counter: AtomicU8,
 }
 
-impl<'a> Scheduler<'a> {
+unsafe impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Send for Scheduler<'a, A, P> {}
+unsafe impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Sync for Scheduler<'a, A, P> {}
+
+impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Scheduler<'a, A, P> {
     pub const fn new() -> Self {
         Self {
             queues: RwLock::new(BTreeMap::new()),
@@ -54,7 +60,7 @@ impl<'a> Scheduler<'a> {
         queues.insert(mpidr, Mutex::new(LocalScheduler::new()));
     }
 
-    pub fn spawn(&self, thread: Arc<Thread<'a>>) {
+    pub fn spawn(&self, thread: Arc<Thread<'a, A, P>>) {
         let queues = self.queues.read();
         assert!(!queues.is_empty(), "scheduler has no CPUs");
 
@@ -94,7 +100,7 @@ impl<'a> Scheduler<'a> {
             .or_else(|| prev_thread.clone());
 
         if let Some(next) = next_thread {
-            if let Some(ref prev) = prev_thread {
+            if let Some(prev) = &prev_thread {
                 if Arc::ptr_eq(prev, &next) {
                     local_queue.current_thread = Some(next);
                     return ctx;
@@ -105,8 +111,9 @@ impl<'a> Scheduler<'a> {
             TPIDR_EL1.set(Arc::as_ptr(&next) as u64);
 
             if let Some(process) = next.process() {
-                process.with_address_space(|ttbr0| {
-                    let addr = ttbr0 as *const _ as u64;
+                process.with_address_space(|addr_space| {
+                    let root = addr_space.root.as_ptr();
+                    let addr = root as *const _ as u64;
                     TTBR0_EL1.set_baddr(addr);
                     isb(barrier::SY);
                 });
@@ -114,7 +121,7 @@ impl<'a> Scheduler<'a> {
 
             local_queue.current_thread = Some(next.clone());
 
-            let next_ptr = next.with_ctx_mut(|next_ctx| next_ctx as *mut RegisterFile);
+            let next_ptr = next.with_ctx_mut(|next_ctx| next_ctx as *mut _);
 
             // theoretically this is safe. nothing else should mutate the `ctx`
             unsafe { RegisterFileRef(&mut *next_ptr) }

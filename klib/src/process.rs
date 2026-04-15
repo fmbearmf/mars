@@ -2,14 +2,11 @@ use super::{
     pm::page::mapper::TableAllocator,
     sync::RwLock,
     thread::{Thread, ThreadId},
-    vm::{
-        TABLE_ENTRIES, TTable, VmError, map::Map as VmMap, page_allocator::PhysicalPageAllocator,
-    },
+    vm::{page_allocator::PhysicalPageAllocator, user::address_space::AddressSpace},
 };
 
 extern crate alloc;
 
-use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
@@ -25,31 +22,29 @@ pub enum ProcessState {
 }
 
 #[derive(Debug)]
-struct ProcessInner<'a> {
+struct ProcessInner<'a, A: TableAllocator, P: PhysicalPageAllocator> {
     process_id: ProcessId,
     state: ProcessState,
-    address_space: &'a mut TTable<TABLE_ENTRIES>,
-    vm_map: VmMap,
-    threads: Vec<Arc<Thread<'a>>>,
-    parent: Option<Weak<Process<'a>>>,
+    address_space: AddressSpace<'a, A, P>,
+    threads: Vec<Arc<Thread<'a, A, P>>>,
+    parent: Option<Weak<Process<'a, A, P>>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Process<'a> {
-    inner: Arc<RwLock<ProcessInner<'a>>>,
+pub struct Process<'a, A: TableAllocator, P: PhysicalPageAllocator> {
+    inner: Arc<RwLock<ProcessInner<'a, A, P>>>,
 }
 
-impl<'a> Process<'a> {
+impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Process<'a, A, P> {
     pub fn new(
         process_id: ProcessId,
-        address_space: &'a mut TTable<TABLE_ENTRIES>,
-        parent: Option<&Arc<Process<'a>>>,
+        address_space: AddressSpace<'a, A, P>,
+        parent: Option<&Arc<Process<'a, A, P>>>,
     ) -> Self {
         let inner = ProcessInner {
             process_id,
             state: ProcessState::Normal,
             address_space,
-            vm_map: VmMap::new(),
             threads: Vec::new(),
             parent: parent.map(Arc::downgrade),
         };
@@ -59,75 +54,7 @@ impl<'a> Process<'a> {
         }
     }
 
-    pub fn mmap_anonymous<A: TableAllocator, P: PhysicalPageAllocator>(
-        &self,
-        va_hint: Option<usize>,
-        size: usize,
-        ap: AccessPermission,
-        share: Shareability,
-        uxn: bool,
-        pxn: bool,
-        attr_index: u64,
-        table_alloc: &A,
-        page_alloc: &P,
-    ) -> Result<usize, VmError> {
-        let mut guard = self.inner.write();
-        let ProcessInner {
-            address_space,
-            vm_map,
-            ..
-        } = &mut *guard;
-
-        vm_map.mmap_anonymous(
-            address_space,
-            va_hint,
-            size,
-            ap,
-            share,
-            uxn,
-            pxn,
-            attr_index,
-            table_alloc,
-            page_alloc,
-        )
-    }
-
-    pub fn munmap<A: TableAllocator, P: PhysicalPageAllocator>(
-        &self,
-        va: usize,
-        size: usize,
-        table_alloc: &A,
-        page_alloc: &P,
-    ) -> Result<(), VmError> {
-        let mut guard = self.inner.write();
-        let ProcessInner {
-            address_space,
-            vm_map,
-            ..
-        } = &mut *guard;
-        //let root = &mut *guard.address_space;
-
-        vm_map.remove(address_space, va, size, table_alloc, page_alloc)
-    }
-
-    pub fn destroy<A: TableAllocator, P: PhysicalPageAllocator>(
-        &self,
-        table_alloc: &A,
-        page_alloc: &P,
-    ) -> Result<(), VmError> {
-        let mut guard = self.inner.write();
-        let ProcessInner {
-            address_space,
-            vm_map,
-            ..
-        } = &mut *guard;
-
-        vm_map.clear(address_space, table_alloc, page_alloc)?;
-        guard.state = ProcessState::Zombie;
-        Ok(())
-    }
-
-    pub fn add_thread(&self, thread: Arc<Thread<'a>>) {
+    pub fn add_thread(&self, thread: Arc<Thread<'a, A, P>>) {
         self.inner.write().threads.push(thread);
     }
 
@@ -146,18 +73,18 @@ impl<'a> Process<'a> {
 
     pub fn with_address_space<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&TTable<TABLE_ENTRIES>) -> R,
+        F: FnOnce(&AddressSpace<A, P>) -> R,
     {
         let guard = self.inner.read();
 
-        f(guard.address_space)
+        f(&guard.address_space)
     }
 
     pub fn process_id(&self) -> ProcessId {
         self.inner.read().process_id
     }
 
-    pub fn threads(&self) -> Vec<Arc<Thread<'a>>> {
+    pub fn threads(&self) -> Vec<Arc<Thread<'a, A, P>>> {
         self.inner.read().threads.clone()
     }
 }

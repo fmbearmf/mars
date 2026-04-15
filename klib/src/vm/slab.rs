@@ -296,6 +296,14 @@ impl SlabAllocator {
         self.used_bytes.fetch_sub(layout.size(), Ordering::Relaxed);
     }
 
+    pub fn alloc_page(&self) -> usize {
+        self.page_alloc().alloc_page() as usize
+    }
+
+    pub fn free_page(&self, va: usize) {
+        self.page_alloc().free_pages(va as *mut u8);
+    }
+
     pub fn heap_capacity(&self) -> usize {
         self.page_alloc().total_pages() * PAGE_SIZE
     }
@@ -312,7 +320,7 @@ impl SlabAllocator {
 }
 
 impl PhysicalPageAllocator for SlabAllocator {
-    fn alloc_page(&self) -> Result<usize, VmError> {
+    fn alloc_phys_page(&self) -> Result<usize, VmError> {
         let mut virt_page = self.page_alloc().alloc_page() as usize;
 
         virt_page = virt_page
@@ -322,7 +330,7 @@ impl PhysicalPageAllocator for SlabAllocator {
         Ok(virt_page as usize)
     }
 
-    fn free_page(&self, pa: usize) {
+    fn free_phys_page(&self, pa: usize) {
         let pa = pa.checked_add(DMAP_START).expect("invalid PA to free");
 
         self.page_alloc().free_pages(pa as *mut u8);

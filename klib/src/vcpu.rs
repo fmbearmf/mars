@@ -1,11 +1,13 @@
-use core::{
-    ops::Index,
-    sync::atomic::{AtomicU8, Ordering},
+use core::sync::atomic::{AtomicU8, Ordering};
+
+use super::{
+    cpu_interface::{Arm64InterruptInterface, Mpidr},
+    interrupt::gicv3::GicV3,
+    pm::page::mapper::TableAllocator,
+    scheduler::Scheduler,
+    sync::RwLock,
+    vm::page_allocator::PhysicalPageAllocator,
 };
-
-use crate::{cpu_interface::Mpidr, scheduler::SCHEDULER};
-
-use super::{cpu_interface::Arm64InterruptInterface, interrupt::gicv3::GicV3, sync::RwLock};
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -131,16 +133,15 @@ impl VCpuList {
     }
 }
 
-const DEFAULT_FSM: CpuFsm = CpuFsm::new();
-
 pub static VCPUS: RwLock<VCpuList> = RwLock::new(VCpuList::new());
-//static VCPU_FSM: Vec<CpuFsm> = Vec::new();
 
-pub fn add_cpu(cpu: CpuDescriptor) -> usize {
+pub fn add_cpu<'a, A: TableAllocator, P: PhysicalPageAllocator>(
+    cpu: CpuDescriptor,
+    scheduler: &Scheduler<'a, A, P>,
+) -> usize {
     let mut vcpus = VCPUS.write();
 
-    SCHEDULER.register_cpu(cpu.mpidr);
-
+    scheduler.register_cpu(cpu.mpidr);
     vcpus.cpus.push(cpu);
 
     let state = CpuFsm::new();

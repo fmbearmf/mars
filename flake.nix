@@ -115,6 +115,7 @@
           nativeBuildInputs = [
             toolchain
             pkgs.dtc
+            pkgs.cargo-bloat
             (pkgs.callPackage ./gdb/package.nix { })
           ];
 
