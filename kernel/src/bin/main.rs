@@ -28,7 +28,7 @@ use core::{
     panic::PanicInfo,
     ptr::{self, NonNull},
     range::Range,
-    slice::from_raw_parts,
+    slice::{self, from_raw_parts},
     str::from_utf8,
 };
 use klib::{
@@ -61,7 +61,7 @@ use klib::{
         page_allocator::PhysicalPageAllocator,
         phys_addr_to_dmap,
         slab::SlabAllocator,
-        user::{PAGE_DESCRIPTORS, address_space::AddressSpace},
+        user::{PAGE_DESCRIPTORS, address_space::AddressSpace, cursor::Cursor},
     },
 };
 use protocol::BootInfo;
@@ -525,10 +525,30 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
             });
 
             let page_pa = KALLOCATOR.alloc_phys_page().expect("where my page at");
-            let page_ptr: *mut u32 = KernelPTAllocator::phys_to_virt(page_pa as u64);
+            let page_ptr: &mut [u32] = unsafe {
+                slice::from_raw_parts_mut(
+                    KernelPTAllocator::phys_to_virt(page_pa as u64) as *mut u32,
+                    PAGE_SIZE,
+                )
+            };
 
-            // unconditional branch to 0x0
-            unsafe { page_ptr.write(0x1400_0000u32) };
+            let code: &[u32] = &[
+                0xD503_201F, // NOP
+                0xD280_0000, // MOV x0, #0
+                0x9100_03E1, // MOV x1, sp
+                // loop:
+                0x9100_0400, // ADD x0, x0, #1
+                0xD100_07FF, // SUB sp, sp, #1
+                0xF100_101F, // CMP x0, #4
+                0x54FF_FFAB, // B.LT loop
+                // regular:
+                0xD503_203F, // YIELD
+                0x17FF_FFFF, // B regular
+            ];
+
+            for (d, s) in page_ptr.iter_mut().zip(code.iter()) {
+                *d = *s;
+            }
 
             curr_sorr.map(
                 page_pa as u64,
@@ -545,7 +565,37 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
 
     let thread = {
         let stack: Box<[u8]> = Box::new([0u8; 4096]);
+
+        process.with_address_space(|address_space| {
+            let range_va = stack.as_ptr_range();
+            let range_va = Range {
+                start: range_va.start as usize,
+                end: range_va.end as usize,
+            };
+
+            let range_pa = Range {
+                start: KernelPTAllocator::virt_to_phys(range_va.start as *mut u8) as usize,
+                end: KernelPTAllocator::virt_to_phys(range_va.end as *mut u8) as usize,
+            };
+
+            assert_eq!(range_pa.end as usize & 0x10, 0, "stack unaligned..?");
+
+            let mut curr_sorr = address_space.lock(range_va);
+
+            earlycon_writeln!("    stack map: {:#x?} -> {:#x?}", range_va, range_pa);
+
+            curr_sorr.map(
+                range_pa.start as u64,
+                AccessPermission::ReadWrite,
+                Shareability::InnerShareable,
+                true,
+                true,
+                MAIR_NORMAL_INDEX,
+            );
+        });
+
         let thread = Arc::new(Thread::new(1, &process, stack, 0x0, 0));
+
         thread
     };
 
@@ -640,7 +690,7 @@ pub extern "C" fn arm_init(
     pmvec_copy.extend_from_slice(pmvec.as_slice());
     pmvec_copy.compact();
 
-    for &region in pmvec_copy.as_slice() {
+    for region in pmvec_copy.as_slice() {
         if region.is_normal() {
             continue;
         }

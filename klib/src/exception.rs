@@ -63,7 +63,8 @@ macro_rules! exception_handlers {
         core::arch::global_asm!(
             r#"
 .macro save_regs el:req
-    stp x0, x1, [sp, #-(8 * 34)]!
+    sub sp, sp, #(8 * 34)
+    stp x0, x1, [sp]
 
     stp x2, x3, [sp, #8 * 2]
     stp x4, x5, [sp, #8 * 4]
@@ -95,6 +96,7 @@ macro_rules! exception_handlers {
     msr spsr_\el, x1
 
     ldr x16,     [sp, #8 * 31]
+    msr sp_el0, x16
 
     ldp x2, x3, [sp, #8 * 2]
     ldp x4, x5, [sp, #8 * 4]
@@ -111,8 +113,6 @@ macro_rules! exception_handlers {
     ldp x26, x27, [sp, #8 * 26]
     ldp x28, x29, [sp, #8 * 28]
     ldr x30,      [sp, #8 * 30]
-
-    msr sp_el0, x16
 
     ldp x0, x1, [sp], #(8 * 34)
 .endm

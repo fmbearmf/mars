@@ -16,10 +16,10 @@ pub struct Cursor<'a, A: TableAllocator, P: PhysicalPageAllocator> {
     pub addr_space: &'a AddressSpace<'a, A, P>,
     pub range: Range<usize>,
 
-    pub read_guards: Vec<(u64, RwLockReadGuard<'static, PtState>)>,
-    pub write_guard: Option<(u64, RwLockWriteGuard<'static, PtState>)>,
+    pub read_guards: Vec<(usize, RwLockReadGuard<'static, PtState>)>,
+    pub write_guard: Option<(usize, RwLockWriteGuard<'static, PtState>)>,
 
-    pub covering_pa: u64,
+    pub covering_pa: usize,
     pub covering_level: usize,
 }
 
@@ -94,7 +94,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         loop {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa);
+            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa as u64);
             let pte = unsafe { (*table_ptr).entries[i] };
 
             if !pte.is_valid() {
@@ -102,7 +102,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
             }
 
             if current_lvl == 0 {
-                let desc = PAGE_DESCRIPTORS.get_page_descriptor(current_pa as usize);
+                let desc = PAGE_DESCRIPTORS.get_page_descriptor(current_pa as _);
                 let state = desc.lock.read();
                 return state
                     .meta
@@ -111,7 +111,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
                     .unwrap_or(Status::Invalid);
             }
 
-            current_pa = pte.address();
+            current_pa = pte.address() as _;
             current_lvl -= 1;
         }
     }
@@ -122,7 +122,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         while current_lvl > 0 {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa);
+            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa as _);
             let mut pte = unsafe { (*table_ptr).entries[i] };
 
             if !pte.is_valid() {
@@ -133,7 +133,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
                 unsafe { (*table_ptr).entries[i] = pte };
             }
 
-            current_pa = pte.address();
+            current_pa = pte.address() as _;
             current_lvl -= 1;
         }
     }
@@ -144,11 +144,11 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         while current_lvl > 0 {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa);
+            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa as _);
             let pte = unsafe { (*table_ptr).entries[i] };
 
             if pte.is_valid() && pte.is_table() {
-                current_pa = pte.address();
+                current_pa = pte.address() as _;
                 current_lvl -= 1;
             } else {
                 return;

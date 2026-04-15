@@ -58,7 +58,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> AddressSpace<'a, A, P> {
     }
 
     pub fn lock(&self, range: Range<usize>) -> Cursor<'_, A, P> {
-        let mut current_pa = A::virt_to_phys(self.root.as_ptr());
+        let mut current_pa = A::virt_to_phys(self.root.as_ptr()) as usize;
         let mut current_level = self.max_level;
         let mut current_base_va = 0;
         let mut read_guards = Vec::new();
@@ -76,14 +76,14 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> AddressSpace<'a, A, P> {
                 let desc = PAGE_DESCRIPTORS.get_page_descriptor(current_pa as usize);
                 let guard = desc.lock.read();
 
-                let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa);
+                let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa as _);
                 let pte = unsafe { (*table_ptr).entries[start_i] };
 
                 if pte.is_valid() && pte.is_table() {
                     let child = pte.address();
                     read_guards.push((current_pa, guard));
 
-                    current_pa = child;
+                    current_pa = child as _;
                     current_base_va += start_i * entry_cover(current_level);
                     current_level -= 1;
                 } else {
@@ -94,7 +94,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> AddressSpace<'a, A, P> {
             }
         }
 
-        let desc = PAGE_DESCRIPTORS.get_page_descriptor(current_pa as usize);
+        let desc = PAGE_DESCRIPTORS.get_page_descriptor(current_pa as _);
         let write_guard = desc.lock.write();
 
         Cursor {

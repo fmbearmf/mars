@@ -44,6 +44,10 @@ impl ExceptionHandler for Exceptions {
         register_file
     }
 
+    extern "C" fn irq_lower(register_file: RegisterFileRef) -> RegisterFileRef {
+        Self::irq_current(register_file)
+    }
+
     extern "C" fn fiq_current(register_file: RegisterFileRef) -> RegisterFileRef {
         let daif = daif_save();
 
