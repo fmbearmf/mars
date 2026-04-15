@@ -81,8 +81,8 @@ macro_rules! exception_handlers {
     stp x28, x29, [sp, #8 * 28]
     str x30,      [sp, #8 * 30]
 
-    add x2, sp, #(8 * 34)
-    str x2, [sp, #8 * 31]
+    mrs x16, sp_el0
+    str x16, [sp, #8 * 31]
 
     mrs x0, elr_\el
     mrs x1, spsr_\el
@@ -94,7 +94,7 @@ macro_rules! exception_handlers {
     msr elr_\el, x0
     msr spsr_\el, x1
 
-    ldr x2,     [sp, #8 * 31]
+    ldr x16,     [sp, #8 * 31]
 
     ldp x2, x3, [sp, #8 * 2]
     ldp x4, x5, [sp, #8 * 4]
@@ -111,6 +111,8 @@ macro_rules! exception_handlers {
     ldp x26, x27, [sp, #8 * 26]
     ldp x28, x29, [sp, #8 * 28]
     ldr x30,      [sp, #8 * 30]
+
+    msr sp_el0, x16
 
     ldp x0, x1, [sp], #(8 * 34)
 .endm

@@ -1,4 +1,6 @@
-use aarch64_cpu::registers::{DAIF, ESR_EL1, ReadWriteable, Readable, Writeable};
+use aarch64_cpu::registers::{
+    DAIF, ESR_EL1, FAR_EL1, ReadWriteable, Readable, TTBR0_EL1, Writeable,
+};
 use klib::{
     context::RegisterFileRef, cpu_interface::Mpidr, exception::ExceptionHandler,
     interrupt::InterruptController, timer::timer_irq, vcpu::with_this_cpu,
@@ -28,10 +30,11 @@ impl ExceptionHandler for Exceptions {
         let mpidr = with_this_cpu(|cpu| cpu.mpidr);
 
         earlycon_writeln!(
-            "Sync exception from CPU MPIDR={} from lower: {:?} with ESR={:#x}",
+            "Sync exception from CPU MPIDR={} from lower: {:?} with ESR={:#x} and TTBR0={:#x}",
             mpidr,
             register_file,
             ESR_EL1.get(),
+            TTBR0_EL1.get(),
         );
 
         busy_loop_ret();

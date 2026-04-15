@@ -27,6 +27,7 @@ use core::{
     ops::{Add, Index},
     panic::PanicInfo,
     ptr::{self, NonNull},
+    range::Range,
     slice::from_raw_parts,
     str::from_utf8,
 };
@@ -57,6 +58,7 @@ use klib::{
     vm::{
         DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
         PAGE_SIZE, TABLE_ENTRIES, TTable, align_down, align_up, dmap_addr_to_phys,
+        page_allocator::PhysicalPageAllocator,
         phys_addr_to_dmap,
         slab::SlabAllocator,
         user::{PAGE_DESCRIPTORS, address_space::AddressSpace},
@@ -400,7 +402,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
 
     // ditch lower half mappings
     TTBR0_EL1.set(0);
-    TCR_EL1.modify(TCR_EL1::EPD0::DisableTTBR0Walks);
+    //TCR_EL1.modify(TCR_EL1::EPD0::DisableTTBR0Walks);
     tlbi(VMALLE1);
 
     let this_mpidr = Mpidr::current();
@@ -516,12 +518,34 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
             None,
         ));
 
+        proc.with_address_space(|address_space| {
+            let mut curr_sorr = address_space.lock(Range {
+                start: 0x0,
+                end: 0x4000,
+            });
+
+            let page_pa = KALLOCATOR.alloc_phys_page().expect("where my page at");
+            let page_ptr: *mut u32 = KernelPTAllocator::phys_to_virt(page_pa as u64);
+
+            // unconditional branch to 0x0
+            unsafe { page_ptr.write(0x1400_0000u32) };
+
+            curr_sorr.map(
+                page_pa as u64,
+                AccessPermission::ReadOnly,
+                Shareability::InnerShareable,
+                false,
+                true,
+                MAIR_NORMAL_INDEX,
+            );
+        });
+
         proc
     };
 
     let thread = {
         let stack: Box<[u8]> = Box::new([0u8; 4096]);
-        let thread = Arc::new(Thread::new(1, &process, stack, 0, 0));
+        let thread = Arc::new(Thread::new(1, &process, stack, 0x0, 0));
         thread
     };
 

@@ -27,33 +27,11 @@ pub fn map_region<A: TableAllocator>(
     attr_index: u64,
     allocator: &A,
 ) {
-    if va & PAGE_MASK != 0 {
-        panic!("VA must be page aligned");
-    }
+    assert_eq!(va & PAGE_MASK, 0, "VA must be page aligned");
+    assert_eq!(pa & PAGE_MASK, 0, "PA must be page aligned");
+    assert_eq!(size & PAGE_MASK, 0, "size must be page aligned");
+    assert!(size >= PAGE_SIZE, "can't map less than 1 page!");
 
-    if pa & PAGE_MASK != 0 {
-        panic!("PA must be page aligned");
-    }
-
-    if size & PAGE_MASK != 0 {
-        panic!("size must be page aligned");
-    }
-
-    if size < PAGE_SIZE {
-        panic!("can't map less than 1 page!");
-    }
-
-    //if va & L2_BLOCK_MASK == 0 && size & L2_BLOCK_MASK == 0 {
-    //    let num_blocks = size >> L2_BLOCK_SHIFT;
-
-    //    for i in 0..num_blocks {
-    //        let vaddr = va + (i << L2_BLOCK_SHIFT);
-    //        let paddr = pa + (i << L2_BLOCK_SHIFT);
-    //        map_l2_block(root, paddr, vaddr, access, share, uxn, pxn, attr_index);
-    //    }
-
-    //    return;
-    //} else {
     let num_pages = size >> PAGE_SHIFT;
 
     for i in 0..num_pages {
@@ -63,7 +41,6 @@ pub fn map_region<A: TableAllocator>(
             root, paddr, vaddr, access, share, uxn, pxn, attr_index, allocator,
         );
     }
-    //}
 }
 
 pub fn unmap_region<A: TableAllocator>(
@@ -72,131 +49,14 @@ pub fn unmap_region<A: TableAllocator>(
     size: usize,
     allocator: &A,
 ) {
-    if va & PAGE_MASK != 0 || size & PAGE_MASK != 0 {
-        panic!("addresses AND size must be page aligned");
-    }
+    assert_eq!(va & PAGE_MASK, 0, "address must be page-aligned");
+    assert_eq!(size & PAGE_MASK, 0, "size must be page-aligned");
 
     let num_pages = size >> PAGE_SHIFT;
 
     for i in 0..num_pages {
         let vaddr = va + (i << PAGE_SHIFT);
         unmap_page(root, vaddr, allocator);
-    }
-}
-
-fn map_l2_block<A: TableAllocator>(
-    root: &mut TTable<TABLE_ENTRIES>,
-    pa: usize,
-    va: usize,
-    access: AccessPermission,
-    share: Shareability,
-    uxn: bool,
-    pxn: bool,
-    attr_index: u64,
-    allocator: &A,
-) {
-    let i0 = TTENATIVE::calculate_index(va as u64, 0);
-    let i1 = TTENATIVE::calculate_index(va as u64, 1);
-    let i2 = TTENATIVE::calculate_index(va as u64, 2);
-
-    let l0_entry = &mut (root.entries[i0]);
-    let l1_table = if l0_entry.address() != 0 && l0_entry.is_table() {
-        let l1_pa = l0_entry.address();
-        let l1_va = A::phys_to_virt(l1_pa);
-        let mut z = unsafe { NonNull::new_unchecked(l1_va as *mut _) };
-        unsafe { z.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-
-        l0_entry.set_is_valid(true);
-        l0_entry.set_is_table();
-        l0_entry.set_address(dmap_addr_to_phys(table.as_ptr() as u64));
-
-        unsafe { table.as_mut() }
-    };
-
-    let l1_entry = &mut (l1_table.entries[i1]);
-    let l2_table = if l1_entry.address() != 0 && l1_entry.is_table() {
-        let l2_pa = l1_entry.address();
-        let l2_va = A::phys_to_virt(l2_pa);
-        let mut z = unsafe { NonNull::new_unchecked(l2_va as *mut _) };
-        unsafe { z.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-
-        l1_entry.set_is_valid(true);
-        l1_entry.set_is_table();
-        l1_entry.set_address(dmap_addr_to_phys(table.as_ptr() as u64));
-
-        unsafe { table.as_mut() }
-    };
-
-    let l2_entry = &mut (l2_table.entries[i2]);
-
-    if l2_entry.is_valid() && l2_entry.is_table() {
-        let child_pa = l2_entry.address();
-        let child_va = A::phys_to_virt(child_pa);
-        if child_pa != 0 {
-            unsafe {
-                let child_ptr = NonNull::new_unchecked(child_va as *mut TTable<TABLE_ENTRIES>);
-            }
-        }
-    }
-
-    l2_entry.set_is_valid(true);
-    l2_entry.set_is_block();
-    l2_entry.set_address(A::virt_to_phys(pa as *mut TTable<TABLE_ENTRIES>));
-    l2_entry.set_access();
-    l2_entry.set_access_permission(access);
-    l2_entry.set_shareability(share);
-    l2_entry.set_attr_index(attr_index);
-    l2_entry.set_executable(!uxn);
-    l2_entry.set_privileged_executable(!pxn);
-}
-
-fn unmap_l2_block<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, allocator: &A) {
-    let i0 = TTENATIVE::calculate_index(va as u64, 0);
-    let i1 = TTENATIVE::calculate_index(va as u64, 1);
-    let i2 = TTENATIVE::calculate_index(va as u64, 2);
-
-    let l0_entry = &mut (root.entries[i0]);
-    if !l0_entry.is_valid() || !l0_entry.is_table() {
-        return;
-    }
-
-    let l1_pa = l0_entry.address();
-    let l1_va = A::phys_to_virt(l1_pa);
-    let mut l1_table_ptr = unsafe { NonNull::new_unchecked(l1_va as *mut TTable<TABLE_ENTRIES>) };
-    let l1_table = unsafe { l1_table_ptr.as_mut() };
-    let l1_entry = &mut (l1_table.entries[i1]);
-
-    if !l1_entry.is_valid() || !l1_entry.is_table() {
-        return;
-    }
-
-    let l2_pa = l1_entry.address();
-    let l2_va = A::phys_to_virt(l2_pa);
-    let mut l2_table_ptr = unsafe { NonNull::new_unchecked(l2_va as *mut TTable<TABLE_ENTRIES>) };
-    let l2_table = unsafe { l2_table_ptr.as_mut() };
-    let l2_entry = &mut (l2_table.entries[i2]);
-
-    if !l2_entry.is_valid() {
-        return;
-    }
-
-    l2_entry.set_is_valid(false);
-    l2_entry.set_address(0);
-
-    if is_table_empty(l2_table) {
-        allocator.free_table(l2_table_ptr);
-        l1_entry.set_is_valid(false);
-        l1_entry.set_address(0);
-
-        if is_table_empty(l1_table) {
-            allocator.free_table(l1_table_ptr);
-            l0_entry.set_is_valid(false);
-            l0_entry.set_address(0);
-        }
     }
 }
 
