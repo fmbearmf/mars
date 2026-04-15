@@ -12,11 +12,11 @@ path = "src/bin/main.rs"
 test = false
 
 [profile.release]
-opt-level = "z"
+opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
-strip = true
+strip = "symbols"
 debug = 0
 incremental = false
 

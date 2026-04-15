@@ -1,10 +1,9 @@
 use core::{
     cell::UnsafeCell,
+    fmt::Debug,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
+    sync::atomic::{Atomic, AtomicBool, AtomicUsize, Ordering},
 };
-
-use aarch64_cpu::registers::{DAIF, ReadWriteable, Readable, Writeable};
 
 #[repr(C, align(64))]
 #[derive(Debug)]
@@ -96,9 +95,14 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
     }
 }
 
+type LockState = i32;
+
+const WRITER: LockState = LockState::MIN;
+const READERS: LockState = LockState::MAX;
+
 #[derive(Debug)]
 pub struct RwLock<T: ?Sized> {
-    state: AtomicI32,
+    state: Atomic<LockState>,
     data: UnsafeCell<T>,
 }
 
@@ -108,7 +112,7 @@ unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
 impl<T> RwLock<T> {
     pub const fn new(value: T) -> Self {
         Self {
-            state: AtomicI32::new(0),
+            state: Atomic::<LockState>::new(0 as LockState),
             data: UnsafeCell::new(value),
         }
     }
@@ -116,39 +120,57 @@ impl<T> RwLock<T> {
 
 impl<T: ?Sized> RwLock<T> {
     pub fn read(&self) -> RwLockReadGuard<'_, T> {
-        loop {
-            let current = self.state.load(Ordering::Relaxed);
+        let mut state = self.state.load(Ordering::Relaxed);
 
-            if current >= 0 {
-                if self
-                    .state
-                    .compare_exchange_weak(
-                        current,
-                        current + 1,
+        loop {
+            if state & WRITER == 0 {
+                if state != READERS {
+                    match self.state.compare_exchange_weak(
+                        state,
+                        state + 1,
                         Ordering::Acquire,
                         Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    return RwLockReadGuard { lock: self };
+                    ) {
+                        Ok(_) => return RwLockReadGuard { lock: self },
+                        Err(next) => state = next,
+                    }
+                    continue;
                 }
             }
 
             core::hint::spin_loop();
+            state = self.state.load(Ordering::Relaxed);
         }
     }
 
     pub fn write(&self) -> RwLockWriteGuard<'_, T> {
-        loop {
-            if self
-                .state
-                .compare_exchange_weak(0, -1, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                return RwLockWriteGuard { lock: self };
-            }
+        let mut state = self.state.load(Ordering::Relaxed);
 
-            core::hint::spin_loop();
+        loop {
+            if state & WRITER == 0 {
+                match self.state.compare_exchange_weak(
+                    state,
+                    state | WRITER,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        if state == 0 {
+                            return RwLockWriteGuard { lock: self };
+                        }
+
+                        while self.state.load(Ordering::Acquire) != WRITER {
+                            core::hint::spin_loop();
+                        }
+
+                        return RwLockWriteGuard { lock: self };
+                    }
+                    Err(next) => state = next,
+                }
+            } else {
+                core::hint::spin_loop();
+                state = self.state.load(Ordering::Relaxed);
+            }
         }
     }
 }
@@ -167,6 +189,12 @@ impl<'a, T: ?Sized> Deref for RwLockReadGuard<'a, T> {
 impl<'a, T: ?Sized> Drop for RwLockReadGuard<'a, T> {
     fn drop(&mut self) {
         self.lock.state.fetch_sub(1, Ordering::Release);
+    }
+}
+
+impl<'a, T: ?Sized + Debug> Debug for RwLockReadGuard<'a, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        (&**self).fmt(f)
     }
 }
 
@@ -190,5 +218,11 @@ impl<'a, T: ?Sized> DerefMut for RwLockWriteGuard<'a, T> {
 impl<'a, T: ?Sized> Drop for RwLockWriteGuard<'a, T> {
     fn drop(&mut self) {
         self.lock.state.store(0, Ordering::Release);
+    }
+}
+
+impl<'a, T: ?Sized + Debug> Debug for RwLockWriteGuard<'a, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        (&**self).fmt(f)
     }
 }

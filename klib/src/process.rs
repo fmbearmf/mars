@@ -1,3 +1,5 @@
+use core::fmt::Debug;
+
 use super::{
     pm::page::mapper::TableAllocator,
     sync::RwLock,
@@ -30,9 +32,16 @@ struct ProcessInner<'a, A: TableAllocator, P: PhysicalPageAllocator> {
     parent: Option<Weak<Process<'a, A, P>>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Process<'a, A: TableAllocator, P: PhysicalPageAllocator> {
     inner: Arc<RwLock<ProcessInner<'a, A, P>>>,
+}
+
+impl<'a, A: TableAllocator + Debug, P: PhysicalPageAllocator + Debug> Debug for Process<'a, A, P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let guard = self.inner.read();
+        f.debug_tuple("Process").field(&*guard).finish()
+    }
 }
 
 impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Process<'a, A, P> {
@@ -55,7 +64,8 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Process<'a, A, P> {
     }
 
     pub fn add_thread(&self, thread: Arc<Thread<'a, A, P>>) {
-        self.inner.write().threads.push(thread);
+        let mut guard = self.inner.write();
+        guard.threads.push(thread);
     }
 
     pub fn remove_thread(&self, thread_id: ThreadId) {
@@ -80,11 +90,25 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Process<'a, A, P> {
         f(&guard.address_space)
     }
 
-    pub fn process_id(&self) -> ProcessId {
-        self.inner.read().process_id
+    pub fn with_threads<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&[Arc<Thread<'a, A, P>>]) -> R,
+    {
+        let guard = self.inner.read();
+
+        f(guard.threads.as_ref())
     }
 
-    pub fn threads(&self) -> Vec<Arc<Thread<'a, A, P>>> {
-        self.inner.read().threads.clone()
+    pub fn with_threads_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut [Arc<Thread<'a, A, P>>]) -> R,
+    {
+        let mut guard = self.inner.write();
+
+        f(guard.threads.as_mut())
+    }
+
+    pub fn process_id(&self) -> ProcessId {
+        self.inner.read().process_id
     }
 }

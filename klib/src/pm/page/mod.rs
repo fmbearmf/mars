@@ -2,6 +2,7 @@ use core::{
     cell::UnsafeCell,
     ptr::{self, addr_eq},
     sync::atomic::{AtomicUsize, Ordering},
+    usize,
 };
 
 use super::super::{
@@ -17,7 +18,7 @@ const FREE_FLAG: u8 = 1 << 7;
 
 #[repr(C)]
 #[derive(Debug)]
-struct FreeBlock {
+pub struct FreeBlock {
     next: *mut FreeBlock,
     prev: *mut FreeBlock,
     zone: *mut Zone,
@@ -25,7 +26,7 @@ struct FreeBlock {
 }
 
 #[repr(C)]
-struct Zone {
+pub struct Zone {
     meta_array: *mut u8,
     data_base: usize,
     total_pages: usize,
@@ -40,6 +41,7 @@ pub struct PageAllocator {
     free_area: UnsafeCell<[*mut FreeBlock; MAX_ORDER]>,
     total_pages: AtomicUsize,
     allocated_pages: AtomicUsize,
+    lowest_address: usize,
 }
 
 unsafe impl Send for PageAllocator {}
@@ -54,6 +56,7 @@ impl PageAllocator {
             free_area: UnsafeCell::new([ptr::null_mut(); MAX_ORDER]),
             total_pages: AtomicUsize::new(0),
             allocated_pages: AtomicUsize::new(0),
+            lowest_address: 0,
         };
         for &r in ranges {
             if r.size == 0 || (r.base & PAGE_MASK) != 0 || (r.size & PAGE_MASK) != 0 {
@@ -98,6 +101,10 @@ impl PageAllocator {
             let meta_base = region.base;
             let reserved_bytes = reserved_pages * PAGE_SIZE;
             let data_base = region.base + reserved_bytes;
+
+            if self.lowest_address == 0 || data_base < self.lowest_address {
+                self.lowest_address = data_base;
+            }
 
             let meta_ptr = meta_base as *mut u8;
             let zone_slot_start = meta_base + reserved_bytes - size_of::<Zone>();
@@ -328,6 +335,30 @@ impl PageAllocator {
         }
 
         free_area[order] = block;
+    }
+
+    pub fn max_address(&self) -> usize {
+        unsafe {
+            let mut head = self.zone_head;
+            let mut max = 0;
+
+            while !head.is_null() {
+                let zone = &*head;
+
+                let end = zone.data_base + zone.total_pages * PAGE_SIZE;
+                if end > max {
+                    max = end;
+                }
+
+                head = zone.next;
+            }
+
+            max
+        }
+    }
+
+    pub fn min_address(&self) -> usize {
+        self.lowest_address
     }
 
     pub fn total_pages(&self) -> usize {

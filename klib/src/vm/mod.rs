@@ -2,9 +2,7 @@ use core::{fmt::Debug, mem::transmute};
 
 use aarch64_cpu_ext::structures::tte::{TTE4K48, TTE16K48};
 
-pub mod backing;
 pub mod page_allocator;
-pub mod region;
 pub mod slab;
 pub mod user;
 

@@ -92,6 +92,7 @@ const fn build_caches() -> [Cache; 9] {
     ]
 }
 
+#[derive(Debug)]
 pub struct SlabAllocator {
     page_alloc: AtomicPtr<PageAllocator>,
     used_bytes: AtomicUsize,
@@ -117,7 +118,7 @@ impl SlabAllocator {
             .store(page_alloc as *const _ as *mut _, Ordering::Release);
     }
 
-    fn page_alloc(&self) -> &'static PageAllocator {
+    pub fn page_alloc(&self) -> &'static PageAllocator {
         let ptr = self.page_alloc.load(Ordering::Acquire);
         assert!(!ptr.is_null(), "slab allocation used before init()");
         unsafe { &*ptr }
@@ -304,16 +305,16 @@ impl SlabAllocator {
         self.page_alloc().free_pages(va as *mut u8);
     }
 
-    pub fn heap_capacity(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         self.page_alloc().total_pages() * PAGE_SIZE
     }
 
-    /// exact # of bytes allocated for heap objects. excludes slab overhead.
+    /// # of bytes allocated for heap objects. excludes overhead.
     pub fn heap_usage(&self) -> usize {
         self.used_bytes.load(Ordering::Relaxed)
     }
 
-    /// pages currently allocated by the slab allocator. includes slab overhead.
+    /// pages currently allocated by the underlying page allocator. includes slab overhead and non-slab pages.
     pub fn page_usage(&self) -> usize {
         self.page_alloc().allocated_pages() * PAGE_SIZE
     }

@@ -20,7 +20,7 @@ use aarch64_cpu_ext::{
     asm::tlb::{VMALLE1, tlbi},
     structures::tte::{AccessPermission, Shareability},
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     arch::{asm, naked_asm},
     mem::{self, MaybeUninit},
@@ -44,18 +44,22 @@ use klib::{
     interrupt::{GicdRegisters, InterruptController, gicv3::GicV3},
     pm::page::{
         PageAllocator,
-        mapper::{free_tables, map_region},
+        mapper::{TableAllocator, free_tables, map_region},
         table_allocator::PMTableAllocator,
     },
+    process::Process,
     scheduler::Scheduler,
     smccc::cpu_on,
+    thread::Thread,
     timer::init_timer,
     vcpu::{CpuDescriptor, add_cpu, vcpu_wait_init, with_cpus, with_this_cpu},
     vec::{DynVec, PMVec, RawVec, StaticVec},
     vm::{
         DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
         PAGE_SIZE, TABLE_ENTRIES, TTable, align_down, align_up, dmap_addr_to_phys,
-        phys_addr_to_dmap, slab::SlabAllocator,
+        phys_addr_to_dmap,
+        slab::SlabAllocator,
+        user::{PAGE_DESCRIPTORS, address_space::AddressSpace},
     },
 };
 use protocol::BootInfo;
@@ -63,6 +67,8 @@ use uefi::{
     boot::{MemoryType, PAGE_SIZE as UEFI_PS},
     mem::memory_map::{MemoryMap, MemoryMapMut, MemoryMapOwned},
 };
+
+use crate::earlyinit::mem::create_page_descriptors;
 
 use self::{
     allocator::KernelPTAllocator,
@@ -116,8 +122,14 @@ const STACK_SIZE: usize = 128 * 1024;
 #[repr(align(16))]
 struct KStack([u8; STACK_SIZE]);
 
-#[unsafe(link_section = ".reclaimable.bss")]
-static mut KSTACK: KStack = KStack([0u8; STACK_SIZE]);
+impl KStack {
+    pub const fn new() -> Self {
+        Self([0u8; STACK_SIZE])
+    }
+}
+
+//#[unsafe(link_section = ".reclaimable.bss")]
+static mut KSTACK: KStack = KStack::new();
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -217,7 +229,8 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
 
     unsafe { KALLOCATOR.init(page_alloc_ref) };
 
-    let table_allocator = KernelPTAllocator {};
+    let (page_descriptors, range) = create_page_descriptors();
+    PAGE_DESCRIPTORS.init(page_descriptors, range);
 
     let xsdt = match rsdp.xsdt(true) {
         Ok(x) => x,
@@ -230,7 +243,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
         let iter = XsdtIter::new(xsdt, true);
         for (i, table) in iter.enumerate() {
             let sig = from_utf8(&table.sig).unwrap_or("ERR ");
-            let len = unsafe { ptr::read_unaligned(&raw const table.len) };
+            let len = table.len();
             earlycon_writeln!("     Table [{}]: \"{}\" ({} bytes)", i, sig, len);
         }
     }
@@ -377,10 +390,10 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     if let Some(mcfg) = sys.mcfg {
         earlycon_writeln!("MCFG found.");
         for alloc in mcfg.allocations() {
-            let base = unsafe { ptr::read_unaligned(&raw const alloc.base_addr) };
-            let seg = unsafe { ptr::read_unaligned(&raw const alloc.pci_segment_group) };
-            let start = unsafe { ptr::read_unaligned(&raw const alloc.start_bus_num) };
-            let end = unsafe { ptr::read_unaligned(&raw const alloc.end_bus_num) };
+            let base = alloc.base_addr();
+            let seg = alloc.pci_segment_group();
+            let start = alloc.start_bus_num();
+            let end = alloc.end_bus_num();
             earlycon_writeln!("PCI seg {} Base={:#x}, Bus {}-{}", seg, base, start, end);
         }
     }
@@ -438,7 +451,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                 true,
                 false,
                 MAIR_NORMAL_INDEX,
-                &table_allocator,
+                &KPT_ALLOCATOR,
             );
 
             let secondary_tcr = TCR_EL1::TBI1::Ignored
@@ -492,9 +505,30 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
 
             drop(unsafe { Box::from_raw(args_ptr) });
             drop(unsafe { Box::from_raw(stack_ptr) });
-            free_tables(pt_root_ptr, &table_allocator);
+            free_tables(pt_root_ptr, &KPT_ALLOCATOR);
         }
     });
+
+    let process = {
+        let proc = Arc::new(Process::new(
+            1,
+            AddressSpace::new(None, &KPT_ALLOCATOR, &KALLOCATOR),
+            None,
+        ));
+
+        proc
+    };
+
+    let thread = {
+        let stack: Box<[u8]> = Box::new([0u8; 4096]);
+        let thread = Arc::new(Thread::new(1, &process, stack, 0, 0));
+        thread
+    };
+
+    process.add_thread(thread.clone());
+    GLOBAL_SCHEDULER.spawn(thread);
+
+    earlycon_writeln!("test process: {:?}", process.as_ref());
 
     print_mem_usage();
 
@@ -512,8 +546,6 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
         init_timer();
     });
 
-    earlycon_writeln!("boot core finish");
-
     busy_loop()
 }
 
@@ -522,9 +554,9 @@ fn print_mem_usage() {
     let bufs_tuple = bufs.split_at_mut(1);
 
     earlycon_writeln!(
-        "heap usage: {} / {}",
-        bytes_to_human_readable(KALLOCATOR.heap_usage() as u64, &mut bufs_tuple.0[0]),
-        bytes_to_human_readable(KALLOCATOR.heap_capacity() as u64, &mut bufs_tuple.1[0]),
+        "page usage: {} / {}",
+        bytes_to_human_readable(KALLOCATOR.page_usage() as u64, &mut bufs_tuple.0[0]),
+        bytes_to_human_readable(KALLOCATOR.capacity() as u64, &mut bufs_tuple.1[0]),
     );
 }
 

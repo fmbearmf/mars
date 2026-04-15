@@ -1,17 +1,18 @@
+use core::{fmt::Debug, range::Range};
+
 use super::{
-    context::RegisterFile,
-    pm::page::mapper::TableAllocator,
-    process::Process,
-    sync::{Mutex, RwLock},
+    context::RegisterFile, pm::page::mapper::TableAllocator, process::Process, sync::RwLock,
     vm::page_allocator::PhysicalPageAllocator,
 };
 
 extern crate alloc;
 
+use aarch64_cpu::registers::SPSR_EL1;
 use alloc::{
     boxed::Box,
     sync::{Arc, Weak},
 };
+use tock_registers::fields::FieldValue;
 
 pub type ThreadId = u32;
 
@@ -34,25 +35,31 @@ struct ThreadInner<'a, A: TableAllocator, P: PhysicalPageAllocator> {
     process: Weak<Process<'a, A, P>>, // avoids a ref count
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Thread<'a, A: TableAllocator, P: PhysicalPageAllocator> {
     inner: Arc<RwLock<ThreadInner<'a, A, P>>>,
+}
+
+impl<'a, A: TableAllocator + Debug, P: PhysicalPageAllocator + Debug> Debug for Thread<'a, A, P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let guard = self.inner.read();
+        f.debug_tuple("Thread").field(&*guard).finish()
+    }
 }
 
 impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Thread<'a, A, P> {
     pub fn new(
         thread_id: ThreadId,
         process: &Arc<Process<'a, A, P>>,
-        stack_size: usize,
-        pc: u64,
+        stack: Box<[u8]>,
+        pc: usize,
         priority: u8,
     ) -> Self {
-        let stack = if stack_size > 0 {
-            let stack = alloc::vec![0u8; stack_size].into_boxed_slice();
-            Some(stack)
-        } else {
-            None
-        };
+        let stack_range = stack.as_ptr_range();
+        let stack_top_va = stack_range.end;
+        let stack_top_pa = A::virt_to_phys(stack_top_va as *mut u8);
+
+        const SPSR: FieldValue<u64, SPSR_EL1::Register> = SPSR_EL1::M::EL0t;
 
         let inner = ThreadInner {
             thread_id,
@@ -60,13 +67,11 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Thread<'a, A, P> {
             priority,
             ctx: RegisterFile {
                 registers: [0; 31],
-                sp: stack
-                    .as_ref()
-                    .map_or(0, |s| s.as_ptr() as u64 + s.len() as u64),
-                spsr: 0,
-                elr: 0,
+                sp: stack_top_pa,
+                spsr: SPSR.value,
+                elr: pc,
             },
-            stack,
+            stack: Some(stack),
             process: Arc::downgrade(process),
         };
 

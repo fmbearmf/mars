@@ -94,11 +94,11 @@ impl TableAllocator for PMTableAllocator {
         regions.compact();
     }
 
-    fn phys_to_virt(&self, phys: u64) -> *mut TTable<TABLE_ENTRIES> {
-        phys as *mut TTable<TABLE_ENTRIES>
+    fn phys_to_virt<T>(phys: u64) -> *mut T {
+        phys as *mut T
     }
 
-    fn virt_to_phys(&self, virt: *mut TTable<TABLE_ENTRIES>) -> u64 {
+    fn virt_to_phys<T>(virt: *mut T) -> u64 {
         virt as u64
     }
 }

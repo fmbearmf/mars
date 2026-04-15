@@ -1,13 +1,12 @@
 extern crate alloc;
 
-use alloc::alloc::{alloc, dealloc, handle_alloc_error};
-use core::{alloc::Layout, ptr::NonNull};
+use core::ptr::NonNull;
 use klib::pm::page::mapper::TableAllocator;
-use klib::vm::page_allocator::PhysicalPageAllocator;
 use klib::vm::{TABLE_ENTRIES, TTable, dmap_addr_to_phys, phys_addr_to_dmap};
 
-use super::{KALLOCATOR, earlycon_writeln};
+use super::KALLOCATOR;
 
+#[derive(Debug)]
 pub struct KernelPTAllocator;
 
 impl TableAllocator for KernelPTAllocator {
@@ -26,11 +25,11 @@ impl TableAllocator for KernelPTAllocator {
         KALLOCATOR.free_page(va);
     }
 
-    fn phys_to_virt(&self, phys: u64) -> *mut TTable<TABLE_ENTRIES> {
-        phys_addr_to_dmap(phys) as *mut TTable<TABLE_ENTRIES>
+    fn phys_to_virt<T>(phys: u64) -> *mut T {
+        phys_addr_to_dmap(phys) as *mut T
     }
 
-    fn virt_to_phys(&self, virt: *mut TTable<TABLE_ENTRIES>) -> u64 {
+    fn virt_to_phys<T>(virt: *mut T) -> u64 {
         dmap_addr_to_phys(virt as u64)
     }
 }

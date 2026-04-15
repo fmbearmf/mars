@@ -1,6 +1,7 @@
 #![no_std]
 #![feature(const_option_ops)]
 #![feature(const_trait_impl)]
+#![feature(generic_atomic)]
 
 use core::{
     fmt::{self, Write},

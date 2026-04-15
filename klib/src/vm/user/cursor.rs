@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use super::super::{
-    PAGE_SHIFT, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, page_allocator::PhysicalPageAllocator,
+    PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, page_allocator::PhysicalPageAllocator,
 };
 use super::{PAGE_DESCRIPTORS, PtState, PteMeta, Status, address_space::AddressSpace, entry_index};
 use crate::{
@@ -94,7 +94,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         loop {
             let i = entry_index(va, current_lvl);
-            let table_ptr = self.addr_space.allocator.phys_to_virt(current_pa);
+            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa);
             let pte = unsafe { (*table_ptr).entries[i] };
 
             if !pte.is_valid() {
@@ -122,12 +122,12 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         while current_lvl > 0 {
             let i = entry_index(va, current_lvl);
-            let table_ptr = self.addr_space.allocator.phys_to_virt(current_pa);
+            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa);
             let mut pte = unsafe { (*table_ptr).entries[i] };
 
             if !pte.is_valid() {
                 let new_table = self.addr_space.allocator.alloc_table();
-                let new_pa = self.addr_space.allocator.virt_to_phys(new_table.as_ptr());
+                let new_pa = A::virt_to_phys(new_table.as_ptr());
 
                 pte = TTENATIVE::new_table(new_pa);
                 unsafe { (*table_ptr).entries[i] = pte };
@@ -144,7 +144,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         while current_lvl > 0 {
             let i = entry_index(va, current_lvl);
-            let table_ptr = self.addr_space.allocator.phys_to_virt(current_pa);
+            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa);
             let pte = unsafe { (*table_ptr).entries[i] };
 
             if pte.is_valid() && pte.is_table() {

@@ -21,26 +21,18 @@ SECTIONS {
 
     PROVIDE(__KBASE = __KBASE);
 
-    .text : ALIGN(__ALIGN)
+    .text ALIGN(__ALIGN) :
     {
         *(.text .text.*)
     } :text
 
-    . = ALIGN(__ALIGN);
-
-    .rodata : ALIGN(__ALIGN)
+    .rodata ALIGN(__ALIGN) :
     {
         *(.rodata .rodata.*)
-    } :rodata
-
-    .eh_frame :
-    {
         *(.eh_frame*)
     } :rodata
 
-    . = ALIGN(__ALIGN);
-
-    .data : ALIGN(__ALIGN)
+    .data ALIGN(__ALIGN) :
     {
         *(.data .data.*)
     } :data
@@ -51,13 +43,12 @@ SECTIONS {
         *(COMMON)
     } :data
 
-    .reclaimable (NOLOAD) :
+    /*.reclaimable (NOLOAD) :
     {
         __reclaimable_start = .;
         *(.reclaimable .reclaimable.*)
         __reclaimable_end = .;
-    } :data
+    } :data*/
 
-    . = ALIGN(__ALIGN);
     __KEND = .;
 }

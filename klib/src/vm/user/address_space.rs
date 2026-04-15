@@ -26,13 +26,13 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Debug for AddressSpace<'a,
 }
 
 impl<'a, A: TableAllocator, P: PhysicalPageAllocator> AddressSpace<'a, A, P> {
-    pub fn new(max_level: usize, table_allocator: &'a A, page_allocator: &'a P) -> Self {
+    pub fn new(max_level: Option<usize>, table_allocator: &'a A, page_allocator: &'a P) -> Self {
         let tracked_alloc = UserAllocator(table_allocator, page_allocator);
         let root = tracked_alloc.alloc_table();
 
         Self {
             root,
-            max_level,
+            max_level: max_level.unwrap_or(3),
             allocator: tracked_alloc,
         }
     }
@@ -40,26 +40,25 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> AddressSpace<'a, A, P> {
     unsafe fn drop_table(&mut self, table_ptr: NonNull<TTable<TABLE_ENTRIES>>, level: usize) {
         let table = unsafe { table_ptr.as_ref() };
 
-        if level > 0 {
-            for &pte in &table.entries {
-                if pte.is_valid() && pte.is_table() {
+        for (_, &pte) in table.entries.iter().enumerate() {
+            if pte.is_valid() {
+                if level > 0 && pte.is_table() {
                     let child = pte.address();
-                    let child_ptr = self.allocator.phys_to_virt(child);
+                    let child_ptr = A::phys_to_virt(child);
 
-                    if let Some(child_nn) = NonNull::new(child_ptr) {
-                        unsafe { self.drop_table(child_nn, level - 1) };
+                    if let Some(chil_nn) = NonNull::new(child_ptr) {
+                        unsafe { self.drop_table(chil_nn, level - 1) };
                     }
                 } else {
-                    let pa = pte.address();
+                    let pa = pte.address() as usize;
+                    self.allocator.free_phys_page(pa);
                 }
             }
         }
-
-        self.allocator.free_table(table_ptr);
     }
 
     pub fn lock(&self, range: Range<usize>) -> Cursor<'_, A, P> {
-        let mut current_pa = self.allocator.virt_to_phys(self.root.as_ptr());
+        let mut current_pa = A::virt_to_phys(self.root.as_ptr());
         let mut current_level = self.max_level;
         let mut current_base_va = 0;
         let mut read_guards = Vec::new();
@@ -77,7 +76,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> AddressSpace<'a, A, P> {
                 let desc = PAGE_DESCRIPTORS.get_page_descriptor(current_pa as usize);
                 let guard = desc.lock.read();
 
-                let table_ptr = self.allocator.phys_to_virt(current_pa);
+                let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa);
                 let pte = unsafe { (*table_ptr).entries[start_i] };
 
                 if pte.is_valid() && pte.is_table() {

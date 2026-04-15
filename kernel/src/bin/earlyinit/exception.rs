@@ -1,10 +1,10 @@
-use aarch64_cpu::registers::{DAIF, ReadWriteable, Readable, Writeable};
+use aarch64_cpu::registers::{DAIF, ESR_EL1, ReadWriteable, Readable, Writeable};
 use klib::{
-    context::RegisterFileRef, exception::ExceptionHandler, interrupt::InterruptController,
-    timer::timer_irq, vcpu::with_this_cpu,
+    context::RegisterFileRef, cpu_interface::Mpidr, exception::ExceptionHandler,
+    interrupt::InterruptController, timer::timer_irq, vcpu::with_this_cpu,
 };
 
-use crate::GLOBAL_SCHEDULER;
+use crate::{GLOBAL_SCHEDULER, busy_loop_ret};
 
 use super::super::earlycon_writeln;
 
@@ -22,6 +22,25 @@ fn daif_restore(daif: u64) {
 
 pub struct Exceptions;
 impl ExceptionHandler for Exceptions {
+    extern "C" fn sync_lower(register_file: RegisterFileRef) -> RegisterFileRef {
+        let daif = daif_save();
+
+        let mpidr = with_this_cpu(|cpu| cpu.mpidr);
+
+        earlycon_writeln!(
+            "Sync exception from CPU MPIDR={} from lower: {:?} with ESR={:#x}",
+            mpidr,
+            register_file,
+            ESR_EL1.get(),
+        );
+
+        busy_loop_ret();
+
+        daif_restore(daif);
+
+        register_file
+    }
+
     extern "C" fn fiq_current(register_file: RegisterFileRef) -> RegisterFileRef {
         let daif = daif_save();
 
@@ -60,7 +79,11 @@ impl ExceptionHandler for Exceptions {
     extern "C" fn irq_current(register_file: RegisterFileRef) -> RegisterFileRef {
         let daif = daif_save();
 
-        earlycon_writeln!("irq: before scheduling: {:?}", register_file);
+        earlycon_writeln!(
+            "irq (CPU {}): before scheduling: {:?}",
+            Mpidr::current().affinity_only(),
+            register_file
+        );
         let regs: RegisterFileRef = with_this_cpu(|cpu| {
             let mut gic = cpu.gic.expect("`None` GIC");
 
@@ -85,7 +108,11 @@ impl ExceptionHandler for Exceptions {
             regs
         });
 
-        earlycon_writeln!("irq: after scheduling: {:?}", regs);
+        earlycon_writeln!(
+            "irq (CPU {}): after scheduling: {:?}",
+            Mpidr::current().affinity_only(),
+            regs
+        );
 
         daif_restore(daif);
 
