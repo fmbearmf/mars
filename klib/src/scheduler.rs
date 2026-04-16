@@ -3,6 +3,8 @@ use core::{
     usize,
 };
 
+use crate::pm::page::mapper::AddressTranslator;
+
 use super::{
     context::RegisterFileRef,
     cpu_interface::Mpidr,
@@ -24,12 +26,14 @@ use alloc::{
 };
 
 #[derive(Debug)]
-pub struct LocalScheduler<'a, A: TableAllocator, P: PhysicalPageAllocator> {
-    thread_queue: VecDeque<Arc<Thread<'a, A, P>>>,
-    current_thread: Option<Arc<Thread<'a, A, P>>>,
+pub struct LocalScheduler<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> {
+    thread_queue: VecDeque<Arc<Thread<'a, T, P, A>>>,
+    current_thread: Option<Arc<Thread<'a, T, P, A>>>,
 }
 
-impl<'a, A: TableAllocator, P: PhysicalPageAllocator> LocalScheduler<'a, A, P> {
+impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
+    LocalScheduler<'a, T, P, A>
+{
     pub const fn new() -> Self {
         Self {
             thread_queue: VecDeque::new(),
@@ -39,15 +43,21 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> LocalScheduler<'a, A, P> {
 }
 
 #[derive(Debug)]
-pub struct Scheduler<'a, A: TableAllocator, P: PhysicalPageAllocator> {
-    queues: RwLock<BTreeMap<u64, Mutex<LocalScheduler<'a, A, P>>>>,
+pub struct Scheduler<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> {
+    queues: RwLock<BTreeMap<u64, Mutex<LocalScheduler<'a, T, P, A>>>>,
     spawn_counter: AtomicU8,
 }
 
-unsafe impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Send for Scheduler<'a, A, P> {}
-unsafe impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Sync for Scheduler<'a, A, P> {}
+unsafe impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Send
+    for Scheduler<'a, T, P, A>
+{
+}
+unsafe impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Sync
+    for Scheduler<'a, T, P, A>
+{
+}
 
-impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Scheduler<'a, A, P> {
+impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Scheduler<'a, T, P, A> {
     pub const fn new() -> Self {
         Self {
             queues: RwLock::new(BTreeMap::new()),
@@ -60,7 +70,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Scheduler<'a, A, P> {
         queues.insert(mpidr, Mutex::new(LocalScheduler::new()));
     }
 
-    pub fn spawn(&self, thread: Arc<Thread<'a, A, P>>) {
+    pub fn spawn(&self, thread: Arc<Thread<'a, T, P, A>>) {
         let queues = self.queues.read();
         assert!(!queues.is_empty(), "scheduler has no CPUs");
 

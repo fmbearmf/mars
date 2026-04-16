@@ -2,20 +2,19 @@ use core::ptr::NonNull;
 
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 
-use crate::vm::{
-    PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, dmap_addr_to_phys,
-    phys_addr_to_dmap,
-};
+use crate::vm::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable};
 
 pub trait TableAllocator {
     fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>>;
     fn free_table(&self, table: NonNull<TTable<TABLE_ENTRIES>>);
-
-    fn phys_to_virt<T>(phys: u64) -> *mut T;
-    fn virt_to_phys<T>(virt: *mut T) -> u64;
 }
 
-pub fn map_region<A: TableAllocator>(
+pub trait AddressTranslator {
+    fn phys_to_dmap<T>(phys: u64) -> *mut T;
+    fn dmap_to_phys<T>(virt: *mut T) -> u64;
+}
+
+pub fn map_region<T: TableAllocator, A: AddressTranslator>(
     root: &mut TTable<TABLE_ENTRIES>,
     pa: usize,
     va: usize,
@@ -25,7 +24,7 @@ pub fn map_region<A: TableAllocator>(
     uxn: bool,
     pxn: bool,
     attr_index: u64,
-    allocator: &A,
+    allocator: &T,
 ) {
     assert_eq!(va & PAGE_MASK, 0, "VA must be page aligned");
     assert_eq!(pa & PAGE_MASK, 0, "PA must be page aligned");
@@ -37,17 +36,17 @@ pub fn map_region<A: TableAllocator>(
     for i in 0..num_pages {
         let vaddr = va + (i << PAGE_SHIFT);
         let paddr = pa + (i << PAGE_SHIFT);
-        map_page(
+        map_page::<T, A>(
             root, paddr, vaddr, access, share, uxn, pxn, attr_index, allocator,
         );
     }
 }
 
-pub fn unmap_region<A: TableAllocator>(
+pub fn unmap_region<T: TableAllocator, A: AddressTranslator>(
     root: &mut TTable<TABLE_ENTRIES>,
     va: usize,
     size: usize,
-    allocator: &A,
+    allocator: &T,
 ) {
     assert_eq!(va & PAGE_MASK, 0, "address must be page-aligned");
     assert_eq!(size & PAGE_MASK, 0, "size must be page-aligned");
@@ -56,11 +55,11 @@ pub fn unmap_region<A: TableAllocator>(
 
     for i in 0..num_pages {
         let vaddr = va + (i << PAGE_SHIFT);
-        unmap_page(root, vaddr, allocator);
+        unmap_page::<T, A>(root, vaddr, allocator);
     }
 }
 
-pub fn map_page<A: TableAllocator>(
+pub fn map_page<T: TableAllocator, A: AddressTranslator>(
     root: &mut TTable<TABLE_ENTRIES>,
     pa: usize,
     va: usize,
@@ -69,7 +68,7 @@ pub fn map_page<A: TableAllocator>(
     uxn: bool,
     pxn: bool,
     attr_index: u64,
-    allocator: &A,
+    allocator: &T,
 ) {
     let i0 = TTENATIVE::calculate_index(va as u64, 0);
     let i1 = TTENATIVE::calculate_index(va as u64, 1);
@@ -80,7 +79,7 @@ pub fn map_page<A: TableAllocator>(
 
     let l1_table = if l0_entry.address() != 0 && l0_entry.is_table() {
         let l1_pa = l0_entry.address();
-        let l1_va = A::phys_to_virt(l1_pa);
+        let l1_va = A::phys_to_dmap(l1_pa);
         let mut z = unsafe { NonNull::new_unchecked(l1_va as *mut _) };
         unsafe { z.as_mut() }
     } else {
@@ -88,7 +87,7 @@ pub fn map_page<A: TableAllocator>(
 
         l0_entry.set_is_valid(true);
         l0_entry.set_is_table();
-        l0_entry.set_address(dmap_addr_to_phys(table.as_ptr() as u64));
+        l0_entry.set_address(A::dmap_to_phys(table.as_ptr()));
 
         unsafe { table.as_mut() }
     };
@@ -97,7 +96,7 @@ pub fn map_page<A: TableAllocator>(
 
     let l2_table = if l1_entry.address() != 0 && l1_entry.is_table() {
         let l2_pa = l1_entry.address();
-        let l2_va = A::phys_to_virt(l2_pa);
+        let l2_va = A::phys_to_dmap(l2_pa);
         let mut z = unsafe { NonNull::new_unchecked(l2_va as *mut _) };
         unsafe { z.as_mut() }
     } else {
@@ -105,7 +104,7 @@ pub fn map_page<A: TableAllocator>(
 
         l1_entry.set_is_valid(true);
         l1_entry.set_is_table();
-        l1_entry.set_address(A::virt_to_phys(table.as_ptr()));
+        l1_entry.set_address(A::dmap_to_phys(table.as_ptr()));
 
         unsafe { table.as_mut() }
     };
@@ -114,7 +113,7 @@ pub fn map_page<A: TableAllocator>(
 
     let l3_table = if l2_entry.is_valid() {
         let l3_pa = l2_entry.address();
-        let l3_va = A::phys_to_virt(l3_pa);
+        let l3_va = A::phys_to_dmap(l3_pa);
         let mut table: NonNull<TTable<TABLE_ENTRIES>> =
             unsafe { NonNull::new_unchecked(l3_va as *mut _) };
 
@@ -124,7 +123,7 @@ pub fn map_page<A: TableAllocator>(
 
         l2_entry.set_is_valid(true);
         l2_entry.set_is_table();
-        l2_entry.set_address(A::virt_to_phys(table.as_ptr()));
+        l2_entry.set_address(A::dmap_to_phys(table.as_ptr()));
 
         unsafe { table.as_mut() }
     };
@@ -144,7 +143,11 @@ pub fn map_page<A: TableAllocator>(
     l3_entry.set_privileged_executable(!pxn);
 }
 
-pub fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize, allocator: &A) {
+pub fn unmap_page<T: TableAllocator, A: AddressTranslator>(
+    root: &mut TTable<TABLE_ENTRIES>,
+    va: usize,
+    allocator: &T,
+) {
     let i0 = TTENATIVE::calculate_index(va as u64, 0);
     let i1 = TTENATIVE::calculate_index(va as u64, 1);
     let i2 = TTENATIVE::calculate_index(va as u64, 2);
@@ -156,7 +159,7 @@ pub fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize
     }
 
     let l1_pa = l0_entry.address();
-    let l1_va = A::phys_to_virt(l1_pa);
+    let l1_va = A::phys_to_dmap(l1_pa);
     let mut l1_table_ptr = unsafe { NonNull::new_unchecked(l1_va as *mut TTable<TABLE_ENTRIES>) };
     let l1_table = unsafe { l1_table_ptr.as_mut() };
     let l1_entry = &mut (l1_table.entries[i1]);
@@ -166,7 +169,7 @@ pub fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize
     }
 
     let l2_pa = l1_entry.address();
-    let l2_va = A::phys_to_virt(l2_pa);
+    let l2_va = A::phys_to_dmap(l2_pa);
     let mut l2_table_ptr = unsafe { NonNull::new_unchecked(l2_va as *mut TTable<TABLE_ENTRIES>) };
     let l2_table = unsafe { l2_table_ptr.as_mut() };
     let l2_entry = &mut (l2_table.entries[i2]);
@@ -176,7 +179,7 @@ pub fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize
     }
 
     let l3_pa = l2_entry.address();
-    let l3_va = A::phys_to_virt(l3_pa);
+    let l3_va = A::phys_to_dmap(l3_pa);
     let mut l3_table_ptr = unsafe { NonNull::new_unchecked(l3_va as *mut TTable<TABLE_ENTRIES>) };
     let l3_table = unsafe { l3_table_ptr.as_mut() };
     let l3_entry = &mut (l3_table.entries[i3]);
@@ -207,7 +210,10 @@ pub fn unmap_page<A: TableAllocator>(root: &mut TTable<TABLE_ENTRIES>, va: usize
     }
 }
 
-pub fn free_tables<A: TableAllocator>(mut root: NonNull<TTable<TABLE_ENTRIES>>, allocator: &A) {
+pub fn free_tables<T: TableAllocator, A: AddressTranslator>(
+    mut root: NonNull<TTable<TABLE_ENTRIES>>,
+    allocator: &T,
+) {
     let root_table = unsafe { root.as_mut() };
     for i0 in 0..2 {
         let l0_entry = &mut (root_table.entries[i0]);
@@ -217,7 +223,7 @@ pub fn free_tables<A: TableAllocator>(mut root: NonNull<TTable<TABLE_ENTRIES>>, 
         }
 
         let l1_pa = l0_entry.address();
-        let l1_va = phys_addr_to_dmap(l1_pa);
+        let l1_va = A::phys_to_dmap(l1_pa);
 
         let mut l1_table_ptr =
             unsafe { NonNull::new_unchecked(l1_va as *mut TTable<TABLE_ENTRIES>) };
@@ -231,7 +237,7 @@ pub fn free_tables<A: TableAllocator>(mut root: NonNull<TTable<TABLE_ENTRIES>>, 
             }
 
             let l2_pa = l1_entry.address();
-            let l2_va = phys_addr_to_dmap(l2_pa);
+            let l2_va = A::phys_to_dmap(l2_pa);
 
             let mut l2_table_ptr =
                 unsafe { NonNull::new_unchecked(l2_va as *mut TTable<TABLE_ENTRIES>) };
@@ -245,7 +251,7 @@ pub fn free_tables<A: TableAllocator>(mut root: NonNull<TTable<TABLE_ENTRIES>>, 
                 }
 
                 let l3_pa = l2_entry.address();
-                let l3_va = phys_addr_to_dmap(l3_pa);
+                let l3_va = A::phys_to_dmap(l3_pa);
 
                 let mut l3_table_ptr =
                     unsafe { NonNull::new_unchecked(l3_va as *mut TTable<TABLE_ENTRIES>) };

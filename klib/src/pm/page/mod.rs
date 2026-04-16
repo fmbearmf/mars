@@ -1,17 +1,25 @@
 use core::{
     cell::UnsafeCell,
-    ptr::{self, addr_eq},
+    ptr::{self},
+    range::Range,
     sync::atomic::{AtomicUsize, Ordering},
     usize,
 };
 
+use crate::{
+    pm::page::mapper::AddressTranslator,
+    vm::{
+        is_kernel_address,
+        page_allocator::{DmapPageAllocator, PhysicalPageAllocator},
+    },
+};
+
 use super::super::{
     sync::TicketLock,
-    vm::{MemoryRegion, PAGE_MASK, PAGE_SIZE},
+    vm::{PAGE_MASK, PAGE_SIZE},
 };
 
 pub mod mapper;
-pub mod table_allocator;
 
 const MAX_ORDER: usize = 11;
 const FREE_FLAG: u8 = 1 << 7;
@@ -35,21 +43,23 @@ pub struct Zone {
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct PageAllocator {
+pub struct PageAllocator<A: AddressTranslator> {
     lock: TicketLock,
     zone_head: *mut Zone,
     free_area: UnsafeCell<[*mut FreeBlock; MAX_ORDER]>,
     total_pages: AtomicUsize,
     allocated_pages: AtomicUsize,
     lowest_address: usize,
+
+    _phantom: core::marker::PhantomData<A>,
 }
 
-unsafe impl Send for PageAllocator {}
-unsafe impl Sync for PageAllocator {}
+unsafe impl<A: AddressTranslator> Send for PageAllocator<A> {}
+unsafe impl<A: AddressTranslator> Sync for PageAllocator<A> {}
 
-impl PageAllocator {
+impl<A: AddressTranslator> PageAllocator<A> {
     /// SAFETY: must be page-aligned, non-overlapping, and usable memory
-    pub unsafe fn init(ranges: &[MemoryRegion]) -> Self {
+    pub unsafe fn init(ranges: &[Range<usize>]) -> Self {
         let mut pa = Self {
             lock: TicketLock::new(),
             zone_head: ptr::null_mut(),
@@ -57,23 +67,25 @@ impl PageAllocator {
             total_pages: AtomicUsize::new(0),
             allocated_pages: AtomicUsize::new(0),
             lowest_address: 0,
+
+            _phantom: core::marker::PhantomData,
         };
-        for &r in ranges {
-            if r.size == 0 || (r.base & PAGE_MASK) != 0 || (r.size & PAGE_MASK) != 0 {
-                panic!("region {:?} not page aligned", r);
-            }
+        for r in ranges {
             pa.add_range(r);
         }
         pa
     }
 
-    pub fn add_range(&mut self, region: MemoryRegion) {
-        assert_ne!(region.size, 0);
+    pub fn add_range(&mut self, region: &Range<usize>) {
+        debug_assert!(!is_kernel_address(region.start), "only add physical ranges");
+        assert!(!region.is_empty(), "empty region");
+        assert_eq!(region.start & PAGE_MASK, 0, "region start not page aligned");
+        assert_eq!(region.end & PAGE_MASK, 0, "region end not page aligned");
 
         self.lock.lock();
 
         unsafe {
-            let total_pages_reg = region.size / PAGE_SIZE;
+            let total_pages_reg = (region.end - region.start) / PAGE_SIZE;
             if total_pages_reg == 0 {
                 self.lock.unlock();
                 return;
@@ -98,9 +110,9 @@ impl PageAllocator {
             let usable_pages = total_pages_reg - reserved_pages;
             assert!(usable_pages > 0);
 
-            let meta_base = region.base;
+            let meta_base = region.start;
             let reserved_bytes = reserved_pages * PAGE_SIZE;
-            let data_base = region.base + reserved_bytes;
+            let data_base = region.start + reserved_bytes;
 
             if self.lowest_address == 0 || data_base < self.lowest_address {
                 self.lowest_address = data_base;
@@ -367,5 +379,30 @@ impl PageAllocator {
 
     pub fn allocated_pages(&self) -> usize {
         self.allocated_pages.load(Ordering::Relaxed)
+    }
+}
+
+impl<A: AddressTranslator> PhysicalPageAllocator for PageAllocator<A> {
+    fn alloc_phys_page<T: Into<usize> + From<usize>>(&self) -> Result<T, crate::vm::VmError> {
+        let page_addr = self.alloc_page() as usize;
+
+        Ok(page_addr.into())
+    }
+    fn free_phys_page<T: Into<usize> + From<usize>>(&self, pa: T) {
+        self.free_pages(pa.into() as _);
+    }
+}
+
+impl<A: AddressTranslator> DmapPageAllocator for PageAllocator<A> {
+    fn alloc_dmap_page<T: Into<usize> + From<usize>>(&self) -> Result<T, crate::vm::VmError> {
+        let page_addr = self.alloc_page() as usize;
+        let page_addr = A::phys_to_dmap::<u8>(page_addr as _) as usize;
+
+        Ok(page_addr.into())
+    }
+    fn free_dmap_page<T: Into<usize> + From<usize>>(&self, pa: T) {
+        let page_addr = A::dmap_to_phys::<u8>(pa.into() as _) as usize;
+
+        self.free_pages(page_addr as _);
     }
 }

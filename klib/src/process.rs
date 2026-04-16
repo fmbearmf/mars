@@ -1,5 +1,7 @@
 use core::fmt::Debug;
 
+use crate::pm::page::mapper::AddressTranslator;
+
 use super::{
     pm::page::mapper::TableAllocator,
     sync::RwLock,
@@ -24,31 +26,33 @@ pub enum ProcessState {
 }
 
 #[derive(Debug)]
-struct ProcessInner<'a, A: TableAllocator, P: PhysicalPageAllocator> {
+struct ProcessInner<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> {
     process_id: ProcessId,
     state: ProcessState,
-    address_space: AddressSpace<'a, A, P>,
-    threads: Vec<Arc<Thread<'a, A, P>>>,
-    parent: Option<Weak<Process<'a, A, P>>>,
+    address_space: AddressSpace<'a, T, P, A>,
+    threads: Vec<Arc<Thread<'a, T, P, A>>>,
+    parent: Option<Weak<Process<'a, T, P, A>>>,
 }
 
 #[derive(Clone)]
-pub struct Process<'a, A: TableAllocator, P: PhysicalPageAllocator> {
-    inner: Arc<RwLock<ProcessInner<'a, A, P>>>,
+pub struct Process<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> {
+    inner: Arc<RwLock<ProcessInner<'a, T, P, A>>>,
 }
 
-impl<'a, A: TableAllocator + Debug, P: PhysicalPageAllocator + Debug> Debug for Process<'a, A, P> {
+impl<'a, T: TableAllocator + Debug, P: PhysicalPageAllocator + Debug, A: AddressTranslator + Debug>
+    Debug for Process<'a, T, P, A>
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let guard = self.inner.read();
         f.debug_tuple("Process").field(&*guard).finish()
     }
 }
 
-impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Process<'a, A, P> {
+impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Process<'a, T, P, A> {
     pub fn new(
         process_id: ProcessId,
-        address_space: AddressSpace<'a, A, P>,
-        parent: Option<&Arc<Process<'a, A, P>>>,
+        address_space: AddressSpace<'a, T, P, A>,
+        parent: Option<&Arc<Process<'a, T, P, A>>>,
     ) -> Self {
         let inner = ProcessInner {
             process_id,
@@ -63,7 +67,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Process<'a, A, P> {
         }
     }
 
-    pub fn add_thread(&self, thread: Arc<Thread<'a, A, P>>) {
+    pub fn add_thread(&self, thread: Arc<Thread<'a, T, P, A>>) {
         let mut guard = self.inner.write();
         guard.threads.push(thread);
     }
@@ -83,7 +87,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Process<'a, A, P> {
 
     pub fn with_address_space<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&AddressSpace<A, P>) -> R,
+        F: FnOnce(&AddressSpace<T, P, A>) -> R,
     {
         let guard = self.inner.read();
 
@@ -92,7 +96,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Process<'a, A, P> {
 
     pub fn with_threads<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&[Arc<Thread<'a, A, P>>]) -> R,
+        F: FnOnce(&[Arc<Thread<'a, T, P, A>>]) -> R,
     {
         let guard = self.inner.read();
 
@@ -101,7 +105,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Process<'a, A, P> {
 
     pub fn with_threads_mut<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&mut [Arc<Thread<'a, A, P>>]) -> R,
+        F: FnOnce(&mut [Arc<Thread<'a, T, P, A>>]) -> R,
     {
         let mut guard = self.inner.write();
 

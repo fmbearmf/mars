@@ -2,10 +2,10 @@ extern crate alloc;
 
 use core::range::Range;
 
-use crate::{KALLOCATOR, KPT_ALLOCATOR, allocator::KernelPTAllocator};
+use crate::{KALLOCATOR, allocator::KernelAddressTranslator};
 use alloc::boxed::Box;
 use klib::{
-    pm::page::mapper::TableAllocator,
+    pm::page::mapper::AddressTranslator,
     sync::RwLock,
     vm::{
         PAGE_SIZE,
@@ -16,8 +16,8 @@ use klib::{
 pub fn create_page_descriptors() -> (Box<[PageDescriptor]>, Range<usize>) {
     let alloc = KALLOCATOR.page_alloc();
 
-    let min = KernelPTAllocator::virt_to_phys(alloc.min_address() as *mut usize) as usize;
-    let max = KernelPTAllocator::virt_to_phys(alloc.max_address() as *mut usize) as usize;
+    let min = KernelAddressTranslator::dmap_to_phys(alloc.min_address() as *mut usize) as usize;
+    let max = KernelAddressTranslator::dmap_to_phys(alloc.max_address() as *mut usize) as usize;
     let size = max - min;
     let pages = size / PAGE_SIZE;
 

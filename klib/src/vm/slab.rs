@@ -5,9 +5,11 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
+use crate::{pm::page::mapper::AddressTranslator, vm::page_allocator::DmapPageAllocator};
+
 use super::{
     super::{pm::page::PageAllocator, sync::TicketLock},
-    DMAP_START, PAGE_SIZE, VmError, align_down, align_up,
+    PAGE_SIZE, VmError, align_down, align_up,
     page_allocator::PhysicalPageAllocator,
 };
 
@@ -47,63 +49,63 @@ struct Header {
 }
 
 struct Cache {
-    size_class: usize,
+    _size_class: usize,
     plist: *mut Header,
 }
 
 const fn build_caches() -> [Cache; 9] {
     [
         Cache {
-            size_class: 8,
+            _size_class: 8,
             plist: ptr::null_mut(),
         },
         Cache {
-            size_class: 16,
+            _size_class: 16,
             plist: ptr::null_mut(),
         },
         Cache {
-            size_class: 32,
+            _size_class: 32,
             plist: ptr::null_mut(),
         },
         Cache {
-            size_class: 64,
+            _size_class: 64,
             plist: ptr::null_mut(),
         },
         Cache {
-            size_class: 128,
+            _size_class: 128,
             plist: ptr::null_mut(),
         },
         Cache {
-            size_class: 256,
+            _size_class: 256,
             plist: ptr::null_mut(),
         },
         Cache {
-            size_class: 512,
+            _size_class: 512,
             plist: ptr::null_mut(),
         },
         Cache {
-            size_class: 1024,
+            _size_class: 1024,
             plist: ptr::null_mut(),
         },
         Cache {
-            size_class: 2048,
+            _size_class: 2048,
             plist: ptr::null_mut(),
         },
     ]
 }
 
 #[derive(Debug)]
-pub struct SlabAllocator {
-    page_alloc: AtomicPtr<PageAllocator>,
+pub struct SlabAllocator<A: AddressTranslator + 'static> {
+    page_alloc: AtomicPtr<PageAllocator<A>>,
     used_bytes: AtomicUsize,
     caches: UnsafeCell<[Cache; 9]>,
     lock: TicketLock,
 }
 
-unsafe impl Send for SlabAllocator {}
-unsafe impl Sync for SlabAllocator {}
+unsafe impl<A: AddressTranslator> Send for SlabAllocator<A> {}
+unsafe impl<A: AddressTranslator> Sync for SlabAllocator<A> {}
 
-impl SlabAllocator {
+impl<A: AddressTranslator> SlabAllocator<A> {
     pub const fn new() -> Self {
         Self {
             page_alloc: AtomicPtr::new(ptr::null_mut()),
@@ -113,12 +115,12 @@ impl SlabAllocator {
         }
     }
 
-    pub unsafe fn init(&self, page_alloc: &'static PageAllocator) {
+    pub unsafe fn init(&self, page_alloc: &'static PageAllocator<A>) {
         self.page_alloc
             .store(page_alloc as *const _ as *mut _, Ordering::Release);
     }
 
-    pub fn page_alloc(&self) -> &'static PageAllocator {
+    pub fn page_alloc(&self) -> &'static PageAllocator<A> {
         let ptr = self.page_alloc.load(Ordering::Acquire);
         assert!(!ptr.is_null(), "slab allocation used before init()");
         unsafe { &*ptr }
@@ -185,7 +187,7 @@ impl SlabAllocator {
                 if cap > 1 {
                     self.lock.lock();
                     let caches = unsafe { &mut *self.caches.get() };
-                    let cache = unsafe { &mut caches[i] };
+                    let cache = &mut caches[i];
 
                     unsafe { (*header).next = cache.plist };
                     unsafe { (*header).prev = ptr::null_mut() };
@@ -320,25 +322,26 @@ impl SlabAllocator {
     }
 }
 
-impl PhysicalPageAllocator for SlabAllocator {
-    fn alloc_phys_page(&self) -> Result<usize, VmError> {
-        let mut virt_page = self.page_alloc().alloc_page() as usize;
-
-        virt_page = virt_page
-            .checked_sub(DMAP_START)
-            .ok_or(VmError::InvalidAddress)?;
-
-        Ok(virt_page as usize)
+impl<A: AddressTranslator> PhysicalPageAllocator for SlabAllocator<A> {
+    fn alloc_phys_page<T: Into<usize> + From<usize>>(&self) -> Result<T, VmError> {
+        self.page_alloc().alloc_phys_page()
     }
 
-    fn free_phys_page(&self, pa: usize) {
-        let pa = pa.checked_add(DMAP_START).expect("invalid PA to free");
-
-        self.page_alloc().free_pages(pa as *mut u8);
+    fn free_phys_page<T: Into<usize> + From<usize>>(&self, pa: T) {
+        self.page_alloc().free_phys_page(pa);
     }
 }
 
-unsafe impl GlobalAlloc for SlabAllocator {
+impl<A: AddressTranslator> DmapPageAllocator for SlabAllocator<A> {
+    fn alloc_dmap_page<T: Into<usize> + From<usize>>(&self) -> Result<T, VmError> {
+        self.page_alloc().alloc_dmap_page()
+    }
+    fn free_dmap_page<T: Into<usize> + From<usize>>(&self, pa: T) {
+        self.page_alloc().free_dmap_page(pa)
+    }
+}
+
+unsafe impl<A: AddressTranslator> GlobalAlloc for SlabAllocator<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe { self.alloc_impl(layout) }
     }

@@ -45,8 +45,7 @@ use klib::{
     interrupt::{GicdRegisters, InterruptController, gicv3::GicV3},
     pm::page::{
         PageAllocator,
-        mapper::{TableAllocator, free_tables, map_region},
-        table_allocator::PMTableAllocator,
+        mapper::{AddressTranslator, free_tables, map_region},
     },
     process::Process,
     scheduler::Scheduler,
@@ -70,7 +69,7 @@ use uefi::{
     mem::memory_map::{MemoryMap, MemoryMapMut, MemoryMapOwned},
 };
 
-use crate::earlyinit::mem::create_page_descriptors;
+use crate::{allocator::KernelAddressTranslator, earlyinit::mem::create_page_descriptors};
 
 use self::{
     allocator::KernelPTAllocator,
@@ -85,11 +84,15 @@ use self::{
 klib::exception_handlers!(Exceptions);
 
 #[global_allocator]
-pub static KALLOCATOR: SlabAllocator = SlabAllocator::new();
+pub static KALLOCATOR: SlabAllocator<KernelAddressTranslator> = SlabAllocator::new();
 
 pub static KPT_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
 
-pub static GLOBAL_SCHEDULER: Scheduler<KernelPTAllocator, SlabAllocator> = Scheduler::new();
+pub static GLOBAL_SCHEDULER: Scheduler<
+    KernelPTAllocator,
+    SlabAllocator<KernelAddressTranslator>,
+    KernelAddressTranslator,
+> = Scheduler::new();
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -227,7 +230,8 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     let page_allocator = &arm_init(uefi_mmap, boot_info.kernel_regions, boot_info.root_pt);
 
     // SAFETY: this function never returns, so `page_allocator` can be treated as a static reference.
-    let page_alloc_ref: &'static PageAllocator = unsafe { mem::transmute(page_allocator) };
+    let page_alloc_ref: &'static PageAllocator<KernelAddressTranslator> =
+        unsafe { mem::transmute(page_allocator) };
 
     unsafe { KALLOCATOR.init(page_alloc_ref) };
 
@@ -443,7 +447,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                 paddr,
                 size
             );
-            map_region(
+            map_region::<_, KernelAddressTranslator>(
                 page_tables_ref,
                 paddr,
                 paddr,
@@ -507,7 +511,7 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
 
             drop(unsafe { Box::from_raw(args_ptr) });
             drop(unsafe { Box::from_raw(stack_ptr) });
-            free_tables(pt_root_ptr, &KPT_ALLOCATOR);
+            free_tables::<_, KernelAddressTranslator>(pt_root_ptr, &KPT_ALLOCATOR);
         }
     });
 
@@ -524,10 +528,10 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
                 end: 0x4000,
             });
 
-            let page_pa = KALLOCATOR.alloc_phys_page().expect("where my page at");
+            let page_pa: usize = KALLOCATOR.alloc_phys_page().expect("where my page at");
             let page_ptr: &mut [u32] = unsafe {
                 slice::from_raw_parts_mut(
-                    KernelPTAllocator::phys_to_virt(page_pa as u64) as *mut u32,
+                    KernelAddressTranslator::phys_to_dmap(page_pa as _) as *mut u32,
                     PAGE_SIZE,
                 )
             };
@@ -574,8 +578,8 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
             };
 
             let range_pa = Range {
-                start: KernelPTAllocator::virt_to_phys(range_va.start as *mut u8) as usize,
-                end: KernelPTAllocator::virt_to_phys(range_va.end as *mut u8) as usize,
+                start: KernelAddressTranslator::dmap_to_phys(range_va.start as *mut u8) as usize,
+                end: KernelAddressTranslator::dmap_to_phys(range_va.end as *mut u8) as usize,
             };
 
             assert_eq!(range_pa.end as usize & 0x10, 0, "stack unaligned..?");
@@ -638,7 +642,7 @@ pub extern "C" fn arm_init(
     uefi_mmap: &mut MemoryMapOwned,
     memory_regions: StaticVec<MemoryRegion>,
     mut root_pt: NonNull<TTable<TABLE_ENTRIES>>,
-) -> PageAllocator {
+) -> PageAllocator<KernelAddressTranslator> {
     let mut pmvec: PMVec<MemoryRegion> = PMVec::new();
 
     {
@@ -752,18 +756,14 @@ pub extern "C" fn arm_init(
 
     for &region in pmvec_copy.as_slice() {
         if region.is_usable() {
-            let aligned_base = align_up(DMAP_START + region.base, PAGE_SIZE);
-            let aligned_size = align_down(region.size, PAGE_SIZE);
+            let start = align_up(DMAP_START + region.base, PAGE_SIZE);
+            let end = align_down(start + region.size, PAGE_SIZE);
 
-            if aligned_size <= 2 * PAGE_SIZE {
+            if (end - start) <= 2 * PAGE_SIZE {
                 continue;
             }
 
-            page_allocator.add_range(MemoryRegion {
-                base: aligned_base,
-                size: aligned_size,
-                region_type: region.region_type,
-            });
+            page_allocator.add_range(&Range { start, end });
         }
     }
 

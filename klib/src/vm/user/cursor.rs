@@ -4,6 +4,7 @@ use super::super::{
     PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, page_allocator::PhysicalPageAllocator,
 };
 use super::{PAGE_DESCRIPTORS, PtState, PteMeta, Status, address_space::AddressSpace, entry_index};
+use crate::pm::page::mapper::AddressTranslator;
 use crate::{
     pm::page::mapper::{TableAllocator, map_page, unmap_page},
     sync::{RwLockReadGuard, RwLockWriteGuard},
@@ -12,8 +13,8 @@ use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{boxed::Box, vec::Vec};
 use core::range::Range;
 
-pub struct Cursor<'a, A: TableAllocator, P: PhysicalPageAllocator> {
-    pub addr_space: &'a AddressSpace<'a, A, P>,
+pub struct Cursor<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> {
+    pub addr_space: &'a AddressSpace<'a, T, P, A>,
     pub range: Range<usize>,
 
     pub read_guards: Vec<(usize, RwLockReadGuard<'static, PtState>)>,
@@ -21,9 +22,11 @@ pub struct Cursor<'a, A: TableAllocator, P: PhysicalPageAllocator> {
 
     pub covering_pa: usize,
     pub covering_level: usize,
+
+    pub _phantom: core::marker::PhantomData<A>,
 }
 
-impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
+impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Cursor<'a, T, P, A> {
     pub fn map(
         &mut self,
         target_pa_start: u64,
@@ -37,7 +40,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         for va in (self.range.start..self.range.end).step_by(PAGE_SIZE) {
             unsafe {
-                map_page(
+                map_page::<_, A>(
                     &mut *self.addr_space.root.as_ptr(),
                     current_pa as usize,
                     va,
@@ -64,7 +67,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
     pub fn unmap(&mut self) {
         for va in (self.range.start..self.range.end).step_by(PAGE_SIZE) {
             unsafe {
-                unmap_page(
+                unmap_page::<_, A>(
                     &mut *self.addr_space.root.as_ptr(),
                     va,
                     &self.addr_space.allocator,
@@ -94,7 +97,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         loop {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa as u64);
+            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_dmap(current_pa as u64);
             let pte = unsafe { (*table_ptr).entries[i] };
 
             if !pte.is_valid() {
@@ -122,12 +125,12 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         while current_lvl > 0 {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa as _);
+            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_dmap(current_pa as _);
             let mut pte = unsafe { (*table_ptr).entries[i] };
 
             if !pte.is_valid() {
                 let new_table = self.addr_space.allocator.alloc_table();
-                let new_pa = A::virt_to_phys(new_table.as_ptr());
+                let new_pa = A::dmap_to_phys(new_table.as_ptr());
 
                 pte = TTENATIVE::new_table(new_pa);
                 unsafe { (*table_ptr).entries[i] = pte };
@@ -144,7 +147,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         while current_lvl > 0 {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa as _);
+            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_dmap(current_pa as _);
             let pte = unsafe { (*table_ptr).entries[i] };
 
             if pte.is_valid() && pte.is_table() {
@@ -169,7 +172,9 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
     }
 }
 
-impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Drop for Cursor<'a, A, P> {
+impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Drop
+    for Cursor<'a, T, P, A>
+{
     fn drop(&mut self) {
         self.write_guard.take();
 

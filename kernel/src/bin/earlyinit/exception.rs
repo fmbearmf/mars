@@ -1,6 +1,4 @@
-use aarch64_cpu::registers::{
-    DAIF, ESR_EL1, FAR_EL1, ReadWriteable, Readable, TTBR0_EL1, Writeable,
-};
+use aarch64_cpu::registers::{DAIF, ESR_EL1, ReadWriteable, Readable, TTBR0_EL1, Writeable};
 use klib::{
     context::RegisterFileRef, cpu_interface::Mpidr, exception::ExceptionHandler,
     interrupt::InterruptController, timer::timer_irq, vcpu::with_this_cpu,
