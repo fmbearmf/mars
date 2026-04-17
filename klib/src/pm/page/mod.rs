@@ -175,7 +175,7 @@ impl<A: AddressTranslator> PageAllocator<A> {
         self.lock.unlock()
     }
 
-    pub fn alloc_page(&self) -> *mut u8 {
+    fn alloc_page(&self) -> *mut u8 {
         self.alloc_pages(0)
     }
 

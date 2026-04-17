@@ -2,6 +2,7 @@ extern crate alloc;
 
 use core::ptr::NonNull;
 use klib::pm::page::mapper::{AddressTranslator as AT, TableAllocator};
+use klib::vm::page_allocator::DmapPageAllocator;
 use klib::vm::{TABLE_ENTRIES, TTable, dmap_addr_to_phys, phys_addr_to_dmap};
 
 use super::KALLOCATOR;
@@ -15,7 +16,8 @@ pub struct KernelAddressTranslator;
 impl TableAllocator for KernelPTAllocator {
     fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>> {
         unsafe {
-            let raw_ptr = KALLOCATOR.alloc_page() as *mut TTable<TABLE_ENTRIES>;
+            let raw_ptr: usize = KALLOCATOR.alloc_dmap_page().expect("page alloc fail");
+            let raw_ptr = raw_ptr as *mut TTable<TABLE_ENTRIES>;
 
             core::ptr::write(raw_ptr as *mut [u64; TABLE_ENTRIES], [0u64; TABLE_ENTRIES]);
 

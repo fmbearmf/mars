@@ -1,6 +1,6 @@
 use arm_pl011_uart::{LineConfig, PL011Registers, Uart, UniqueMmioPointer};
 use core::{fmt::Write, ptr::NonNull};
-use spin::Mutex;
+use klib::sync::Mutex;
 
 pub static EARLYCON: Mutex<Option<EarlyCon>> = Mutex::new(None);
 

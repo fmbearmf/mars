@@ -1,3 +1,4 @@
+pub mod acpi;
 pub mod bootstrap;
 pub mod earlycon;
 pub mod exception;

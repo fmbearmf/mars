@@ -21,10 +21,4 @@ pub struct BootInfo {
 
     /// memory map
     pub memory_map: MemoryMapOwned,
-
-    /// root (l0) ttbr1 page table
-    pub root_pt: NonNull<TTable<TABLE_ENTRIES>>,
-
-    /// memory regions (whose ownership needs to be passed to the kernel)
-    pub kernel_regions: StaticVec<MemoryRegion>,
 }

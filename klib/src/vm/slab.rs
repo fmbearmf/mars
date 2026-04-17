@@ -157,7 +157,9 @@ impl<A: AddressTranslator> SlabAllocator<A> {
                 self.lock.unlock();
 
                 // new page
-                let page = page_alloc.alloc_page();
+                let page: usize = page_alloc.alloc_dmap_page().expect("page alloc fail");
+                let page = page as *mut u8;
+
                 if page.is_null() {
                     panic!("OOM");
                     return ptr::null_mut();
@@ -297,10 +299,6 @@ impl<A: AddressTranslator> SlabAllocator<A> {
         }
 
         self.used_bytes.fetch_sub(layout.size(), Ordering::Relaxed);
-    }
-
-    pub fn alloc_page(&self) -> usize {
-        self.page_alloc().alloc_page() as usize
     }
 
     pub fn free_page(&self, va: usize) {

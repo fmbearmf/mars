@@ -7,13 +7,10 @@ mod earlyinit;
 extern crate alloc;
 
 use aarch64_cpu::{
-    asm::{
-        barrier::{self, isb},
-        wfe,
-    },
+    asm::wfe,
     registers::{
-        CPACR_EL1, DAIF, MAIR_EL1, MPIDR_EL1, ReadWriteable, Readable, SCTLR_EL1, TCR_EL1,
-        TTBR0_EL1, TTBR1_EL1, Writeable,
+        DAIF, MAIR_EL1, MPIDR_EL1, ReadWriteable, Readable, SCTLR_EL1, TCR_EL1, TTBR0_EL1,
+        TTBR1_EL1, Writeable,
     },
 };
 use aarch64_cpu_ext::{
@@ -53,23 +50,28 @@ use klib::{
     thread::Thread,
     timer::init_timer,
     vcpu::{CpuDescriptor, add_cpu, vcpu_wait_init, with_cpus, with_this_cpu},
-    vec::{DynVec, PMVec, RawVec, StaticVec},
     vm::{
-        DMAP_START, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType,
-        PAGE_SIZE, TABLE_ENTRIES, TTable, align_down, align_up, dmap_addr_to_phys,
+        MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType, PAGE_SIZE, TABLE_ENTRIES, TTable,
+        align_down, align_up, dmap_addr_to_phys,
         page_allocator::PhysicalPageAllocator,
         phys_addr_to_dmap,
         slab::SlabAllocator,
-        user::{PAGE_DESCRIPTORS, address_space::AddressSpace, cursor::Cursor},
+        user::{PAGE_DESCRIPTORS, address_space::AddressSpace},
     },
 };
 use protocol::BootInfo;
 use uefi::{
     boot::{MemoryType, PAGE_SIZE as UEFI_PS},
-    mem::memory_map::{MemoryMap, MemoryMapMut, MemoryMapOwned},
+    mem::memory_map::{MemoryMap, MemoryMapMut, MemoryMapOwned, MemoryMapRef},
 };
 
-use crate::{allocator::KernelAddressTranslator, earlyinit::mem::create_page_descriptors};
+use crate::{
+    allocator::KernelAddressTranslator,
+    earlyinit::{
+        mem::{consume_and_process_mmap, create_page_descriptors},
+        mmu::init_cpu,
+    },
+};
 
 use self::{
     allocator::KernelPTAllocator,
@@ -138,7 +140,7 @@ static mut KSTACK: KStack = KStack::new();
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn _start(_boot_info_ref: &mut BootInfo) {
+pub unsafe extern "C" fn _start(_boot_info_ref: *mut BootInfo) {
     naked_asm!(
         "adrp x9, {stack_base}",
         "add x9, x9, :lo12:{stack_base}",
@@ -157,14 +159,7 @@ fn kaddr_to_paddr(kernel_load_paddr: usize, kaddr: usize) -> usize {
     (kaddr - unsafe { &__KBASE as *const _ as usize }) + kernel_load_paddr
 }
 
-fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
-    CPACR_EL1.modify(CPACR_EL1::FPEN::TrapNothing);
-    CPACR_EL1.modify(CPACR_EL1::ZEN::TrapNothing);
-    CPACR_EL1.modify(CPACR_EL1::TTA::NoTrap);
-    isb(barrier::SY);
-
-    DAIF.write(DAIF::D::Masked + DAIF::A::Masked + DAIF::I::Masked + DAIF::F::Masked);
-
+fn kentry(boot_info_ref: *mut BootInfo) -> ! {
     unsafe {
         asm!(
             "adr {x}, vector_table_el1",
@@ -173,8 +168,9 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
             options(nomem, nostack),
         );
     }
+    init_cpu();
 
-    let boot_info: BootInfo = unsafe { boot_info_ref.assume_init() };
+    let boot_info = unsafe { ptr::read(boot_info_ref) };
 
     {
         let mut lock = EARLYCON.lock();
@@ -183,9 +179,20 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
 
     earlycon_writeln!("address of bootinfo: {:#p}", &boot_info);
 
-    let uefi_mmap = &mut unsafe { ptr::read(&boot_info.memory_map) };
+    let mut uefi_mmap = boot_info.memory_map;
     uefi_mmap.sort();
-    earlycon_writeln!("uefi_mmap @ {:#x}", uefi_mmap as *const _ as u64);
+    earlycon_writeln!("uefi_mmap @ {:p}", uefi_mmap.buffer() as *const _);
+
+    let uefi_mmap = consume_and_process_mmap(uefi_mmap);
+    earlycon_writeln!("uefi_mmap @ {:p}", uefi_mmap.buffer() as *const _);
+
+    for desc in uefi_mmap.entries() {
+        earlycon_writeln!("{:x?}", desc);
+    }
+
+    busy_loop_ret();
+    let page_allocator = &alloc_init(&uefi_mmap);
+    init_mmu();
 
     let mut acpi_reg_opt: Option<MemoryRegion> = None;
 
@@ -224,10 +231,6 @@ fn kentry(boot_info_ref: MaybeUninit<BootInfo>) -> ! {
     // but that creates dependence on ACPI (which i'd really rather avoid).
     let rsdp = find_rsdp_in_slice(slice).expect("RSDP not found in ACPI tables.");
     earlycon_writeln!("ACPI RSDP @ {:p}", rsdp);
-
-    init_mmu();
-
-    let page_allocator = &arm_init(uefi_mmap, boot_info.kernel_regions, boot_info.root_pt);
 
     // SAFETY: this function never returns, so `page_allocator` can be treated as a static reference.
     let page_alloc_ref: &'static PageAllocator<KernelAddressTranslator> =
@@ -638,136 +641,19 @@ fn print_mem_usage() {
     );
 }
 
-pub extern "C" fn arm_init(
-    uefi_mmap: &mut MemoryMapOwned,
-    memory_regions: StaticVec<MemoryRegion>,
-    mut root_pt: NonNull<TTable<TABLE_ENTRIES>>,
+pub extern "C" fn alloc_init<T: MemoryMap>(
+    uefi_mmap: &T,
 ) -> PageAllocator<KernelAddressTranslator> {
-    let mut pmvec: PMVec<MemoryRegion> = PMVec::new();
-
-    {
-        let slice = memory_regions.as_slice();
-        pmvec.extend_from_slice(slice);
+    for region in uefi_mmap.entries() {
+        earlycon_writeln!("entry: {:x?}", region);
     }
 
-    for &region in uefi_mmap.entries() {
-        let region_type: MemoryRegionType = match region.ty {
-            MemoryType::RUNTIME_SERVICES_CODE => MemoryRegionType::RtFirmwareCode,
-            MemoryType::RUNTIME_SERVICES_DATA => MemoryRegionType::RtFirmwareData,
+    busy_loop_ret();
 
-            MemoryType::MMIO | MemoryType::MMIO_PORT_SPACE => MemoryRegionType::Mmio,
-            MemoryType::CONVENTIONAL | MemoryType::BOOT_SERVICES_DATA => MemoryRegionType::Normal,
-            MemoryType::BOOT_SERVICES_CODE => MemoryRegionType::FirmwareReclaim,
-            MemoryType::LOADER_CODE => MemoryRegionType::FirmwareReclaim,
-            MemoryType::ACPI_RECLAIM => MemoryRegionType::AcpiTables,
-            MemoryType::ACPI_NON_VOLATILE => MemoryRegionType::AcpiNvs,
-            MemoryType::LOADER_DATA => continue,
-            _ => {
-                earlycon_writeln!("unknown: {:?}", region);
-                MemoryRegionType::Unknown
-            }
-        };
+    let page_allocator = unsafe { PageAllocator::init(&[]) };
 
-        let size = if region_type == MemoryRegionType::Mmio {
-            align_up(region.page_count as usize * UEFI_PS, PAGE_SIZE)
-        } else {
-            region.page_count as usize * UEFI_PS
-        };
-
-        let prev_opt = pmvec.remove_containing(region.phys_start as usize);
-        if let Some(prev) = prev_opt {
-            pmvec.push(MemoryRegion {
-                base: prev.base.min(region.phys_start as usize),
-                size: prev.size.max(size),
-                region_type: prev.region_type,
-            });
-        } else {
-            pmvec.push(MemoryRegion {
-                base: region.phys_start as usize,
-                size,
-                region_type,
-            });
-        }
-    }
-
-    let mut pmvec_copy: PMVec<MemoryRegion> = PMVec::new();
-    pmvec_copy.extend_from_slice(pmvec.as_slice());
-    pmvec_copy.compact();
-
-    for region in pmvec_copy.as_slice() {
-        if region.is_normal() {
-            continue;
-        }
-
-        _ = pmvec.remove_containing(region.base);
-    }
-    pmvec.compact();
-
-    let early_page_allocator = PMTableAllocator::new(pmvec);
-
-    earlycon_writeln!("{:#x?}", pmvec_copy.as_slice());
-    {
-        let mut total = 0usize;
-        for &region in pmvec_copy.as_slice() {
-            //if !region.is_normal() {
-            //    continue;
-            //};
-            let aligned_base = align_up(region.base, PAGE_SIZE);
-
-            if region.size < PAGE_SIZE {
-                continue;
-            }
-
-            let mair = if region.region_type == MemoryRegionType::Mmio {
-                MAIR_DEVICE_INDEX
-            } else {
-                MAIR_NORMAL_INDEX
-            };
-
-            unsafe {
-                map_region(
-                    root_pt.as_mut(),
-                    aligned_base,
-                    phys_addr_to_dmap(aligned_base as u64) as usize,
-                    align_down(region.size, PAGE_SIZE),
-                    AccessPermission::PrivilegedReadWrite,
-                    Shareability::InnerShareable,
-                    true,
-                    true,
-                    mair,
-                    &early_page_allocator,
-                )
-            };
-            total += region.size;
-        }
-        earlycon_writeln!("mem size: {:#x} ({} B)", total, total);
-    }
-
-    let mmap_swiss_cheese = early_page_allocator.free_regions.into_inner();
-
-    for &region in mmap_swiss_cheese.as_slice() {
-        if let Some(_) = pmvec_copy.remove_containing(region.base) {
-            pmvec_copy.push(region);
-        }
-    }
-    pmvec_copy.compact();
-
-    let mut page_allocator = unsafe { PageAllocator::init(&[]) };
-
-    for &region in pmvec_copy.as_slice() {
-        if region.is_usable() {
-            let start = align_up(DMAP_START + region.base, PAGE_SIZE);
-            let end = align_down(start + region.size, PAGE_SIZE);
-
-            if (end - start) <= 2 * PAGE_SIZE {
-                continue;
-            }
-
-            page_allocator.add_range(&Range { start, end });
-        }
-    }
-
-    let page = page_allocator.alloc_page();
+    let page: usize = page_allocator.alloc_phys_page().expect("page alloc fail");
+    let page: *mut u8 = page as _;
     assert!(!page.is_null());
 
     earlycon_writeln!(

@@ -32,8 +32,17 @@
         lib.genAttrs systems (
           system:
           let
+            pkgsOVMF = import nixpkgs {
+              system = "aarch64-linux";
+            };
+
             pkgs = import nixpkgs {
               inherit system;
+              overlays = [
+                (self: super: {
+                  inherit (pkgsOVMF) OVMF;
+                })
+              ];
             };
 
             targets = [
@@ -66,7 +75,8 @@
             );
             mkShell = pkgsCross.mkShell.override { inherit stdenv; };
 
-            OVMF = pkgs.callPackage ./ovmf.nix { };
+            #OVMF = pkgs.callPackage ./ovmf.nix { };
+            OVMF = pkgs.OVMF;
           in
           fn rec {
             inherit
@@ -120,7 +130,7 @@
           ];
 
           shellHook = ''
-            export OVMF_DIR="${OVMF}/share/qemu"
+            export OVMF_DIR="${OVMF.fd}/FV"
             export OVMF_CODE_PATH="$OVMF_DIR/AAVMF_CODE.fd"
           '';
 
