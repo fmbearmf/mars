@@ -230,15 +230,11 @@ pub fn load_kernel(mut kernel: RegularFile) -> Result<(u64, u64, u64, u64), Stat
             attrs |= MemoryAttribute::READ_PROTECT;
         }
 
-        if !w {
-            attrs |= MemoryAttribute::READ_ONLY;
-        }
-
         if !x {
             attrs |= MemoryAttribute::EXECUTE_PROTECT;
         }
 
-        debug!("attr: {:#x}", attrs);
+        debug!("attr: {:?}", attrs);
 
         mem_attr_proto
             .set_memory_attributes(

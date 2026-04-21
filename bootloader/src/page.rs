@@ -1,6 +1,6 @@
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
-    registers::{CPACR_EL1, MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR1_EL1},
+    registers::{CPACR_EL1, MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1},
 };
 use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
 use klib::{
@@ -36,7 +36,7 @@ pub fn cpu_init() {
     dsb(barrier::SY);
 }
 
-pub fn mmu_init(table: *const TTable<TABLE_ENTRIES>) {
+pub fn mmu_init(ttbr1: *const TTable<TABLE_ENTRIES>) {
     MAIR_EL1.modify(
         MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck
             + MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
@@ -54,11 +54,14 @@ pub fn mmu_init(table: *const TTable<TABLE_ENTRIES>) {
             + TCR_EL1::T1SZ.val(16),
     );
 
-    TTBR1_EL1.set_baddr(table as _);
+    TTBR1_EL1.set_baddr(ttbr1 as _);
+
+    tlbi(VMALLE1);
+    dsb(barrier::ISHST);
+    isb(barrier::SY);
+
     SCTLR_EL1.modify(SCTLR_EL1::M::Enable + SCTLR_EL1::C::Cacheable + SCTLR_EL1::I::Cacheable);
 
-    dsb(barrier::ISHST);
-    tlbi(VMALLE1);
-    dsb(barrier::ISH);
+    dsb(barrier::SY);
     isb(barrier::SY);
 }

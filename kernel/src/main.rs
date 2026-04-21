@@ -3,9 +3,11 @@
 
 mod allocator;
 mod earlyinit;
+mod log;
 
 extern crate alloc;
 
+use ::log::{LevelFilter, info, trace};
 use aarch64_cpu::{
     asm::wfe,
     registers::{
@@ -21,7 +23,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     arch::{asm, naked_asm},
     mem::{self, MaybeUninit},
-    ops::{Add, Index},
+    ops::Index,
     panic::PanicInfo,
     ptr::{self, NonNull},
     range::Range,
@@ -48,11 +50,11 @@ use klib::{
     scheduler::Scheduler,
     smccc::cpu_on,
     thread::Thread,
-    timer::init_timer,
+    timer::{init_timer, timer_rearm},
     vcpu::{CpuDescriptor, add_cpu, vcpu_wait_init, with_cpus, with_this_cpu},
     vm::{
-        MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType, PAGE_SIZE, TABLE_ENTRIES, TTable,
-        align_down, align_up, dmap_addr_to_phys,
+        MAIR_NORMAL_INDEX, MemoryRegion, PAGE_SIZE, TABLE_ENTRIES, TTable, align_down, align_up,
+        dmap_addr_to_phys,
         page_allocator::PhysicalPageAllocator,
         phys_addr_to_dmap,
         slab::SlabAllocator,
@@ -60,17 +62,18 @@ use klib::{
     },
 };
 use protocol::BootInfo;
-use uefi::{
-    boot::{MemoryType, PAGE_SIZE as UEFI_PS},
-    mem::memory_map::{MemoryMap, MemoryMapMut, MemoryMapOwned, MemoryMapRef},
-};
+use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
 use crate::{
     allocator::KernelAddressTranslator,
     earlyinit::{
-        mem::{consume_and_process_mmap, create_page_descriptors},
+        mem::{
+            clone_and_process_mmap, create_page_descriptors, early_stack_size_check,
+            populate_alloc, print_pt, switch_to_new_page_tables,
+        },
         mmu::init_cpu,
     },
+    log::LOGGER,
 };
 
 use self::{
@@ -85,8 +88,16 @@ use self::{
 
 klib::exception_handlers!(Exceptions);
 
+// use `KALLOCATOR`
+static KPAGE_ALLOCATOR: PageAllocator<KernelAddressTranslator> = PageAllocator::new();
+
+// storage for boot info struct
+// shouldn't be accessed outside of very early in kentry
+static mut BOOT_INFO: MaybeUninit<BootInfo> = MaybeUninit::uninit();
+
 #[global_allocator]
-pub static KALLOCATOR: SlabAllocator<KernelAddressTranslator> = SlabAllocator::new();
+pub static KALLOCATOR: SlabAllocator<KernelAddressTranslator> =
+    SlabAllocator::new(&KPAGE_ALLOCATOR);
 
 pub static KPT_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
 
@@ -95,6 +106,12 @@ pub static GLOBAL_SCHEDULER: Scheduler<
     SlabAllocator<KernelAddressTranslator>,
     KernelAddressTranslator,
 > = Scheduler::new();
+
+pub static KERNEL_ADDRESS_SPACE: AddressSpace<
+    KernelPTAllocator,
+    PageAllocator<KernelAddressTranslator>,
+    KernelAddressTranslator,
+> = unsafe { AddressSpace::new_dangling(None, &KPT_ALLOCATOR, &KPAGE_ALLOCATOR) };
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -123,7 +140,7 @@ unsafe extern "C" {
     pub static __KBASE: usize;
 }
 
-const STACK_SIZE: usize = 128 * 1024;
+const STACK_SIZE: usize = 16 * 1024;
 
 #[allow(dead_code)]
 #[repr(align(16))]
@@ -144,11 +161,11 @@ pub unsafe extern "C" fn _start(_boot_info_ref: *mut BootInfo) {
     naked_asm!(
         "adrp x9, {stack_base}",
         "add x9, x9, :lo12:{stack_base}",
-        //
         "add x9, x9, {stack_size}",
         "and x9, x9, #~0xF",
         "mov sp, x9",
-        "b {entry}",
+        //
+        "bl {entry}",
         stack_base = sym KSTACK,
         stack_size = const STACK_SIZE,
         entry = sym kentry,
@@ -170,54 +187,69 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
     }
     init_cpu();
 
-    let boot_info = unsafe { ptr::read(boot_info_ref) };
+    #[allow(static_mut_refs, reason = "singlethreaded access")]
+    {
+        unsafe {
+            ptr::copy_nonoverlapping(boot_info_ref, BOOT_INFO.as_mut_ptr(), 1);
+        };
+    }
+
+    #[allow(static_mut_refs, reason = "singlethreaded access")]
+    let boot_info = unsafe { BOOT_INFO.assume_init_mut() };
 
     {
         let mut lock = EARLYCON.lock();
         *lock = Some(EarlyCon::new(boot_info.serial_uart_address));
     }
 
-    earlycon_writeln!("address of bootinfo: {:#p}", &boot_info);
+    LOGGER
+        .init(LevelFilter::Trace)
+        .expect("failed to init logger");
 
-    let mut uefi_mmap = boot_info.memory_map;
+    info!("plug");
+
+    trace!("address of passed bootinfo ptr: {:#p}", boot_info_ref);
+    trace!("address of bootinfo: {:#p}", &boot_info);
+
+    trace!("init_mmu addr: {:#p}", init_mmu as *const ());
+    init_mmu(boot_info.page_table_root);
+
+    let uefi_mmap = &mut boot_info.memory_map;
     uefi_mmap.sort();
-    earlycon_writeln!("uefi_mmap @ {:p}", uefi_mmap.buffer() as *const _);
 
-    let uefi_mmap = consume_and_process_mmap(uefi_mmap);
-    earlycon_writeln!("uefi_mmap @ {:p}", uefi_mmap.buffer() as *const _);
+    trace!("uefi_mmap @ {:p}", uefi_mmap.buffer() as *const _);
+
+    let uefi_mmap = clone_and_process_mmap(uefi_mmap);
+    trace!("processed uefi_mmap @ {:p}", uefi_mmap.buffer() as *const _);
 
     for desc in uefi_mmap.entries() {
-        earlycon_writeln!("{:x?}", desc);
+        trace!("{:x?}", desc);
     }
 
-    busy_loop_ret();
-    let page_allocator = &alloc_init(&uefi_mmap);
-    init_mmu();
+    populate_alloc(&uefi_mmap);
+
+    let mut pt_root = unsafe {
+        switch_to_new_page_tables(
+            &uefi_mmap,
+            &KALLOCATOR,
+            boot_info.kernel_load_physical_address,
+            boot_info.kernel_size,
+        )
+    };
+
+    print_pt(unsafe { pt_root.as_mut() }, false);
+
+    unsafe { KALLOCATOR.transition_dmap() };
+
+    let (page_descriptors, range) = create_page_descriptors();
+    PAGE_DESCRIPTORS.init(page_descriptors, range);
+
+    early_stack_size_check();
+    unsafe { KERNEL_ADDRESS_SPACE.init() };
+
+    busy_loop();
 
     let mut acpi_reg_opt: Option<MemoryRegion> = None;
-
-    let mut total = 0usize;
-    for entry in uefi_mmap.entries() {
-        match entry.ty {
-            _ => {
-                //earlycon_writeln!(
-                //    "MemoryDescriptor {{ phys_start: {:#x}, size: {:#x}, ty: {:?} }}",
-                //    entry.phys_start,
-                //    entry.page_count as usize * UEFI_PS,
-                //    entry.ty
-                //);
-                total += entry.page_count as usize * UEFI_PS;
-            }
-        }
-        if entry.ty == MemoryType::ACPI_RECLAIM {
-            acpi_reg_opt = Some(MemoryRegion {
-                base: phys_addr_to_dmap(entry.phys_start) as usize,
-                size: (entry.page_count as usize * UEFI_PS),
-                region_type: MemoryRegionType::AcpiTables,
-            });
-        }
-    }
-    earlycon_writeln!("total: {:#x}", total);
 
     let acpi_reg = acpi_reg_opt.expect("no ACPI tables found.");
     let slice = unsafe {
@@ -232,16 +264,7 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
     let rsdp = find_rsdp_in_slice(slice).expect("RSDP not found in ACPI tables.");
     earlycon_writeln!("ACPI RSDP @ {:p}", rsdp);
 
-    // SAFETY: this function never returns, so `page_allocator` can be treated as a static reference.
-    let page_alloc_ref: &'static PageAllocator<KernelAddressTranslator> =
-        unsafe { mem::transmute(page_allocator) };
-
-    unsafe { KALLOCATOR.init(page_alloc_ref) };
-
-    let (page_descriptors, range) = create_page_descriptors();
-    PAGE_DESCRIPTORS.init(page_descriptors, range);
-
-    let xsdt = match rsdp.xsdt(true) {
+    let xsdt = match rsdp.xsdt() {
         Ok(x) => x,
         Err(e) => panic!("xsdt invalid: {}", e),
     };
@@ -249,7 +272,7 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
     earlycon_writeln!("ACPI XSDT @ {:p}", xsdt);
 
     {
-        let iter = XsdtIter::new(xsdt, true);
+        let iter = XsdtIter::new(xsdt);
         for (i, table) in iter.enumerate() {
             let sig = from_utf8(&table.sig).unwrap_or("ERR ");
             let len = table.len();
@@ -257,7 +280,7 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
         }
     }
 
-    let sys = SystemDescription::parse(xsdt, true);
+    let sys = SystemDescription::parse(xsdt);
 
     if let Some(fadt) = sys.fadt {
         earlycon_writeln!("FADT found. X_DSDT: {:#x}", sys.dsdt_addr);
@@ -625,6 +648,7 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
         DAIF.modify(DAIF::D::Unmasked + DAIF::A::Unmasked + DAIF::I::Unmasked + DAIF::F::Unmasked);
 
         init_timer();
+        timer_rearm();
     });
 
     busy_loop()
@@ -641,28 +665,8 @@ fn print_mem_usage() {
     );
 }
 
-pub extern "C" fn alloc_init<T: MemoryMap>(
-    uefi_mmap: &T,
-) -> PageAllocator<KernelAddressTranslator> {
-    for region in uefi_mmap.entries() {
-        earlycon_writeln!("entry: {:x?}", region);
-    }
-
-    busy_loop_ret();
-
-    let page_allocator = unsafe { PageAllocator::init(&[]) };
-
-    let page: usize = page_allocator.alloc_phys_page().expect("page alloc fail");
-    let page: *mut u8 = page as _;
-    assert!(!page.is_null());
-
-    earlycon_writeln!(
-        "test page start: {:#x}, head: {:#x}",
-        page as usize,
-        (page as usize).add(PAGE_SIZE)
-    );
-
-    page_allocator.free_pages(page);
+pub extern "C" fn alloc_init() -> PageAllocator<KernelAddressTranslator> {
+    let page_allocator = PageAllocator::new();
 
     page_allocator
 }

@@ -3,10 +3,7 @@ use core::{ffi::c_void, mem, ptr, slice};
 use getters::unaligned_getters;
 use uefi::{system, table::cfg::ConfigTableEntry};
 
-use super::{
-    super::vm::{is_kernel_address, phys_addr_to_dmap},
-    SdtHeader, checksum,
-};
+use super::{super::vm::phys_addr_to_dmap, SdtHeader, checksum};
 
 #[repr(C, packed)]
 #[unaligned_getters]
@@ -64,12 +61,8 @@ impl Rsdp {
         Ok(rsdp)
     }
 
-    pub fn xsdt(&self, kernel: bool) -> Result<&'static SdtHeader, &'static str> {
-        let xsdt_addr = if kernel {
-            phys_addr_to_dmap(self.xsdt_addr())
-        } else {
-            self.xsdt_addr()
-        };
+    pub fn xsdt(&self) -> Result<&'static SdtHeader, &'static str> {
+        let xsdt_addr = phys_addr_to_dmap(self.xsdt_addr());
 
         if (xsdt_addr as *const ()).is_null() {
             return Err("xsdt addr null");
@@ -96,11 +89,10 @@ pub struct XsdtIter {
     base: *const u8,
     count: usize,
     curr: usize,
-    kernel: bool,
 }
 
 impl XsdtIter {
-    pub fn new(xsdt: &SdtHeader, kernel: bool) -> Self {
+    pub fn new(xsdt: &SdtHeader) -> Self {
         let len = xsdt.len() as usize;
         let header_sz = mem::size_of::<SdtHeader>();
 
@@ -109,7 +101,6 @@ impl XsdtIter {
                 base: ptr::null(),
                 count: 0,
                 curr: 0,
-                kernel,
             };
         }
 
@@ -124,7 +115,6 @@ impl XsdtIter {
             base,
             count,
             curr: 0,
-            kernel,
         }
     }
 }
@@ -146,16 +136,14 @@ impl Iterator for XsdtIter {
             return self.next();
         }
 
-        let mut header = unsafe { &*(table_addr as *const SdtHeader) };
-        if self.kernel {
-            header =
-                unsafe { &*(phys_addr_to_dmap(header as *const _ as u64) as *const SdtHeader) };
-        }
+        let header = unsafe { &*(table_addr as *const SdtHeader) };
+        let header =
+            unsafe { &*(phys_addr_to_dmap(header as *const _ as u64) as *const SdtHeader) };
         Some(header)
     }
 }
 
-pub fn find_rsdp_in_slice(slice: &[u8]) -> Option<&Rsdp> {
+pub fn find_rsdp_in_slice(slice: &[u8]) -> Option<&'static Rsdp> {
     const SIG: &[u8; 8] = b"RSD PTR ";
 
     // packed struct has no alignment requirements, therefore `STEP` = 1

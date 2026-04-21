@@ -8,7 +8,6 @@ extern crate alloc;
 mod allocator;
 mod elf;
 mod page;
-mod vec;
 
 use core::{
     arch::aarch64::__wfe,
@@ -18,8 +17,8 @@ use core::{
 use aarch64_cpu::asm::barrier::{self, dsb};
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use klib::{
-    pm::page::mapper::{TableAllocator, map_region},
-    vm::{MAIR_NORMAL_INDEX, PAGE_SIZE, align_down, align_up},
+    pm::page::mapper::{TableAllocator, id_map, map_region},
+    vm::{MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, PAGE_SIZE, align_down, align_up},
 };
 use log::{debug, error, info};
 use protocol::BootInfo;
@@ -168,9 +167,10 @@ fn main() -> Status {
         base_phys_align + load_size_align,
     );
 
-    let mut root_table = TABLE_ALLOC.alloc_table();
+    let mut root_ttbr1 = TABLE_ALLOC.alloc_table();
+    debug!("root_ttbr1: {:p}", root_ttbr1);
     map_region::<_, UefiAddressTranslator>(
-        unsafe { root_table.as_mut() },
+        unsafe { root_ttbr1.as_mut() },
         base_phys_align,
         base_virt_align,
         load_size_align,
@@ -182,10 +182,22 @@ fn main() -> Status {
         &TABLE_ALLOC,
     );
 
-    mmu_init(root_table.as_ptr());
+    let mut root_ttbr0 = TABLE_ALLOC.alloc_table();
+    debug!("root_ttbr0: {:p}", root_ttbr0);
+    id_map::<_, UefiAddressTranslator>(
+        unsafe { root_ttbr0.as_mut() },
+        AccessPermission::PrivilegedReadWrite,
+        Shareability::OuterShareable,
+        true,
+        false,
+        MAIR_DEVICE_INDEX,
+        &TABLE_ALLOC,
+    );
 
     let entry_fn: fn(boot_info: *mut BootInfo) -> ! = unsafe { transmute(entry_vaddr) };
     debug!("entry_fn: {:p}", entry_fn as *const ());
+
+    mmu_init(root_ttbr1.as_ptr());
 
     let mut boot_info = MaybeUninit::<BootInfo>::uninit();
 
@@ -194,8 +206,9 @@ fn main() -> Status {
     boot_info.write(BootInfo {
         kernel_load_physical_address: base_phys as usize,
         kernel_size: load_size as usize,
-        serial_uart_address: 0x0901_0000,
+        serial_uart_address: 0x0900_0000,
         memory_map: mem_map_final,
+        page_table_root: Some(root_ttbr0.as_ptr()),
     });
 
     entry_fn(boot_info.as_mut_ptr());

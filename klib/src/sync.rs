@@ -35,14 +35,14 @@ impl TicketLock {
 }
 
 #[derive(Debug)]
-pub struct Mutex<T> {
+pub struct Mutex<T: ?Sized> {
     lock: AtomicBool,
     data: UnsafeCell<T>,
 }
 
 // SAFETY: only 1 core can access `data` at a time
-unsafe impl<T: Send> Sync for Mutex<T> {}
-unsafe impl<T: Send> Send for Mutex<T> {}
+unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
+unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
 
 pub struct MutexGuard<'a, T> {
     mutex: &'a Mutex<T>,
@@ -186,6 +186,9 @@ pub struct RwLockReadGuard<'a, T: ?Sized> {
     lock: &'a RwLock<T>,
 }
 
+unsafe impl<T: ?Sized + Sync> Sync for RwLockReadGuard<'_, T> {}
+unsafe impl<T: ?Sized + Send> Send for RwLockReadGuard<'_, T> {}
+
 impl<'a, T: ?Sized> Deref for RwLockReadGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
@@ -208,6 +211,8 @@ impl<'a, T: ?Sized + Debug> Debug for RwLockReadGuard<'a, T> {
 pub struct RwLockWriteGuard<'a, T: ?Sized> {
     lock: &'a RwLock<T>,
 }
+unsafe impl<T: ?Sized + Sync> Sync for RwLockWriteGuard<'_, T> {}
+unsafe impl<T: ?Sized + Send> Send for RwLockWriteGuard<'_, T> {}
 
 impl<'a, T: ?Sized> Deref for RwLockWriteGuard<'a, T> {
     type Target = T;

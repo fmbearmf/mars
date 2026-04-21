@@ -2,7 +2,7 @@ use core::{
     alloc::{GlobalAlloc, Layout},
     cell::UnsafeCell,
     mem, ptr,
-    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
 };
 
 use crate::{pm::page::mapper::AddressTranslator, vm::page_allocator::DmapPageAllocator};
@@ -100,30 +100,34 @@ pub struct SlabAllocator<A: AddressTranslator + 'static> {
     used_bytes: AtomicUsize,
     caches: UnsafeCell<[Cache; 9]>,
     lock: TicketLock,
+
+    is_dmap: AtomicBool,
 }
 
 unsafe impl<A: AddressTranslator> Send for SlabAllocator<A> {}
 unsafe impl<A: AddressTranslator> Sync for SlabAllocator<A> {}
 
 impl<A: AddressTranslator> SlabAllocator<A> {
-    pub const fn new() -> Self {
+    pub const fn new(page_alloc: &'static PageAllocator<A>) -> Self {
         Self {
-            page_alloc: AtomicPtr::new(ptr::null_mut()),
+            page_alloc: AtomicPtr::new(page_alloc as *const _ as *mut _),
             used_bytes: AtomicUsize::new(0),
             caches: UnsafeCell::new(build_caches()),
             lock: TicketLock::new(),
+            is_dmap: AtomicBool::new(false),
         }
-    }
-
-    pub unsafe fn init(&self, page_alloc: &'static PageAllocator<A>) {
-        self.page_alloc
-            .store(page_alloc as *const _ as *mut _, Ordering::Release);
     }
 
     pub fn page_alloc(&self) -> &'static PageAllocator<A> {
         let ptr = self.page_alloc.load(Ordering::Acquire);
         assert!(!ptr.is_null(), "slab allocation used before init()");
         unsafe { &*ptr }
+    }
+
+    pub unsafe fn page_alloc_mut(&self) -> &'static mut PageAllocator<A> {
+        let ptr = self.page_alloc.load(Ordering::Acquire);
+        assert!(!ptr.is_null(), "slab allocation used before init()");
+        unsafe { &mut *ptr }
     }
 
     unsafe fn alloc_impl(&self, layout: Layout) -> *mut u8 {
@@ -157,7 +161,11 @@ impl<A: AddressTranslator> SlabAllocator<A> {
                 self.lock.unlock();
 
                 // new page
-                let page: usize = page_alloc.alloc_dmap_page().expect("page alloc fail");
+                let page: usize = if self.is_dmap.load(Ordering::Relaxed) {
+                    page_alloc.alloc_dmap_page().expect("dmap page alloc fail")
+                } else {
+                    page_alloc.alloc_phys_page().expect("phys page alloc fail")
+                };
                 let page = page as *mut u8;
 
                 if page.is_null() {
@@ -299,6 +307,66 @@ impl<A: AddressTranslator> SlabAllocator<A> {
         }
 
         self.used_bytes.fetch_sub(layout.size(), Ordering::Relaxed);
+    }
+
+    pub unsafe fn transition_dmap(&self) {
+        self.lock.lock();
+
+        debug_assert_eq!(
+            self.is_dmap.load(Ordering::Relaxed),
+            false,
+            "`transition_dmap` called twice"
+        );
+
+        unsafe { self.page_alloc_mut().transition_dmap() };
+
+        // null ptrs need to stay null
+        let ptr_to_dmap = |ptr: *mut u8| -> *mut u8 {
+            if ptr.is_null() {
+                ptr
+            } else {
+                A::phys_to_dmap::<u8>(ptr as _) as _
+            }
+        };
+
+        let old_pa = self.page_alloc.load(Ordering::Acquire);
+        let new_pa = A::phys_to_dmap::<PageAllocator<A>>(old_pa as _) as *mut PageAllocator<A>;
+        self.page_alloc.store(new_pa, Ordering::Release);
+
+        let caches = unsafe { &mut *self.caches.get() };
+        for cache in caches.iter_mut() {
+            cache.plist = ptr_to_dmap(cache.plist as _) as *mut Header;
+
+            let mut current_hdr_ptr = cache.plist;
+            while !current_hdr_ptr.is_null() {
+                let header = unsafe { &mut *current_hdr_ptr };
+
+                header.next = ptr_to_dmap(header.next as _) as *mut Header;
+                header.prev = ptr_to_dmap(header.prev as _) as *mut Header;
+
+                let old_free_list = header.free_list;
+                header.free_list = ptr_to_dmap(old_free_list as _);
+
+                let mut current_obj = header.free_list;
+                while !current_obj.is_null() {
+                    let next_ptr = current_obj as *mut *mut u8;
+
+                    // the physical address of the next object
+                    let phys_next = unsafe { *next_ptr };
+                    let dmap_next = ptr_to_dmap(phys_next as _);
+
+                    unsafe { *next_ptr = dmap_next };
+
+                    current_obj = dmap_next;
+                }
+
+                current_hdr_ptr = header.next;
+            }
+        }
+
+        self.is_dmap.store(true, Ordering::SeqCst);
+
+        self.lock.unlock();
     }
 
     pub fn free_page(&self, va: usize) {

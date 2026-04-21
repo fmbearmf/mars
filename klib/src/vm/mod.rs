@@ -11,10 +11,11 @@ pub type TTEUEFI = TTE4K48;
 
 pub const DMAP_START: usize = 0xFFFF << 48;
 
+pub const PAGE_INDEX_BITS: usize = TABLE_ENTRIES.trailing_zeros() as usize;
 pub const PAGE_SHIFT: usize = 14; // 16kib
-pub const L2_BLOCK_SHIFT: usize = PAGE_SHIFT + 11; // 32mib
-pub const L1_BLOCK_SHIFT: usize = L2_BLOCK_SHIFT + 11; // 64gib
-pub const L0_BLOCK_SHIFT: usize = L1_BLOCK_SHIFT + 11; // 128tib
+pub const L2_BLOCK_SHIFT: usize = PAGE_SHIFT + PAGE_INDEX_BITS; // 32mib
+pub const L1_BLOCK_SHIFT: usize = L2_BLOCK_SHIFT + PAGE_INDEX_BITS; // 64gib
+pub const L0_BLOCK_SHIFT: usize = L1_BLOCK_SHIFT + PAGE_INDEX_BITS; // 128tib
 
 pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 pub const L2_BLOCK_SIZE: usize = 1 << L2_BLOCK_SHIFT;
@@ -59,10 +60,12 @@ pub const fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
 }
 
+const INVALID_ENTRY: TTENATIVE = TTENATIVE::invalid();
+
 impl<const N: usize> TTable<N> {
     pub const fn new() -> Self {
         Self {
-            entries: [TTENATIVE::invalid(); N],
+            entries: [INVALID_ENTRY; N],
         }
     }
 }

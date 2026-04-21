@@ -12,6 +12,7 @@ pub mod acpi;
 pub mod context;
 pub mod cpu_interface;
 pub mod exception;
+pub mod hardware;
 pub mod hash_map;
 pub mod interrupt;
 pub mod pm;
@@ -22,7 +23,6 @@ pub mod sync;
 pub mod thread;
 pub mod timer;
 pub mod vcpu;
-pub mod vec;
 pub mod vm;
 
 pub fn bytes_to_human_readable(mut bytes: u64, buf: &mut [u8]) -> &str {

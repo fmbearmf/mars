@@ -1,12 +1,14 @@
 use core::{range::Range, slice};
 
-use klib::acpi::rsdp::find_rsdp_in_slice;
+use klib::acpi::rsdp::{Rsdp, find_rsdp_in_slice};
 use uefi::{
     boot::{MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE},
     mem::memory_map::{MemoryMap, MemoryMapOwned},
 };
 
-pub fn discover_uart_uefi(mmap: &MemoryMapOwned) {
+pub fn discover_rsdp_uefi<T: MemoryMap>(mmap: &T) -> Result<&'static Rsdp, ()> {
+    let mut rsdp: Option<&'static Rsdp> = None;
+
     for region in mmap.entries() {
         match region.ty {
             MemoryType::ACPI_RECLAIM => {
@@ -17,9 +19,11 @@ pub fn discover_uart_uefi(mmap: &MemoryMapOwned) {
                     )
                 };
 
-                let rsdp = find_rsdp_in_slice(slice);
+                rsdp = find_rsdp_in_slice(slice);
             }
             _ => {}
         }
     }
+
+    rsdp.ok_or(())
 }

@@ -1,3 +1,5 @@
+use core::ptr::NonNull;
+
 use super::super::{TABLE_ENTRIES, TTable, page_allocator::PhysicalPageAllocator};
 use super::PAGE_DESCRIPTORS;
 use crate::pm::page::mapper::{AddressTranslator, TableAllocator};
@@ -6,12 +8,14 @@ use crate::pm::page::mapper::{AddressTranslator, TableAllocator};
 pub struct UserAllocator<'a, T, P, A>(pub &'a T, pub &'a P, pub core::marker::PhantomData<A>);
 
 impl<'a, T: TableAllocator, P, A: AddressTranslator> TableAllocator for UserAllocator<'a, T, P, A> {
-    fn alloc_table(&self) -> core::ptr::NonNull<TTable<TABLE_ENTRIES>> {
+    fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>> {
         let ptr = self.0.alloc_table();
         let pa = A::dmap_to_phys(ptr.as_ptr());
 
         let desc = PAGE_DESCRIPTORS.get_page_descriptor(pa as usize);
-        desc.lock.write().meta = None;
+        let meta_ref = &mut desc.lock.write().meta;
+        *meta_ref = None;
+
         ptr
     }
 

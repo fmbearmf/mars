@@ -17,8 +17,8 @@ pub struct Cursor<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTra
     pub addr_space: &'a AddressSpace<'a, T, P, A>,
     pub range: Range<usize>,
 
-    pub read_guards: Vec<(usize, RwLockReadGuard<'static, PtState>)>,
-    pub write_guard: Option<(usize, RwLockWriteGuard<'static, PtState>)>,
+    pub read_guards: Vec<(usize, RwLockReadGuard<'a, PtState>)>,
+    pub write_guard: Option<(usize, RwLockWriteGuard<'a, PtState>)>,
 
     pub covering_pa: usize,
     pub covering_level: usize,
@@ -98,7 +98,7 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Curs
         loop {
             let i = entry_index(va, current_lvl);
             let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_dmap(current_pa as u64);
-            let pte = unsafe { (*table_ptr).entries[i] };
+            let pte = unsafe { &(*table_ptr).entries[i] };
 
             if !pte.is_valid() {
                 return Status::Invalid;
@@ -126,14 +126,13 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Curs
         while current_lvl > 0 {
             let i = entry_index(va, current_lvl);
             let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_dmap(current_pa as _);
-            let mut pte = unsafe { (*table_ptr).entries[i] };
+            let pte = unsafe { &mut (*table_ptr).entries[i] };
 
             if !pte.is_valid() {
                 let new_table = self.addr_space.allocator.alloc_table();
                 let new_pa = A::dmap_to_phys(new_table.as_ptr());
 
-                pte = TTENATIVE::new_table(new_pa);
-                unsafe { (*table_ptr).entries[i] = pte };
+                *pte = TTENATIVE::new_table(new_pa);
             }
 
             current_pa = pte.address() as _;

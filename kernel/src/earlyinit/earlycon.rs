@@ -24,6 +24,16 @@ macro_rules! earlycon_writeln {
     }};
 }
 
+#[macro_export]
+macro_rules! earlycon_writeln_debug {
+    ($($arg:tt)*) => {{
+        #[cfg(debug_assertions)]
+        {
+            $crate::earlycon_writeln!($($arg)*);
+        }
+    }};
+}
+
 pub struct EarlyCon<'a> {
     pub uart: Uart<'a>,
 }

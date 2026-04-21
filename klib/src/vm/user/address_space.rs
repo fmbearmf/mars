@@ -18,6 +18,16 @@ pub struct AddressSpace<'a, T: TableAllocator, P: PhysicalPageAllocator, A: Addr
     _phantom: core::marker::PhantomData<A>,
 }
 
+unsafe impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Sync
+    for AddressSpace<'a, T, P, A>
+{
+}
+
+unsafe impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Send
+    for AddressSpace<'a, T, P, A>
+{
+}
+
 impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Debug
     for AddressSpace<'a, T, P, A>
 {
@@ -46,10 +56,57 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
         }
     }
 
+    pub const unsafe fn new_dangling(
+        max_level: Option<usize>,
+        table_allocator: &'a T,
+        page_allocator: &'a P,
+    ) -> Self {
+        Self::from_root_table(
+            max_level,
+            NonNull::dangling(),
+            table_allocator,
+            page_allocator,
+        )
+    }
+
+    /// initialize a dangling address space. this may only be called once, when there are no other references to self.
+    pub unsafe fn init(&self) {
+        assert_eq!(self.root, NonNull::dangling(), "init called twice!");
+        let table = self.allocator.alloc_table();
+        let root_ref = (&self.root) as *const _ as *mut NonNull<TTable<TABLE_ENTRIES>>;
+
+        unsafe {
+            root_ref.write(table);
+        }
+    }
+
+    pub const fn from_root_table(
+        max_level: Option<usize>,
+        root: NonNull<TTable<TABLE_ENTRIES>>,
+        table_allocator: &'a T,
+        page_allocator: &'a P,
+    ) -> Self {
+        let tracked_alloc =
+            UserAllocator(table_allocator, page_allocator, core::marker::PhantomData);
+
+        Self {
+            root,
+            max_level: max_level.unwrap_or(3),
+            allocator: tracked_alloc,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+
     unsafe fn drop_table(&mut self, table_ptr: NonNull<TTable<TABLE_ENTRIES>>, level: usize) {
         let table = unsafe { table_ptr.as_ref() };
 
-        for (_, &pte) in table.entries.iter().enumerate() {
+        debug_assert_ne!(
+            self.root,
+            NonNull::dangling(),
+            "drop_table called in invalid state"
+        );
+
+        for (_, pte) in table.entries.iter().enumerate() {
             if pte.is_valid() {
                 if level > 0 && pte.is_table() {
                     let child = pte.address();
@@ -72,6 +129,12 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
         let mut current_base_va = 0;
         let mut read_guards = Vec::new();
 
+        debug_assert_ne!(
+            self.root,
+            NonNull::dangling(),
+            "lock called in invalid state"
+        );
+
         loop {
             if current_level == 0 {
                 break;
@@ -86,7 +149,7 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
                 let guard = desc.lock.read();
 
                 let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_dmap(current_pa as _);
-                let pte = unsafe { (*table_ptr).entries[start_i] };
+                let pte = unsafe { &(*table_ptr).entries[start_i] };
 
                 if pte.is_valid() && pte.is_table() {
                     let child = pte.address();

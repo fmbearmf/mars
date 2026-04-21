@@ -19,7 +19,7 @@ impl TableAllocator for KernelPTAllocator {
             let raw_ptr: usize = KALLOCATOR.alloc_dmap_page().expect("page alloc fail");
             let raw_ptr = raw_ptr as *mut TTable<TABLE_ENTRIES>;
 
-            core::ptr::write(raw_ptr as *mut [u64; TABLE_ENTRIES], [0u64; TABLE_ENTRIES]);
+            unsafe { (raw_ptr as *mut [u64; TABLE_ENTRIES]).write_bytes(0, 1) };
 
             NonNull::new(raw_ptr).expect("null pointer from `alloc_page()` on `KALLOCATOR`")
         }
