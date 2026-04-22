@@ -29,6 +29,7 @@ use uefi::{
     entry,
     proto::media::file::{File, FileAttribute, FileMode},
 };
+use uefi_raw::table::system::SystemTable;
 
 use crate::{
     allocator::UefiTableAlloc,
@@ -205,12 +206,15 @@ fn main() -> Status {
 
     let mem_map_final = unsafe { boot::exit_boot_services(None) };
 
+    let st = uefi::table::system_table_raw().expect("no system table?");
+
     boot_info.write(BootInfo {
         kernel_load_physical_address: base_phys as usize,
         kernel_size: load_size as usize,
         serial_uart_address: 0x0900_0000,
         memory_map: mem_map_final,
         page_table_root: Some(root_ttbr0.as_ptr()),
+        system_table_raw: st,
     });
 
     entry_fn(boot_info.as_mut_ptr());

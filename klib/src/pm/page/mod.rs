@@ -12,7 +12,7 @@ use derivative::Derivative;
 use crate::{
     pm::page::mapper::AddressTranslator,
     vm::{
-        is_kernel_address,
+        DMAP_START, is_kernel_address,
         page_allocator::{DmapPageAllocator, PhysicalPageAllocator},
     },
 };
@@ -179,6 +179,38 @@ impl PageAllocator<'_> {
         self.lock.unlock()
     }
 
+    pub fn overlapping_range(&self, range: &Range<usize>) -> Option<Range<usize>> {
+        if range.is_empty() {
+            return None;
+        }
+
+        self.lock.lock();
+
+        let mut current_zone_ptr = self.zone_head;
+        let mut result = None;
+
+        while self.translator.dmap_to_phys(current_zone_ptr as _) != 0 {
+            unsafe {
+                let zone = &*current_zone_ptr;
+
+                let zone_start = self.translator.dmap_to_phys(zone.meta_array as _);
+                let zone_end = self
+                    .translator
+                    .dmap_to_phys((zone.data_base + (zone.total_pages * PAGE_SIZE)) as _);
+
+                if range.start < zone_end && zone_start < range.end {
+                    result = Some(zone_start..zone_end);
+                    break;
+                }
+
+                current_zone_ptr = zone.next;
+            }
+        }
+
+        self.lock.unlock();
+        result
+    }
+
     fn to_dmap<T>(ptr: *mut T, translator: &dyn AddressTranslator) -> *mut T {
         if ptr.is_null() {
             ptr
@@ -214,6 +246,29 @@ impl PageAllocator<'_> {
 
                 current_block = block.next;
             }
+        }
+
+        self.lock.unlock();
+    }
+
+    /// resets allocator to initial state
+    /// safety: previously allocated memory must not be accessed.
+    pub unsafe fn wipe(&self) {
+        self.lock.lock();
+
+        unsafe {
+            let this = self as *const _ as *mut Self;
+
+            (*this).zone_head = ptr::null_mut();
+            (*this).lowest_address = 0;
+
+            let free_area = &mut *self.free_area.get();
+            for i in 0..MAX_ORDER {
+                free_area[i] = ptr::null_mut();
+            }
+
+            self.total_pages.store(0, Ordering::SeqCst);
+            self.allocated_pages.store(0, Ordering::SeqCst);
         }
 
         self.lock.unlock();

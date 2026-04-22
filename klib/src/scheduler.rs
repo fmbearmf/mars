@@ -14,8 +14,6 @@ use super::{
     vm::page_allocator::PhysicalPageAllocator,
 };
 
-extern crate alloc;
-
 use aarch64_cpu::{
     asm::barrier::{self, isb},
     registers::{TPIDR_EL1, TTBR0_EL1, Writeable},

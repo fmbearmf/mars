@@ -3,6 +3,8 @@
 #![feature(const_trait_impl)]
 #![feature(generic_atomic)]
 
+extern crate alloc;
+
 use core::{
     fmt::{self, Write},
     str::from_utf8,

@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use core::fmt::Debug;
 use core::ptr::NonNull;
 use core::range::Range;
@@ -83,9 +81,19 @@ impl<'a> AddressSpace<'a> {
 
 impl AddressSpace<'_> {
     /// initialize a dangling address space. this may only be called once, when there are no other references to self.
-    pub unsafe fn init(&self) {
+    pub fn init(&self) {
         assert_eq!(self.root, NonNull::dangling(), "init called twice!");
         let table = self.allocator.alloc_table();
+        let root_ref = (&self.root) as *const _ as *mut NonNull<TTable<TABLE_ENTRIES>>;
+
+        unsafe {
+            root_ref.write(table);
+        }
+    }
+
+    /// initialize a dangling address space. this may only be called once, when there are no other references to self.
+    pub fn init_from_table(&self, table: NonNull<TTable<TABLE_ENTRIES>>) {
+        assert_eq!(self.root, NonNull::dangling(), "init called twice!");
         let root_ref = (&self.root) as *const _ as *mut NonNull<TTable<TABLE_ENTRIES>>;
 
         unsafe {

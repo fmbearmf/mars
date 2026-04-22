@@ -1,5 +1,5 @@
 [package]
-name = "getters"
+name = "mars_getters"
 version = "0.0.1"
 edition = "2024"
 

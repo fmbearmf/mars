@@ -7,12 +7,12 @@ edition = "2024"
 default-target = "aarch64-unknown-uefi"
 
 [dependencies]
-log = "0.4.29"
-uefi = { version = "0.37.0", features = ["logger", "panic_handler", "alloc"] }
+log.workspace = true
 protocol = { path = "../protocol" }
-klib = { path = "../klib" }
-
-aarch64-cpu = { workspace = true }
-aarch64-cpu-ext = { workspace = true }
-tock-registers = { workspace = true }
-bitflags = "2.10.0"
+klib.workspace = true
+uefi-raw.workspace = true
+uefi = { workspace = true, features = ["logger", "panic_handler", "alloc"] }
+aarch64-cpu.workspace = true
+aarch64-cpu-ext.workspace = true
+tock-registers.workspace = true
+bitflags.workspace = true

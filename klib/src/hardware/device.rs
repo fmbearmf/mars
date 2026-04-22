@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use core::mem::discriminant;
 
 use super::resource::Resource;
@@ -7,12 +5,16 @@ use crate::cpu_interface::Mpidr;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+pub trait Device: Send + Sync {
+    fn shutdown(&self);
+}
+
 #[derive(Debug, Default)]
 pub struct DeviceTree {
     /// arena of all devices
-    nodes: Vec<DeviceNode>,
+    pub nodes: Vec<DeviceNode>,
     /// root level devices
-    roots: Vec<DeviceId>,
+    pub roots: Vec<DeviceId>,
 }
 
 impl DeviceTree {

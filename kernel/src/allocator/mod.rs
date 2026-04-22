@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use core::ptr::NonNull;
 use klib::pm::page::mapper::{AddressTranslator as AT, TableAllocator};
 use klib::vm::page_allocator::DmapPageAllocator;

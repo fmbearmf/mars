@@ -2,12 +2,7 @@ use core::{fmt::Debug, range::Range};
 
 use crate::pm::page::mapper::AddressTranslator;
 
-use super::{
-    context::RegisterFile, pm::page::mapper::TableAllocator, process::Process, sync::RwLock,
-    vm::page_allocator::PhysicalPageAllocator,
-};
-
-extern crate alloc;
+use super::{context::RegisterFile, process::Process, sync::RwLock};
 
 use aarch64_cpu::registers::SPSR_EL1;
 use alloc::{

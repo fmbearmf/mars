@@ -1,7 +1,10 @@
 #![no_std]
 
+use core::ptr::NonNull;
+
 use klib::vm::{TABLE_ENTRIES, TTable};
 use uefi::mem::memory_map::MemoryMapOwned;
+use uefi_raw::table::system::SystemTable;
 
 #[derive(Debug)]
 pub struct BootInfo {
@@ -17,6 +20,9 @@ pub struct BootInfo {
     /// serial uart
     pub serial_uart_address: usize,
 
-    /// memory map
+    /// UEFI memory map
     pub memory_map: MemoryMapOwned,
+
+    /// UEFI system table
+    pub system_table_raw: NonNull<SystemTable>,
 }

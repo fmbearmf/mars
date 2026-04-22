@@ -3,18 +3,18 @@ pub mod gtdt;
 pub mod header;
 pub mod madt;
 pub mod mcfg;
-pub mod rsdp;
 pub mod spcr;
+pub mod xsdp;
 
-use getters::unaligned_getters;
+use mars_getters::unaligned_getters;
 
 use fadt::Fadt;
 use gtdt::Gtdt;
 use header::SdtHeader;
 use madt::Madt;
 use mcfg::Mcfg;
-use rsdp::XsdtIter;
 use spcr::Spcr;
+use xsdp::XsdtIter;
 
 use crate::hardware::device::DeviceTree;
 

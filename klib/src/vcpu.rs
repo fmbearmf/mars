@@ -7,7 +7,6 @@ use super::{
     sync::RwLock,
 };
 
-extern crate alloc;
 use alloc::vec::Vec;
 
 #[repr(u8)]

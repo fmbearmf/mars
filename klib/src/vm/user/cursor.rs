@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use super::super::{
     PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, page_allocator::PhysicalPageAllocator,
 };

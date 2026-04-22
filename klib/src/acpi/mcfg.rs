@@ -1,7 +1,7 @@
 use core::mem;
 
 use super::header::SdtHeader;
-use getters::unaligned_getters;
+use mars_getters::unaligned_getters;
 
 #[repr(C, packed)]
 #[unaligned_getters]

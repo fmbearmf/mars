@@ -9,8 +9,6 @@ use super::{
     vm::{page_allocator::PhysicalPageAllocator, user::address_space::AddressSpace},
 };
 
-extern crate alloc;
-
 use alloc::{
     sync::{Arc, Weak},
     vec::Vec,

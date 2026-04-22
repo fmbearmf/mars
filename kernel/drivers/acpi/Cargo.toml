@@ -1,0 +1,12 @@
+[package]
+name = "mars_acpi_driver"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+name = "mars_acpi_driver"
+plugin = false
+
+[dependencies]
+klib.workspace = true
+log.workspace = true

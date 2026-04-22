@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use core::hash::{Hash, Hasher};
 
 use alloc::{collections::BTreeMap, vec::Vec};

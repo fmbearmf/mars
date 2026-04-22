@@ -5,8 +5,6 @@ pub mod address_space;
 pub mod allocator;
 pub mod cursor;
 
-extern crate alloc;
-
 use core::{ops::Range, usize};
 
 use aarch64_cpu_ext::structures::tte::AccessPermission;

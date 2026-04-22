@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use core::{
     arch::asm,
     ops::Range,
@@ -21,7 +19,10 @@ use aarch64_cpu_ext::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use klib::{
-    pm::page::mapper::{AddressTranslator, TableAllocator, clone_page_tables, map_page},
+    pm::page::{
+        PageAllocator,
+        mapper::{AddressTranslator, TableAllocator, clone_page_tables, map_page},
+    },
     sync::RwLock,
     vm::{
         MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, PAGE_MASK, PAGE_SIZE, TABLE_ENTRIES, TTable, VmError,
@@ -117,7 +118,7 @@ pub fn clone_and_process_mmap<T: MemoryMap>(map: &T) -> MemoryMapRefMut<'static>
     for desc in map.entries().filter(|d| d.ty != MemoryType::LOADER_CODE) {
         let mut current = *desc;
 
-        if is_normal_desc(&current) {
+        if is_normal_desc(&current) && current.ty != MemoryType::BOOT_SERVICES_DATA {
             current.ty = MemoryType::CONVENTIONAL;
             if first_normal_start.is_none() {
                 first_normal_start = Some(current.phys_start);
@@ -178,7 +179,7 @@ pub fn clone_and_process_mmap<T: MemoryMap>(map: &T) -> MemoryMapRefMut<'static>
     {
         let mut current = *desc;
 
-        if is_normal_desc(&current) {
+        if is_normal_desc(&current) && current.ty != MemoryType::BOOT_SERVICES_DATA {
             current.ty = MemoryType::CONVENTIONAL;
         }
 
@@ -221,6 +222,11 @@ pub fn create_page_descriptors() -> (Box<[PageDescriptor]>, Range<usize>) {
     let size = max - min;
     let pages = size / PAGE_SIZE;
 
+    trace!(
+        "page descriptor size: {:#x}",
+        pages * size_of::<PageDescriptor>()
+    );
+
     let mut uninit = Box::<[PageDescriptor]>::new_uninit_slice(pages);
 
     for slot in uninit.iter_mut() {
@@ -238,12 +244,17 @@ pub fn create_page_descriptors() -> (Box<[PageDescriptor]>, Range<usize>) {
     )
 }
 
-pub fn populate_alloc<T: MemoryMap>(map: &T) {
+/// give the allocator a safe interim piece of memory.
+pub fn populate_alloc_stage0<T: MemoryMap>(map: &T) {
     let page_alloc = unsafe { KALLOCATOR.page_alloc_mut() };
 
-    for entry in map.entries().filter(|x| {
-        x.ty == MemoryType::CONVENTIONAL && x.page_count as usize * UEFI_PS >= 2 * PAGE_SIZE
-    }) {
+    if let Some(entry) = map
+        .entries()
+        .filter(|x| {
+            x.ty == MemoryType::CONVENTIONAL && (x.page_count as usize * UEFI_PS) >= 4 * PAGE_SIZE
+        })
+        .max_by_key(|x| x.page_count)
+    {
         let start = align_up(entry.phys_start as usize, PAGE_SIZE);
         let end = align_down(
             entry.phys_start as usize + (entry.page_count as usize * UEFI_PS),
@@ -251,8 +262,84 @@ pub fn populate_alloc<T: MemoryMap>(map: &T) {
         );
 
         let range = Range { start, end };
+        trace!("page allocator push: {:#x?} {:#x}", range, entry.page_count);
 
         page_alloc.add_range(&range);
+    }
+}
+
+/// wipe and then fully populate the allocator
+/// safety: only call when UEFI boot services data is safe to be clobbered
+pub fn populate_alloc_stage1<T: MemoryMap>(map: &T) {
+    let page_alloc = unsafe { KALLOCATOR.page_alloc_mut() };
+    //unsafe { page_alloc.wipe() };
+
+    let mut current_start: Option<usize> = None;
+    let mut current_end: Option<usize> = None;
+
+    for entry in map.entries().filter(|e| is_normal_desc(e)) {
+        let start = entry.phys_start as usize;
+        let end = start + (entry.page_count as usize * UEFI_PS);
+
+        let is_normal = is_normal_desc(entry);
+        let is_contig = current_end == Some(start);
+
+        if is_normal && is_contig {
+            current_end = Some(end);
+        } else {
+            if let (Some(start), Some(end)) = (current_start, current_end) {
+                flush(page_alloc, start, end);
+            }
+
+            if is_normal {
+                current_start = Some(start);
+                current_end = Some(end);
+            } else {
+                current_start = None;
+                current_end = None;
+            }
+        }
+    }
+
+    if let (Some(start), Some(end)) = (current_start, current_end) {
+        flush(page_alloc, start, end);
+    }
+
+    unsafe { page_alloc.transition_dmap() };
+}
+
+fn flush(page_alloc: &mut PageAllocator, start: usize, end: usize) {
+    let raw = Range { start, end };
+
+    if let Some(overlap) = page_alloc.overlapping_range(&raw) {
+        if overlap.start > start {
+            add_subrange(page_alloc, start, overlap.start);
+        }
+
+        if overlap.end < end {
+            add_subrange(page_alloc, overlap.end, end);
+        }
+    } else {
+        add_subrange(page_alloc, start, end);
+    }
+}
+
+fn add_subrange(page_alloc: &mut PageAllocator, start: usize, end: usize) {
+    let start = align_up(start, PAGE_SIZE);
+    let end = align_down(end, PAGE_SIZE);
+
+    if end > start {
+        let size = end - start;
+        if size >= 4 * PAGE_SIZE {
+            let range = Range { start, end };
+
+            trace!(
+                "page alloc push P: {:#x?} {:#x}",
+                range,
+                range.end - range.start
+            );
+            page_alloc.add_range(&range);
+        }
     }
 }
 
@@ -273,7 +360,9 @@ fn descriptor_to_meta(
     };
 
     let (access, share, pxn) = match desc.ty {
-        MemoryType::CONVENTIONAL => (
+        MemoryType::CONVENTIONAL
+        | MemoryType::BOOT_SERVICES_DATA
+        | MemoryType::BOOT_SERVICES_CODE => (
             AccessPermission::PrivilegedReadWrite,
             Shareability::InnerShareable,
             false,
