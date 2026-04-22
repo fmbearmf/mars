@@ -14,10 +14,10 @@ pub struct UefiAddressTranslator;
 
 // no translation needed
 impl AddressTranslator for UefiAddressTranslator {
-    fn dmap_to_phys<T>(virt: *mut T) -> u64 {
+    fn dmap_to_phys(&self, virt: *mut u8) -> usize {
         virt as _
     }
-    fn phys_to_dmap<T>(phys: u64) -> *mut T {
+    fn phys_to_dmap(&self, phys: usize) -> *mut u8 {
         phys as _
     }
 }

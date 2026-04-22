@@ -26,14 +26,12 @@ use alloc::{
 };
 
 #[derive(Debug)]
-pub struct LocalScheduler<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> {
-    thread_queue: VecDeque<Arc<Thread<'a, T, P, A>>>,
-    current_thread: Option<Arc<Thread<'a, T, P, A>>>,
+pub struct LocalScheduler<'a> {
+    thread_queue: VecDeque<Arc<Thread<'a>>>,
+    current_thread: Option<Arc<Thread<'a>>>,
 }
 
-impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
-    LocalScheduler<'a, T, P, A>
-{
+impl LocalScheduler<'_> {
     pub const fn new() -> Self {
         Self {
             thread_queue: VecDeque::new(),
@@ -43,21 +41,15 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
 }
 
 #[derive(Debug)]
-pub struct Scheduler<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> {
-    queues: RwLock<BTreeMap<u64, Mutex<LocalScheduler<'a, T, P, A>>>>,
+pub struct Scheduler<'a> {
+    queues: RwLock<BTreeMap<u64, Mutex<LocalScheduler<'a>>>>,
     spawn_counter: AtomicU8,
 }
 
-unsafe impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Send
-    for Scheduler<'a, T, P, A>
-{
-}
-unsafe impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Sync
-    for Scheduler<'a, T, P, A>
-{
-}
+unsafe impl Send for Scheduler<'_> {}
+unsafe impl Sync for Scheduler<'_> {}
 
-impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Scheduler<'a, T, P, A> {
+impl<'a> Scheduler<'a> {
     pub const fn new() -> Self {
         Self {
             queues: RwLock::new(BTreeMap::new()),
@@ -70,7 +62,7 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Sche
         queues.insert(mpidr, Mutex::new(LocalScheduler::new()));
     }
 
-    pub fn spawn(&self, thread: Arc<Thread<'a, T, P, A>>) {
+    pub fn spawn(&self, thread: Arc<Thread<'a>>) {
         let queues = self.queues.read();
         assert!(!queues.is_empty(), "scheduler has no CPUs");
 

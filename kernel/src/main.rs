@@ -7,7 +7,7 @@ mod log;
 
 extern crate alloc;
 
-use ::log::{LevelFilter, info, trace};
+use ::log::{LevelFilter, debug, info, trace};
 use aarch64_cpu::{
     asm::wfe,
     registers::{
@@ -27,7 +27,7 @@ use core::{
     panic::PanicInfo,
     ptr::{self, NonNull},
     range::Range,
-    slice::{self, from_raw_parts},
+    slice::{self, Iter, from_raw_parts},
     str::from_utf8,
 };
 use klib::{
@@ -62,7 +62,10 @@ use klib::{
     },
 };
 use protocol::BootInfo;
-use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
+use uefi::{
+    boot::MemoryDescriptor,
+    mem::memory_map::{MemoryMap, MemoryMapMut},
+};
 
 use crate::{
     allocator::KernelAddressTranslator,
@@ -89,29 +92,28 @@ use self::{
 klib::exception_handlers!(Exceptions);
 
 // use `KALLOCATOR`
-static KPAGE_ALLOCATOR: PageAllocator<KernelAddressTranslator> = PageAllocator::new();
+static KPAGE_ALLOCATOR: PageAllocator = PageAllocator::new(&KernelAddressTranslator);
 
 // storage for boot info struct
 // shouldn't be accessed outside of very early in kentry
 static mut BOOT_INFO: MaybeUninit<BootInfo> = MaybeUninit::uninit();
 
 #[global_allocator]
-pub static KALLOCATOR: SlabAllocator<KernelAddressTranslator> =
-    SlabAllocator::new(&KPAGE_ALLOCATOR);
+pub static KALLOCATOR: SlabAllocator =
+    SlabAllocator::new(&KPAGE_ALLOCATOR, &KernelAddressTranslator);
 
 pub static KPT_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
 
-pub static GLOBAL_SCHEDULER: Scheduler<
-    KernelPTAllocator,
-    SlabAllocator<KernelAddressTranslator>,
-    KernelAddressTranslator,
-> = Scheduler::new();
+pub static GLOBAL_SCHEDULER: Scheduler = Scheduler::new();
 
-pub static KERNEL_ADDRESS_SPACE: AddressSpace<
-    KernelPTAllocator,
-    PageAllocator<KernelAddressTranslator>,
-    KernelAddressTranslator,
-> = unsafe { AddressSpace::new_dangling(None, &KPT_ALLOCATOR, &KPAGE_ALLOCATOR) };
+pub static KERNEL_ADDRESS_SPACE: AddressSpace = unsafe {
+    AddressSpace::new_dangling(
+        None,
+        &KPT_ALLOCATOR,
+        &KPAGE_ALLOCATOR,
+        &KernelAddressTranslator,
+    )
+};
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -140,7 +142,7 @@ unsafe extern "C" {
     pub static __KBASE: usize;
 }
 
-const STACK_SIZE: usize = 16 * 1024;
+const STACK_SIZE: usize = 32 * 1024;
 
 #[allow(dead_code)]
 #[repr(align(16))]
@@ -228,24 +230,26 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
 
     populate_alloc(&uefi_mmap);
 
-    let mut pt_root = unsafe {
-        switch_to_new_page_tables(
-            &uefi_mmap,
-            &KALLOCATOR,
-            boot_info.kernel_load_physical_address,
-            boot_info.kernel_size,
-        )
-    };
+    let mut pt_root = unsafe { switch_to_new_page_tables(|| uefi_mmap.entries(), &KALLOCATOR) };
 
-    print_pt(unsafe { pt_root.as_mut() }, false);
+    //print_pt(unsafe { pt_root.as_mut() }, false);
 
     unsafe { KALLOCATOR.transition_dmap() };
 
     let (page_descriptors, range) = create_page_descriptors();
     PAGE_DESCRIPTORS.init(page_descriptors, range);
 
-    early_stack_size_check();
     unsafe { KERNEL_ADDRESS_SPACE.init() };
+
+    {
+        let mut lock = EARLYCON.lock();
+        if let Some(uart) = &mut *lock {
+            // TODO: correctly map the rest of MMIO into DMAP
+            //uart.switch(KernelAddressTranslator.phys_to_dmap(boot_info.serial_uart_address) as _);
+        }
+    }
+
+    debug!("weldington");
 
     busy_loop();
 
@@ -473,7 +477,7 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
                 paddr,
                 size
             );
-            map_region::<_, KernelAddressTranslator>(
+            map_region(
                 page_tables_ref,
                 paddr,
                 paddr,
@@ -484,6 +488,7 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
                 false,
                 MAIR_NORMAL_INDEX,
                 &KPT_ALLOCATOR,
+                &KernelAddressTranslator,
             );
 
             let secondary_tcr = TCR_EL1::TBI1::Ignored
@@ -537,14 +542,14 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
 
             drop(unsafe { Box::from_raw(args_ptr) });
             drop(unsafe { Box::from_raw(stack_ptr) });
-            free_tables::<_, KernelAddressTranslator>(pt_root_ptr, &KPT_ALLOCATOR);
+            free_tables(pt_root_ptr, &KPT_ALLOCATOR, &KernelAddressTranslator);
         }
     });
 
     let process = {
         let proc = Arc::new(Process::new(
             1,
-            AddressSpace::new(None, &KPT_ALLOCATOR, &KALLOCATOR),
+            AddressSpace::new(None, &KPT_ALLOCATOR, &KALLOCATOR, &KernelAddressTranslator),
             None,
         ));
 
@@ -557,7 +562,7 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
             let page_pa: usize = KALLOCATOR.alloc_phys_page().expect("where my page at");
             let page_ptr: &mut [u32] = unsafe {
                 slice::from_raw_parts_mut(
-                    KernelAddressTranslator::phys_to_dmap(page_pa as _) as *mut u32,
+                    KernelAddressTranslator.phys_to_dmap(page_pa as _) as *mut u32,
                     PAGE_SIZE,
                 )
             };
@@ -604,8 +609,8 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
             };
 
             let range_pa = Range {
-                start: KernelAddressTranslator::dmap_to_phys(range_va.start as *mut u8) as usize,
-                end: KernelAddressTranslator::dmap_to_phys(range_va.end as *mut u8) as usize,
+                start: KernelAddressTranslator.dmap_to_phys(range_va.start as *mut u8) as usize,
+                end: KernelAddressTranslator.dmap_to_phys(range_va.end as *mut u8) as usize,
             };
 
             assert_eq!(range_pa.end as usize & 0x10, 0, "stack unaligned..?");
@@ -624,7 +629,14 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
             );
         });
 
-        let thread = Arc::new(Thread::new(1, &process, stack, 0x0, 0));
+        let thread = Arc::new(Thread::new(
+            1,
+            &process,
+            stack,
+            0x0,
+            0,
+            &KernelAddressTranslator,
+        ));
 
         thread
     };
@@ -665,8 +677,8 @@ fn print_mem_usage() {
     );
 }
 
-pub extern "C" fn alloc_init() -> PageAllocator<KernelAddressTranslator> {
-    let page_allocator = PageAllocator::new();
+pub extern "C" fn alloc_init() -> PageAllocator<'static> {
+    let page_allocator = PageAllocator::new(&KernelAddressTranslator);
 
     page_allocator
 }

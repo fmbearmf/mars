@@ -5,6 +5,8 @@ use core::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
 };
 
+use derivative::Derivative;
+
 use crate::{pm::page::mapper::AddressTranslator, vm::page_allocator::DmapPageAllocator};
 
 use super::{
@@ -94,37 +96,44 @@ const fn build_caches() -> [Cache; 9] {
     ]
 }
 
-#[derive(Debug)]
-pub struct SlabAllocator<A: AddressTranslator + 'static> {
-    page_alloc: AtomicPtr<PageAllocator<A>>,
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct SlabAllocator<'a> {
+    page_alloc: AtomicPtr<PageAllocator<'static>>,
     used_bytes: AtomicUsize,
     caches: UnsafeCell<[Cache; 9]>,
     lock: TicketLock,
-
     is_dmap: AtomicBool,
+
+    #[derivative(Debug = "ignore")]
+    translator: &'a dyn AddressTranslator,
 }
 
-unsafe impl<A: AddressTranslator> Send for SlabAllocator<A> {}
-unsafe impl<A: AddressTranslator> Sync for SlabAllocator<A> {}
+unsafe impl Send for SlabAllocator<'_> {}
+unsafe impl Sync for SlabAllocator<'_> {}
 
-impl<A: AddressTranslator> SlabAllocator<A> {
-    pub const fn new(page_alloc: &'static PageAllocator<A>) -> Self {
+impl<'a> SlabAllocator<'a> {
+    pub const fn new(
+        page_alloc: &'static PageAllocator<'a>,
+        translator: &'a dyn AddressTranslator,
+    ) -> Self {
         Self {
             page_alloc: AtomicPtr::new(page_alloc as *const _ as *mut _),
             used_bytes: AtomicUsize::new(0),
             caches: UnsafeCell::new(build_caches()),
             lock: TicketLock::new(),
             is_dmap: AtomicBool::new(false),
+            translator,
         }
     }
 
-    pub fn page_alloc(&self) -> &'static PageAllocator<A> {
+    pub fn page_alloc(&self) -> &'static PageAllocator<'static> {
         let ptr = self.page_alloc.load(Ordering::Acquire);
         assert!(!ptr.is_null(), "slab allocation used before init()");
         unsafe { &*ptr }
     }
 
-    pub unsafe fn page_alloc_mut(&self) -> &'static mut PageAllocator<A> {
+    pub unsafe fn page_alloc_mut(&self) -> &'static mut PageAllocator<'static> {
         let ptr = self.page_alloc.load(Ordering::Acquire);
         assert!(!ptr.is_null(), "slab allocation used before init()");
         unsafe { &mut *ptr }
@@ -325,12 +334,12 @@ impl<A: AddressTranslator> SlabAllocator<A> {
             if ptr.is_null() {
                 ptr
             } else {
-                A::phys_to_dmap::<u8>(ptr as _) as _
+                self.translator.phys_to_dmap(ptr as _) as _
             }
         };
 
         let old_pa = self.page_alloc.load(Ordering::Acquire);
-        let new_pa = A::phys_to_dmap::<PageAllocator<A>>(old_pa as _) as *mut PageAllocator<A>;
+        let new_pa = self.translator.phys_to_dmap(old_pa as _) as *mut PageAllocator<'static>;
         self.page_alloc.store(new_pa, Ordering::Release);
 
         let caches = unsafe { &mut *self.caches.get() };
@@ -388,26 +397,26 @@ impl<A: AddressTranslator> SlabAllocator<A> {
     }
 }
 
-impl<A: AddressTranslator> PhysicalPageAllocator for SlabAllocator<A> {
-    fn alloc_phys_page<T: Into<usize> + From<usize>>(&self) -> Result<T, VmError> {
+impl PhysicalPageAllocator for SlabAllocator<'_> {
+    fn alloc_phys_page(&self) -> Result<usize, VmError> {
         self.page_alloc().alloc_phys_page()
     }
 
-    fn free_phys_page<T: Into<usize> + From<usize>>(&self, pa: T) {
+    fn free_phys_page(&self, pa: usize) {
         self.page_alloc().free_phys_page(pa);
     }
 }
 
-impl<A: AddressTranslator> DmapPageAllocator for SlabAllocator<A> {
-    fn alloc_dmap_page<T: Into<usize> + From<usize>>(&self) -> Result<T, VmError> {
+impl DmapPageAllocator for SlabAllocator<'_> {
+    fn alloc_dmap_page(&self) -> Result<usize, VmError> {
         self.page_alloc().alloc_dmap_page()
     }
-    fn free_dmap_page<T: Into<usize> + From<usize>>(&self, pa: T) {
+    fn free_dmap_page(&self, pa: usize) {
         self.page_alloc().free_dmap_page(pa)
     }
 }
 
-unsafe impl<A: AddressTranslator> GlobalAlloc for SlabAllocator<A> {
+unsafe impl GlobalAlloc for SlabAllocator<'_> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe { self.alloc_impl(layout) }
     }

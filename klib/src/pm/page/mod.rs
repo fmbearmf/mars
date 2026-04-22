@@ -1,10 +1,13 @@
 use core::{
     cell::UnsafeCell,
+    fmt::Debug,
     ops::Range,
     ptr::{self},
     sync::atomic::{AtomicUsize, Ordering},
     usize,
 };
+
+use derivative::Derivative;
 
 use crate::{
     pm::page::mapper::AddressTranslator,
@@ -42,8 +45,9 @@ pub struct Zone {
 }
 
 #[repr(C)]
-#[derive(Debug)]
-pub struct PageAllocator<A: AddressTranslator> {
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct PageAllocator<'a> {
     lock: TicketLock,
     zone_head: *mut Zone,
     free_area: UnsafeCell<[*mut FreeBlock; MAX_ORDER]>,
@@ -51,15 +55,16 @@ pub struct PageAllocator<A: AddressTranslator> {
     allocated_pages: AtomicUsize,
     lowest_address: usize,
 
-    _phantom: core::marker::PhantomData<A>,
+    #[derivative(Debug = "ignore")]
+    translator: &'a dyn AddressTranslator,
 }
 
-unsafe impl<A: AddressTranslator> Send for PageAllocator<A> {}
-unsafe impl<A: AddressTranslator> Sync for PageAllocator<A> {}
+unsafe impl Send for PageAllocator<'_> {}
+unsafe impl Sync for PageAllocator<'_> {}
 
-impl<A: AddressTranslator> PageAllocator<A> {
+impl<'a> PageAllocator<'a> {
     /// SAFETY: must be page-aligned, non-overlapping, and usable memory
-    pub const fn new() -> Self {
+    pub const fn new(translator: &'a dyn AddressTranslator) -> Self {
         let pa = Self {
             lock: TicketLock::new(),
             zone_head: ptr::null_mut(),
@@ -68,11 +73,13 @@ impl<A: AddressTranslator> PageAllocator<A> {
             allocated_pages: AtomicUsize::new(0),
             lowest_address: 0,
 
-            _phantom: core::marker::PhantomData,
+            translator,
         };
         pa
     }
+}
 
+impl PageAllocator<'_> {
     pub fn add_range(&mut self, region: &Range<usize>) {
         debug_assert!(!is_kernel_address(region.start), "only add physical ranges");
         assert!(!region.is_empty(), "empty region");
@@ -172,11 +179,11 @@ impl<A: AddressTranslator> PageAllocator<A> {
         self.lock.unlock()
     }
 
-    fn to_dmap<T>(ptr: *mut T) -> *mut T {
+    fn to_dmap<T>(ptr: *mut T, translator: &dyn AddressTranslator) -> *mut T {
         if ptr.is_null() {
             ptr
         } else {
-            A::phys_to_dmap::<u8>(ptr as _) as *mut T
+            translator.phys_to_dmap(ptr as _) as *mut T
         }
     }
 
@@ -184,26 +191,26 @@ impl<A: AddressTranslator> PageAllocator<A> {
     pub unsafe fn transition_dmap(&mut self) {
         self.lock.lock();
 
-        self.zone_head = Self::to_dmap(self.zone_head);
+        self.zone_head = Self::to_dmap(self.zone_head, self.translator);
         let mut current_zone = self.zone_head;
 
         while !current_zone.is_null() {
             let zone = unsafe { &mut *current_zone };
-            zone.meta_array = Self::to_dmap(zone.meta_array);
-            zone.next = Self::to_dmap(zone.next);
+            zone.meta_array = Self::to_dmap(zone.meta_array, self.translator);
+            zone.next = Self::to_dmap(zone.next, self.translator);
             current_zone = zone.next;
         }
 
         let free_area = unsafe { &mut *self.free_area.get() };
         for order in 0..MAX_ORDER {
-            free_area[order] = Self::to_dmap(free_area[order]);
+            free_area[order] = Self::to_dmap(free_area[order], self.translator);
             let mut current_block = free_area[order];
 
             while !current_block.is_null() {
                 let block = unsafe { &mut *current_block };
-                block.zone = Self::to_dmap(block.zone);
-                block.next = Self::to_dmap(block.next);
-                block.prev = Self::to_dmap(block.prev);
+                block.zone = Self::to_dmap(block.zone, self.translator);
+                block.next = Self::to_dmap(block.next, self.translator);
+                block.prev = Self::to_dmap(block.prev, self.translator);
 
                 current_block = block.next;
             }
@@ -245,7 +252,7 @@ impl<A: AddressTranslator> PageAllocator<A> {
                     *meta_array.add(page_i) = target_order as u8;
 
                     let zone_u8 = zone as *mut u8;
-                    let zone_phys = A::dmap_to_phys::<u8>(zone_u8) as usize;
+                    let zone_phys = self.translator.dmap_to_phys(zone_u8) as usize;
                     let offset = (zone_u8 as usize).wrapping_sub(zone_phys);
 
                     // split
@@ -343,7 +350,7 @@ impl<A: AddressTranslator> PageAllocator<A> {
         let free_area = unsafe { &mut *self.free_area.get() };
 
         let zone_u8 = zone_ptr as *mut u8;
-        let zone_phys = A::dmap_to_phys::<u8>(zone_u8) as usize;
+        let zone_phys = self.translator.dmap_to_phys(zone_u8) as usize;
         let offset = (zone_u8 as usize).wrapping_sub(zone_phys);
 
         while order < MAX_ORDER - 1 {
@@ -433,26 +440,26 @@ impl<A: AddressTranslator> PageAllocator<A> {
     }
 }
 
-impl<A: AddressTranslator> PhysicalPageAllocator for PageAllocator<A> {
-    fn alloc_phys_page<T: Into<usize> + From<usize>>(&self) -> Result<T, crate::vm::VmError> {
+impl PhysicalPageAllocator for PageAllocator<'_> {
+    fn alloc_phys_page(&self) -> Result<usize, crate::vm::VmError> {
         let page_addr = self.alloc_page() as usize;
 
-        Ok(page_addr.into())
+        Ok(page_addr)
     }
-    fn free_phys_page<T: Into<usize> + From<usize>>(&self, pa: T) {
-        self.free_pages(pa.into() as _);
+    fn free_phys_page(&self, pa: usize) {
+        self.free_pages(pa as _);
     }
 }
 
-impl<A: AddressTranslator> DmapPageAllocator for PageAllocator<A> {
-    fn alloc_dmap_page<T: Into<usize> + From<usize>>(&self) -> Result<T, crate::vm::VmError> {
+impl DmapPageAllocator for PageAllocator<'_> {
+    fn alloc_dmap_page(&self) -> Result<usize, crate::vm::VmError> {
         let page_addr = self.alloc_page() as usize;
-        let page_addr = A::phys_to_dmap::<u8>(page_addr as _) as usize;
+        let page_addr = self.translator.phys_to_dmap(page_addr as _) as usize;
 
-        Ok(page_addr.into())
+        Ok(page_addr)
     }
-    fn free_dmap_page<T: Into<usize> + From<usize>>(&self, pa: T) {
-        let page_addr = A::dmap_to_phys::<u8>(pa.into() as _) as usize;
+    fn free_dmap_page(&self, pa: usize) {
+        let page_addr = self.translator.dmap_to_phys(pa as _) as usize;
 
         self.free_pages(page_addr as _);
     }

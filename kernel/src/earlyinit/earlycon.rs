@@ -55,4 +55,11 @@ impl<'a> EarlyCon<'a> {
 
         Self { uart }
     }
+
+    pub fn switch(&mut self, serial_uart_addr: usize) {
+        let uart_ptr = unsafe {
+            UniqueMmioPointer::new(NonNull::new(serial_uart_addr as *mut PL011Registers).unwrap())
+        };
+        self.uart = Uart::new(uart_ptr);
+    }
 }

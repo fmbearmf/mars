@@ -10,27 +10,18 @@ use super::super::{TABLE_ENTRIES, TTable, page_allocator::PhysicalPageAllocator}
 use super::{PAGE_DESCRIPTORS, allocator::UserAllocator, cursor::Cursor, entry_cover, entry_index};
 use crate::pm::page::mapper::{AddressTranslator, TableAllocator};
 
-pub struct AddressSpace<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> {
+pub struct AddressSpace<'a> {
     pub root: NonNull<TTable<TABLE_ENTRIES>>,
     pub max_level: usize,
-    pub allocator: UserAllocator<'a, T, P, A>,
-
-    _phantom: core::marker::PhantomData<A>,
+    pub allocator: UserAllocator<'a>,
+    translator: &'a dyn AddressTranslator,
 }
 
-unsafe impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Sync
-    for AddressSpace<'a, T, P, A>
-{
-}
+unsafe impl Sync for AddressSpace<'_> {}
 
-unsafe impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Send
-    for AddressSpace<'a, T, P, A>
-{
-}
+unsafe impl Send for AddressSpace<'_> {}
 
-impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Debug
-    for AddressSpace<'a, T, P, A>
-{
+impl Debug for AddressSpace<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AddressSpace")
             .field("root", &self.root)
@@ -39,36 +30,58 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Debu
     }
 }
 
-impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
-    AddressSpace<'a, T, P, A>
-{
-    pub fn new(max_level: Option<usize>, table_allocator: &'a T, page_allocator: &'a P) -> Self {
-        let tracked_alloc =
-            UserAllocator(table_allocator, page_allocator, core::marker::PhantomData);
+impl<'a> AddressSpace<'a> {
+    pub fn new(
+        max_level: Option<usize>,
+        table_allocator: &'a dyn TableAllocator,
+        page_allocator: &'a dyn PhysicalPageAllocator,
+        translator: &'a dyn AddressTranslator,
+    ) -> Self {
+        let tracked_alloc = UserAllocator(table_allocator, page_allocator, translator);
         let root = tracked_alloc.alloc_table();
 
         Self {
             root,
             max_level: max_level.unwrap_or(3),
             allocator: tracked_alloc,
-
-            _phantom: core::marker::PhantomData,
+            translator,
         }
     }
 
     pub const unsafe fn new_dangling(
         max_level: Option<usize>,
-        table_allocator: &'a T,
-        page_allocator: &'a P,
+        table_allocator: &'a dyn TableAllocator,
+        page_allocator: &'a dyn PhysicalPageAllocator,
+        translator: &'a dyn AddressTranslator,
     ) -> Self {
         Self::from_root_table(
             max_level,
             NonNull::dangling(),
             table_allocator,
             page_allocator,
+            translator,
         )
     }
 
+    pub const fn from_root_table(
+        max_level: Option<usize>,
+        root: NonNull<TTable<TABLE_ENTRIES>>,
+        table_allocator: &'a dyn TableAllocator,
+        page_allocator: &'a dyn PhysicalPageAllocator,
+        translator: &'a dyn AddressTranslator,
+    ) -> Self {
+        let tracked_alloc = UserAllocator(table_allocator, page_allocator, translator);
+
+        Self {
+            root,
+            max_level: max_level.unwrap_or(3),
+            allocator: tracked_alloc,
+            translator,
+        }
+    }
+}
+
+impl AddressSpace<'_> {
     /// initialize a dangling address space. this may only be called once, when there are no other references to self.
     pub unsafe fn init(&self) {
         assert_eq!(self.root, NonNull::dangling(), "init called twice!");
@@ -77,23 +90,6 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
 
         unsafe {
             root_ref.write(table);
-        }
-    }
-
-    pub const fn from_root_table(
-        max_level: Option<usize>,
-        root: NonNull<TTable<TABLE_ENTRIES>>,
-        table_allocator: &'a T,
-        page_allocator: &'a P,
-    ) -> Self {
-        let tracked_alloc =
-            UserAllocator(table_allocator, page_allocator, core::marker::PhantomData);
-
-        Self {
-            root,
-            max_level: max_level.unwrap_or(3),
-            allocator: tracked_alloc,
-            _phantom: core::marker::PhantomData,
         }
     }
 
@@ -110,7 +106,8 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
             if pte.is_valid() {
                 if level > 0 && pte.is_table() {
                     let child = pte.address();
-                    let child_ptr = A::phys_to_dmap(child);
+                    let child_ptr =
+                        self.translator.phys_to_dmap(child as _) as *mut TTable<TABLE_ENTRIES>;
 
                     if let Some(chil_nn) = NonNull::new(child_ptr) {
                         unsafe { self.drop_table(chil_nn, level - 1) };
@@ -123,8 +120,8 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
         }
     }
 
-    pub fn lock(&self, range: Range<usize>) -> Cursor<'_, T, P, A> {
-        let mut current_pa = A::dmap_to_phys(self.root.as_ptr()) as usize;
+    pub fn lock(&self, range: Range<usize>) -> Cursor<'_> {
+        let mut current_pa = self.translator.dmap_to_phys(self.root.as_ptr() as _) as usize;
         let mut current_level = self.max_level;
         let mut current_base_va = 0;
         let mut read_guards = Vec::new();
@@ -148,7 +145,8 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
                 let desc = PAGE_DESCRIPTORS.get_page_descriptor(current_pa as usize);
                 let guard = desc.lock.read();
 
-                let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_dmap(current_pa as _);
+                let table_ptr =
+                    self.translator.phys_to_dmap(current_pa as _) as *mut TTable<TABLE_ENTRIES>;
                 let pte = unsafe { &(*table_ptr).entries[start_i] };
 
                 if pte.is_valid() && pte.is_table() {
@@ -177,14 +175,12 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>
             covering_level: current_level,
             covering_pa: current_pa,
 
-            _phantom: core::marker::PhantomData,
+            translator: self.translator,
         }
     }
 }
 
-impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Drop
-    for AddressSpace<'a, T, P, A>
-{
+impl Drop for AddressSpace<'_> {
     fn drop(&mut self) {
         unsafe {
             self.drop_table(self.root, self.max_level);

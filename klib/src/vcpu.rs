@@ -1,14 +1,10 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use crate::pm::page::mapper::AddressTranslator;
-
 use super::{
     cpu_interface::{Arm64InterruptInterface, Mpidr},
     interrupt::gicv3::GicV3,
-    pm::page::mapper::TableAllocator,
     scheduler::Scheduler,
     sync::RwLock,
-    vm::page_allocator::PhysicalPageAllocator,
 };
 
 extern crate alloc;
@@ -137,10 +133,7 @@ impl VCpuList {
 
 pub static VCPUS: RwLock<VCpuList> = RwLock::new(VCpuList::new());
 
-pub fn add_cpu<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator>(
-    cpu: CpuDescriptor,
-    scheduler: &Scheduler<'a, T, P, A>,
-) -> usize {
+pub fn add_cpu(cpu: CpuDescriptor, scheduler: &Scheduler) -> usize {
     let mut vcpus = VCPUS.write();
 
     scheduler.register_cpu(cpu.mpidr);

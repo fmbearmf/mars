@@ -18,3 +18,5 @@ zerocopy = { workspace = true }
 zerocopy-derive = { workspace = true }
 getters = { path = "../getters" }
 uefi = { version = "0.37.0", default-features = false }
+derivative = { version = "2.2.0", features = ["use_core"] }
+log = "0.4.29"

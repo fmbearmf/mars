@@ -4,7 +4,7 @@ use core::{
     arch::asm,
     ops::Range,
     ptr::{self, NonNull},
-    slice,
+    slice::{self, Iter},
 };
 
 use crate::{
@@ -31,25 +31,25 @@ use klib::{
         user::{PageDescriptor, PtState},
     },
 };
-use log::debug;
+use log::{debug, trace};
 use protocol::BootInfo;
 use tock_registers::LocalRegisterCopy;
 use uefi::{
     boot::{MemoryAttribute, MemoryDescriptor, MemoryType, PAGE_SIZE as UEFI_PS},
-    mem::memory_map::{MemoryMap, MemoryMapMeta, MemoryMapOwned, MemoryMapRefMut},
+    mem::memory_map::{MemoryMap, MemoryMapIter, MemoryMapMeta, MemoryMapOwned, MemoryMapRefMut},
 };
 
-struct BootTempAllocator<'a, P: PhysicalPageAllocator>(pub &'a P);
+struct BootTempAllocator<'a>(pub &'a dyn PhysicalPageAllocator);
 
-impl<'a, P: PhysicalPageAllocator> PhysicalPageAllocator for BootTempAllocator<'a, P> {
-    fn alloc_phys_page<T: Into<usize> + From<usize>>(&self) -> Result<T, VmError> {
+impl PhysicalPageAllocator for BootTempAllocator<'_> {
+    fn alloc_phys_page(&self) -> Result<usize, VmError> {
         self.0.alloc_phys_page()
     }
-    fn free_phys_page<T: Into<usize> + From<usize>>(&self, pa: T) {
+    fn free_phys_page(&self, pa: usize) {
         self.0.free_phys_page(pa)
     }
 }
-impl<'a, P: PhysicalPageAllocator> TableAllocator for BootTempAllocator<'a, P> {
+impl TableAllocator for BootTempAllocator<'_> {
     fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>> {
         let pa: usize = self.alloc_phys_page().expect("OOM in boot alloc");
         let ptr = pa as *mut TTable<TABLE_ENTRIES>;
@@ -66,10 +66,10 @@ impl<'a, P: PhysicalPageAllocator> TableAllocator for BootTempAllocator<'a, P> {
 
 struct IdentityTranslator;
 impl AddressTranslator for IdentityTranslator {
-    fn dmap_to_phys<T>(virt: *mut T) -> u64 {
+    fn dmap_to_phys(&self, virt: *mut u8) -> usize {
         virt as _
     }
-    fn phys_to_dmap<T>(phys: u64) -> *mut T {
+    fn phys_to_dmap(&self, phys: usize) -> *mut u8 {
         phys as *mut _
     }
 }
@@ -216,8 +216,8 @@ pub fn clone_and_process_mmap<T: MemoryMap>(map: &T) -> MemoryMapRefMut<'static>
 pub fn create_page_descriptors() -> (Box<[PageDescriptor]>, Range<usize>) {
     let alloc = KALLOCATOR.page_alloc();
 
-    let min = KernelAddressTranslator::dmap_to_phys(alloc.min_address() as *mut usize) as usize;
-    let max = KernelAddressTranslator::dmap_to_phys(alloc.max_address() as *mut usize) as usize;
+    let min = KernelAddressTranslator.dmap_to_phys(alloc.min_address() as *mut _) as usize;
+    let max = KernelAddressTranslator.dmap_to_phys(alloc.max_address() as *mut _) as usize;
     let size = max - min;
     let pages = size / PAGE_SIZE;
 
@@ -330,29 +330,25 @@ pub fn early_stack_size_check() {
     }
 }
 
-pub unsafe fn switch_to_new_page_tables<M: MemoryMap, P: PhysicalPageAllocator>(
-    memory_map: &M,
-    allocator: &P,
-    kernel_load_pa: usize,
-    kernel_load_size: usize,
-) -> NonNull<TTable<TABLE_ENTRIES>> {
+pub unsafe fn switch_to_new_page_tables<'a, F, I>(
+    mmap_iterator_fn: F,
+    allocator: &dyn PhysicalPageAllocator,
+) -> NonNull<TTable<TABLE_ENTRIES>>
+where
+    F: Fn() -> I,
+    I: Iterator<Item = &'a MemoryDescriptor>,
+{
     let boot_alloc = BootTempAllocator(allocator);
 
     let pt = TTBR1_EL1.get_baddr() as *mut TTable<TABLE_ENTRIES>;
     let pt = unsafe { &*pt };
 
-    let mut new_pt = clone_page_tables::<_, IdentityTranslator>(pt, &boot_alloc);
+    let mut new_pt = clone_page_tables(pt, &boot_alloc);
     let root_table = unsafe { new_pt.as_mut() };
 
-    map_all_dmap(root_table, memory_map, &boot_alloc, |desc| {
+    map_all_dmap(root_table, mmap_iterator_fn, &boot_alloc, |desc| {
         descriptor_to_meta(desc)
     });
-
-    debug_assert_eq!(
-        kernel_load_pa & PAGE_MASK,
-        0,
-        "unaligned load physical address"
-    );
 
     TTBR1_EL1.set_baddr(root_table as *const _ as _);
 
@@ -477,18 +473,19 @@ pub fn print_pt(root: &TTable<TABLE_ENTRIES>, verbose: bool) {
     )
 }
 
-fn map_all_dmap<M, P, F>(
+fn map_all_dmap<'a, F, FM, I>(
     root_table: &mut TTable<TABLE_ENTRIES>,
-    memory_map: &M,
-    boot_alloc: &BootTempAllocator<'_, P>,
+    memory_map: FM,
+    boot_alloc: &BootTempAllocator<'_>,
     mut get_params: F,
 ) where
-    M: MemoryMap,
-    P: PhysicalPageAllocator,
+    FM: Fn() -> I,
+    I: Iterator<Item = &'a MemoryDescriptor>,
     F: FnMut(&MemoryDescriptor) -> (AccessPermission, Shareability, bool, bool, u64),
 {
     let mut ranges = Vec::new();
-    for desc in memory_map.entries() {
+
+    for desc in memory_map() {
         let start = desc.phys_start as usize;
         let end = start + (desc.page_count as usize * UEFI_PS);
 
@@ -515,30 +512,50 @@ fn map_all_dmap<M, P, F>(
         merged.push(r);
     }
 
+    let mut descs = memory_map().peekable();
+    let mut active: Vec<&MemoryDescriptor> = Vec::new();
+
     for (start, end) in merged {
         let mut current_pa = start;
 
         while current_pa < end {
-            let mut optimal: Option<&MemoryDescriptor> = None;
+            let page_end = current_pa + PAGE_SIZE;
 
-            for desc in memory_map.entries() {
+            while let Some(&desc) = descs.peek() {
+                let desc_start = desc.phys_start as usize;
+                if desc_start >= page_end {
+                    break;
+                }
+
+                let desc_end = desc_start + (desc.page_count as usize * UEFI_PS);
+                if desc_end > current_pa {
+                    active.push(desc);
+                }
+
+                descs.next();
+            }
+
+            active.retain(|desc| {
                 let desc_start = desc.phys_start as usize;
                 let desc_end = desc_start + (desc.page_count as usize * UEFI_PS);
+                desc_end > current_pa
+            });
 
-                if desc_start < current_pa + PAGE_SIZE && desc_end > current_pa {
-                    match optimal {
-                        None => optimal = Some(desc),
-                        Some(current) => {
-                            // resolve conflict by
-                            // preferring strictest attributes
+            let mut optimal: Option<&MemoryDescriptor> = None;
 
-                            let current_uncacheable =
-                                current.att.contains(MemoryAttribute::UNCACHEABLE);
-                            let desc_uncacheable = desc.att.contains(MemoryAttribute::UNCACHEABLE);
+            for &desc in &active {
+                match optimal {
+                    None => optimal = Some(desc),
+                    Some(current) => {
+                        // resolve conflict by
+                        // preferring strictest attributes
 
-                            if desc_uncacheable && !current_uncacheable {
-                                optimal = Some(desc);
-                            }
+                        let current_uncacheable =
+                            current.att.contains(MemoryAttribute::UNCACHEABLE);
+                        let desc_uncacheable = desc.att.contains(MemoryAttribute::UNCACHEABLE);
+
+                        if desc_uncacheable && !current_uncacheable {
+                            optimal = Some(desc);
                         }
                     }
                 }
@@ -548,7 +565,7 @@ fn map_all_dmap<M, P, F>(
                 let (access, share, uxn, pxn, attr_index) = get_params(desc);
                 let va = phys_addr_to_dmap(current_pa as _) as usize;
 
-                map_page::<BootTempAllocator<'_, P>, IdentityTranslator>(
+                map_page(
                     root_table,
                     current_pa,
                     va,
@@ -557,7 +574,8 @@ fn map_all_dmap<M, P, F>(
                     uxn,
                     pxn,
                     attr_index,
-                    &boot_alloc,
+                    boot_alloc,
+                    &IdentityTranslator,
                 );
             }
 

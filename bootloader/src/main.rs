@@ -169,7 +169,7 @@ fn main() -> Status {
 
     let mut root_ttbr1 = TABLE_ALLOC.alloc_table();
     debug!("root_ttbr1: {:p}", root_ttbr1);
-    map_region::<_, UefiAddressTranslator>(
+    map_region(
         unsafe { root_ttbr1.as_mut() },
         base_phys_align,
         base_virt_align,
@@ -180,11 +180,12 @@ fn main() -> Status {
         false,
         MAIR_NORMAL_INDEX,
         &TABLE_ALLOC,
+        &UefiAddressTranslator,
     );
 
     let mut root_ttbr0 = TABLE_ALLOC.alloc_table();
     debug!("root_ttbr0: {:p}", root_ttbr0);
-    id_map::<_, UefiAddressTranslator>(
+    id_map(
         unsafe { root_ttbr0.as_mut() },
         AccessPermission::PrivilegedReadWrite,
         Shareability::OuterShareable,
@@ -192,6 +193,7 @@ fn main() -> Status {
         false,
         MAIR_DEVICE_INDEX,
         &TABLE_ALLOC,
+        &UefiAddressTranslator,
     );
 
     let entry_fn: fn(boot_info: *mut BootInfo) -> ! = unsafe { transmute(entry_vaddr) };

@@ -5,12 +5,16 @@ use super::PAGE_DESCRIPTORS;
 use crate::pm::page::mapper::{AddressTranslator, TableAllocator};
 
 /// thin wrapper that updates the `PageDescriptors` global
-pub struct UserAllocator<'a, T, P, A>(pub &'a T, pub &'a P, pub core::marker::PhantomData<A>);
+pub struct UserAllocator<'a>(
+    pub &'a dyn TableAllocator,
+    pub &'a dyn PhysicalPageAllocator,
+    pub &'a dyn AddressTranslator,
+);
 
-impl<'a, T: TableAllocator, P, A: AddressTranslator> TableAllocator for UserAllocator<'a, T, P, A> {
+impl TableAllocator for UserAllocator<'_> {
     fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>> {
         let ptr = self.0.alloc_table();
-        let pa = A::dmap_to_phys(ptr.as_ptr());
+        let pa = self.2.dmap_to_phys(ptr.as_ptr() as _);
 
         let desc = PAGE_DESCRIPTORS.get_page_descriptor(pa as usize);
         let meta_ref = &mut desc.lock.write().meta;
@@ -20,7 +24,7 @@ impl<'a, T: TableAllocator, P, A: AddressTranslator> TableAllocator for UserAllo
     }
 
     fn free_table(&self, table: core::ptr::NonNull<TTable<TABLE_ENTRIES>>) {
-        let pa = A::dmap_to_phys(table.as_ptr());
+        let pa = self.2.dmap_to_phys(table.as_ptr() as _);
 
         let desc = PAGE_DESCRIPTORS.get_page_descriptor(pa as usize);
         desc.lock.write().meta = None;
@@ -28,12 +32,12 @@ impl<'a, T: TableAllocator, P, A: AddressTranslator> TableAllocator for UserAllo
     }
 }
 
-impl<'a, T, P: PhysicalPageAllocator, A> PhysicalPageAllocator for UserAllocator<'a, T, P, A> {
-    fn alloc_phys_page<E: Into<usize> + From<usize>>(&self) -> Result<E, crate::vm::VmError> {
+impl PhysicalPageAllocator for UserAllocator<'_> {
+    fn alloc_phys_page(&self) -> Result<usize, crate::vm::VmError> {
         self.1.alloc_phys_page()
     }
 
-    fn free_phys_page<E: Into<usize> + From<usize>>(&self, pa: E) {
+    fn free_phys_page(&self, pa: usize) {
         self.1.free_phys_page(pa)
     }
 }

@@ -13,8 +13,8 @@ use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{boxed::Box, vec::Vec};
 use core::range::Range;
 
-pub struct Cursor<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> {
-    pub addr_space: &'a AddressSpace<'a, T, P, A>,
+pub struct Cursor<'a> {
+    pub addr_space: &'a AddressSpace<'a>,
     pub range: Range<usize>,
 
     pub read_guards: Vec<(usize, RwLockReadGuard<'a, PtState>)>,
@@ -23,10 +23,10 @@ pub struct Cursor<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTra
     pub covering_pa: usize,
     pub covering_level: usize,
 
-    pub _phantom: core::marker::PhantomData<A>,
+    pub translator: &'a dyn AddressTranslator,
 }
 
-impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Cursor<'a, T, P, A> {
+impl Cursor<'_> {
     pub fn map(
         &mut self,
         target_pa_start: u64,
@@ -40,7 +40,7 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Curs
 
         for va in (self.range.start..self.range.end).step_by(PAGE_SIZE) {
             unsafe {
-                map_page::<_, A>(
+                map_page(
                     &mut *self.addr_space.root.as_ptr(),
                     current_pa as usize,
                     va,
@@ -50,6 +50,7 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Curs
                     pxn,
                     attr_index,
                     &self.addr_space.allocator,
+                    self.translator,
                 );
             }
 
@@ -67,10 +68,11 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Curs
     pub fn unmap(&mut self) {
         for va in (self.range.start..self.range.end).step_by(PAGE_SIZE) {
             unsafe {
-                unmap_page::<_, A>(
+                unmap_page(
                     &mut *self.addr_space.root.as_ptr(),
                     va,
                     &self.addr_space.allocator,
+                    self.translator,
                 );
             }
 
@@ -97,7 +99,8 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Curs
 
         loop {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_dmap(current_pa as u64);
+            let table_ptr =
+                self.translator.phys_to_dmap(current_pa as _) as *mut TTable<TABLE_ENTRIES>;
             let pte = unsafe { &(*table_ptr).entries[i] };
 
             if !pte.is_valid() {
@@ -125,14 +128,15 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Curs
 
         while current_lvl > 0 {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_dmap(current_pa as _);
+            let table_ptr =
+                self.translator.phys_to_dmap(current_pa as _) as *mut TTable<TABLE_ENTRIES>;
             let pte = unsafe { &mut (*table_ptr).entries[i] };
 
             if !pte.is_valid() {
                 let new_table = self.addr_space.allocator.alloc_table();
-                let new_pa = A::dmap_to_phys(new_table.as_ptr());
+                let new_pa = self.translator.dmap_to_phys(new_table.as_ptr() as _);
 
-                *pte = TTENATIVE::new_table(new_pa);
+                *pte = TTENATIVE::new_table(new_pa as _);
             }
 
             current_pa = pte.address() as _;
@@ -146,7 +150,8 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Curs
 
         while current_lvl > 0 {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_dmap(current_pa as _);
+            let table_ptr =
+                self.translator.phys_to_dmap(current_pa as _) as *mut TTable<TABLE_ENTRIES>;
             let pte = unsafe { (*table_ptr).entries[i] };
 
             if pte.is_valid() && pte.is_table() {
@@ -171,9 +176,7 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Curs
     }
 }
 
-impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Drop
-    for Cursor<'a, T, P, A>
-{
+impl Drop for Cursor<'_> {
     fn drop(&mut self) {
         self.write_guard.take();
 

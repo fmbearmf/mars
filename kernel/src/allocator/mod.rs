@@ -32,10 +32,10 @@ impl TableAllocator for KernelPTAllocator {
 }
 
 impl AT for KernelAddressTranslator {
-    fn dmap_to_phys<T>(virt: *mut T) -> u64 {
-        dmap_addr_to_phys(virt as _)
+    fn dmap_to_phys(&self, virt: *mut u8) -> usize {
+        dmap_addr_to_phys(virt as _) as _
     }
-    fn phys_to_dmap<T>(phys: u64) -> *mut T {
-        phys_addr_to_dmap(phys) as _
+    fn phys_to_dmap(&self, phys: usize) -> *mut u8 {
+        phys_addr_to_dmap(phys as _) as _
     }
 }

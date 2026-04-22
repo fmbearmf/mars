@@ -14,6 +14,7 @@ use alloc::{
     boxed::Box,
     sync::{Arc, Weak},
 };
+use derivative::Derivative;
 use tock_registers::fields::FieldValue;
 
 pub type ThreadId = u32;
@@ -27,41 +28,44 @@ pub enum ThreadState {
     Dead,
 }
 
-#[derive(Debug)]
-struct ThreadInner<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> {
+#[derive(Derivative)]
+#[derivative(Debug)]
+struct ThreadInner<'a> {
     thread_id: ThreadId,
     state: ThreadState,
     priority: u8,
     ctx: RegisterFile,
     stack: Option<Box<[u8]>>,
-    process: Weak<Process<'a, T, P, A>>, // avoids a ref count
+    process: Weak<Process<'a>>, // avoids a ref count
+
+    #[derivative(Debug = "ignore")]
+    translator: &'a dyn AddressTranslator,
 }
 
 #[derive(Clone)]
-pub struct Thread<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> {
-    inner: Arc<RwLock<ThreadInner<'a, T, P, A>>>,
+pub struct Thread<'a> {
+    inner: Arc<RwLock<ThreadInner<'a>>>,
 }
 
-impl<'a, T: TableAllocator + Debug, P: PhysicalPageAllocator + Debug, A: AddressTranslator + Debug>
-    Debug for Thread<'a, T, P, A>
-{
+impl Debug for Thread<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let guard = self.inner.read();
         f.debug_tuple("Thread").field(&*guard).finish()
     }
 }
 
-impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Thread<'a, T, P, A> {
+impl<'a> Thread<'a> {
     pub fn new(
         thread_id: ThreadId,
-        process: &Arc<Process<'a, T, P, A>>,
+        process: &Arc<Process<'a>>,
         stack: Box<[u8]>,
         pc: usize,
         priority: u8,
+        translator: &'a dyn AddressTranslator,
     ) -> Self {
         let stack_range = stack.as_ptr_range();
         let stack_top_va = stack_range.end;
-        let stack_top_pa = A::dmap_to_phys(stack_top_va as *mut u8);
+        let stack_top_pa = translator.dmap_to_phys(stack_top_va as *mut u8) as _;
 
         const SPSR: FieldValue<u64, SPSR_EL1::Register> = SPSR_EL1::M::EL0t;
 
@@ -77,6 +81,7 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Thre
             },
             stack: Some(stack),
             process: Arc::downgrade(process),
+            translator,
         };
 
         Self {
@@ -112,7 +117,7 @@ impl<'a, T: TableAllocator, P: PhysicalPageAllocator, A: AddressTranslator> Thre
         f(&guard.ctx)
     }
 
-    pub fn process(&self) -> Option<Arc<Process<'a, T, P, A>>> {
+    pub fn process(&self) -> Option<Arc<Process<'a>>> {
         self.inner.read().process.upgrade()
     }
 
