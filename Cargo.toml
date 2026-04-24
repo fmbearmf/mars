@@ -12,12 +12,16 @@ uefi-raw = "0.14.0"
 uefi = { version = "0.37.0", default-features = false }
 derivative = "2.2.0"
 log = "0.4.29"
+creusot-std = { version = "0.11.0", default-features = false }
 bitflags = "2.10.0"
 
 # self
 mars_getters = { path = "./klib/getters" }
 klib = { path = "./klib" }
 mars_acpi_driver = { path = "./kernel/drivers/acpi" }
+
+[patch.crates-io]
+creusot-std = { path = "/nix/store/1xmajywdp7v3l2wbxhlb2s6hbnzjwmiw-cargo-creusot-0.11.0/share/creusot-std" }
 
 [profile.release]
 panic = "abort"

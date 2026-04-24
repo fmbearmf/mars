@@ -4,6 +4,10 @@
       "initialization_options": {
         "cargo": {
           "target": "aarch64-unknown-none",
+          "cfgs": ["debug_assertions", "miri", "creusot"],
+          "extraEnv": {
+            "RUSTFLAGS": "--cfg creusot",
+          },
         },
         "check": {
           "workspace": false,

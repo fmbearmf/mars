@@ -5,8 +5,11 @@ edition = "2024"
 
 [lib]
 name = "mars_acpi_driver"
-plugin = false
 
 [dependencies]
 klib.workspace = true
 log.workspace = true
+creusot-std.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(creusot)'] }
