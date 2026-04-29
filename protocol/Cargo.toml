@@ -4,5 +4,6 @@ version = "0.0.1"
 edition = "2024"
 
 [dependencies]
-klib = { path = "../klib" }
-uefi = { version = "0.37.0" }
+klib.workspace = true
+uefi = { workspace = true, default-features = false }
+uefi-raw.workspace = true

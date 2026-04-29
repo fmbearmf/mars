@@ -85,13 +85,13 @@ fn main() -> Result<()> {
             //"-d",
             //"int,guest_errors",
             //"--trace",
-            //"gic_*",
+            //"pl011_*",
             //"--trace",
             //"gicv3_*",
             //"-msg",
             //"timestamp=on",
             //"-S",
-            //"-s",
+            "-s",
         ])
         .status()
         .context("QEMU failed.")?;

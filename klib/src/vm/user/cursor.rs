@@ -1,9 +1,8 @@
-extern crate alloc;
-
 use super::super::{
     PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable, page_allocator::PhysicalPageAllocator,
 };
 use super::{PAGE_DESCRIPTORS, PtState, PteMeta, Status, address_space::AddressSpace, entry_index};
+use crate::pm::page::mapper::AddressTranslator;
 use crate::{
     pm::page::mapper::{TableAllocator, map_page, unmap_page},
     sync::{RwLockReadGuard, RwLockWriteGuard},
@@ -12,18 +11,20 @@ use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{boxed::Box, vec::Vec};
 use core::range::Range;
 
-pub struct Cursor<'a, A: TableAllocator, P: PhysicalPageAllocator> {
-    pub addr_space: &'a AddressSpace<'a, A, P>,
+pub struct Cursor<'a> {
+    pub addr_space: &'a AddressSpace<'a>,
     pub range: Range<usize>,
 
-    pub read_guards: Vec<(u64, RwLockReadGuard<'static, PtState>)>,
-    pub write_guard: Option<(u64, RwLockWriteGuard<'static, PtState>)>,
+    pub read_guards: Vec<(usize, RwLockReadGuard<'a, PtState>)>,
+    pub write_guard: Option<(usize, RwLockWriteGuard<'a, PtState>)>,
 
-    pub covering_pa: u64,
+    pub covering_pa: usize,
     pub covering_level: usize,
+
+    pub translator: &'a dyn AddressTranslator,
 }
 
-impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
+impl Cursor<'_> {
     pub fn map(
         &mut self,
         target_pa_start: u64,
@@ -47,6 +48,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
                     pxn,
                     attr_index,
                     &self.addr_space.allocator,
+                    self.translator,
                 );
             }
 
@@ -68,6 +70,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
                     &mut *self.addr_space.root.as_ptr(),
                     va,
                     &self.addr_space.allocator,
+                    self.translator,
                 );
             }
 
@@ -94,15 +97,16 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         loop {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa);
-            let pte = unsafe { (*table_ptr).entries[i] };
+            let table_ptr =
+                self.translator.phys_to_dmap(current_pa as _) as *mut TTable<TABLE_ENTRIES>;
+            let pte = unsafe { &(*table_ptr).entries[i] };
 
             if !pte.is_valid() {
                 return Status::Invalid;
             }
 
             if current_lvl == 0 {
-                let desc = PAGE_DESCRIPTORS.get_page_descriptor(current_pa as usize);
+                let desc = PAGE_DESCRIPTORS.get_page_descriptor(current_pa as _);
                 let state = desc.lock.read();
                 return state
                     .meta
@@ -111,7 +115,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
                     .unwrap_or(Status::Invalid);
             }
 
-            current_pa = pte.address();
+            current_pa = pte.address() as _;
             current_lvl -= 1;
         }
     }
@@ -122,18 +126,18 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         while current_lvl > 0 {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa);
-            let mut pte = unsafe { (*table_ptr).entries[i] };
+            let table_ptr =
+                self.translator.phys_to_dmap(current_pa as _) as *mut TTable<TABLE_ENTRIES>;
+            let pte = unsafe { &mut (*table_ptr).entries[i] };
 
             if !pte.is_valid() {
                 let new_table = self.addr_space.allocator.alloc_table();
-                let new_pa = A::virt_to_phys(new_table.as_ptr());
+                let new_pa = self.translator.dmap_to_phys(new_table.as_ptr() as _);
 
-                pte = TTENATIVE::new_table(new_pa);
-                unsafe { (*table_ptr).entries[i] = pte };
+                *pte = TTENATIVE::new_table(new_pa as _);
             }
 
-            current_pa = pte.address();
+            current_pa = pte.address() as _;
             current_lvl -= 1;
         }
     }
@@ -144,11 +148,12 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
 
         while current_lvl > 0 {
             let i = entry_index(va, current_lvl);
-            let table_ptr: *mut TTable<TABLE_ENTRIES> = A::phys_to_virt(current_pa);
+            let table_ptr =
+                self.translator.phys_to_dmap(current_pa as _) as *mut TTable<TABLE_ENTRIES>;
             let pte = unsafe { (*table_ptr).entries[i] };
 
             if pte.is_valid() && pte.is_table() {
-                current_pa = pte.address();
+                current_pa = pte.address() as _;
                 current_lvl -= 1;
             } else {
                 return;
@@ -169,7 +174,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Cursor<'a, A, P> {
     }
 }
 
-impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Drop for Cursor<'a, A, P> {
+impl Drop for Cursor<'_> {
     fn drop(&mut self) {
         self.write_guard.take();
 

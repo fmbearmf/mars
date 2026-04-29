@@ -1,8 +1,8 @@
 use core::{fmt, mem, slice, str::from_utf8};
 
 use super::checksum;
-use getters::unaligned_getters;
-use zerocopy::{FromBytes, Immutable, Unaligned};
+use mars_getters::unaligned_getters;
+use zerocopy::{FromBytes, Immutable, IntoBytes, Unaligned};
 
 #[repr(C, packed)]
 #[unaligned_getters]
@@ -42,9 +42,27 @@ impl SdtHeader {
 
 impl fmt::Debug for SdtHeader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SdtHeader")
-            .field("Sig", &self.signature())
-            .field("Len", &self.len())
-            .finish()
+        let alternate = f.alternate();
+        let mut f = f.debug_struct("SdtHeader");
+        let f = f.field("Sig", &self.signature()).field("Size", &self.len());
+
+        let f = if alternate {
+            let oem_id = &self.oem_id();
+            let oem_table_id = &self.oem_table_id();
+            let oem_rev = self.oem_rev();
+
+            let oem_id_str = core::str::from_utf8(oem_id.as_slice()).unwrap_or("<???>");
+            let oem_table_id_str = core::str::from_utf8(oem_table_id.as_slice()).unwrap_or("<???>");
+
+            f.field("Revision", &self.rev())
+                .field("Checksum", &self.checksum())
+                .field("OEM ID", &oem_id_str.trim())
+                .field("OEM Table ID", &oem_table_id_str.trim())
+                .field("OEM Revision", &oem_rev)
+        } else {
+            f
+        };
+
+        f.finish()
     }
 }

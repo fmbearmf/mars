@@ -16,11 +16,18 @@ const TIMER_DURATION: Duration = Duration::from_millis(1500);
 pub fn init_timer() {
     TIMER.disarm();
     TIMER.set_masked(false);
-    _ = TIMER.arm_after(TIMER_DURATION);
 }
 
-pub fn timer_irq() {
+pub fn timer_disarm() {
     TIMER.disarm();
+}
+
+pub fn timer_rearm() {
+    TIMER.set_masked(false);
+    TIMER.enable();
+}
+
+pub fn timer_schedule() {
     _ = TIMER.arm_after(TIMER_DURATION);
 }
 
@@ -32,37 +39,45 @@ impl Timer {
         Self {}
     }
 
+    #[inline]
     pub fn freq_hz(&self) -> u64 {
         read_cntfrq_el0()
     }
 
+    #[inline]
     pub fn counter(&self) -> u64 {
         read_cntvct_el0()
     }
 
     // can't be bothered to write a `register_bitfields`
+    #[inline]
     pub fn enabled(&self) -> bool {
         CNTV_CTL_EL0.matches_all(CNTV_CTL_EL0::ENABLE::SET)
     }
 
+    #[inline]
     pub fn masked(&self) -> bool {
         CNTV_CTL_EL0.matches_all(CNTV_CTL_EL0::IMASK::SET)
     }
 
+    #[inline]
     pub fn pending(&self) -> bool {
         CNTV_CTL_EL0.matches_all(CNTV_CTL_EL0::ISTATUS::SET)
     }
 
+    #[inline]
     pub fn enable(&self) {
         CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET);
         isb(barrier::SY);
     }
 
+    #[inline]
     pub fn disable(&self) {
         CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::CLEAR);
         isb(barrier::SY);
     }
 
+    #[inline]
     pub fn set_masked(&self, masked: bool) {
         if masked {
             CNTV_CTL_EL0.write(CNTV_CTL_EL0::IMASK::SET);
@@ -73,11 +88,13 @@ impl Timer {
         isb(barrier::SY);
     }
 
+    #[inline]
     pub fn set_compare(&self, cval: u64) {
         write_cntv_cval_el0(cval);
         isb(barrier::SY);
     }
 
+    #[inline]
     pub fn compare(&self) -> u64 {
         read_cntv_cval_el0()
     }

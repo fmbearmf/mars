@@ -3,18 +3,20 @@ pub mod gtdt;
 pub mod header;
 pub mod madt;
 pub mod mcfg;
-pub mod rsdp;
 pub mod spcr;
+pub mod xsdp;
 
-use getters::unaligned_getters;
+use mars_getters::unaligned_getters;
 
 use fadt::Fadt;
 use gtdt::Gtdt;
 use header::SdtHeader;
 use madt::Madt;
 use mcfg::Mcfg;
-use rsdp::XsdtIter;
 use spcr::Spcr;
+use xsdp::XsdtIter;
+
+use crate::hardware::device::DeviceTree;
 
 #[repr(C, packed)]
 #[unaligned_getters]
@@ -38,7 +40,7 @@ pub struct SystemDescription {
 }
 
 impl SystemDescription {
-    pub fn parse(xsdt: &SdtHeader, kernel: bool) -> Self {
+    pub fn parse(xsdt: &SdtHeader) -> Self {
         let mut desc = SystemDescription {
             fadt: None,
             madt: None,
@@ -49,7 +51,7 @@ impl SystemDescription {
             dsdt_addr: 0,
         };
 
-        for header in XsdtIter::new(xsdt, kernel) {
+        for header in XsdtIter::new(xsdt) {
             let sig = header.signature();
             match sig {
                 "FACP" => unsafe {
@@ -67,6 +69,9 @@ impl SystemDescription {
         }
         desc
     }
+
+    /// search for hardware
+    pub fn populate(tree: &mut DeviceTree) {}
 }
 
 pub fn checksum(data: &[u8]) -> u8 {

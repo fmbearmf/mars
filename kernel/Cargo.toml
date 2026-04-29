@@ -8,8 +8,15 @@ forced-target = "aarch64-unknown-none"
 
 [[bin]]
 name = "kernel"
-path = "src/bin/main.rs"
+path = "src/main.rs"
 test = false
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = "s"
+debug = false
 
 [profile.release]
 opt-level = 3
@@ -21,11 +28,13 @@ debug = 0
 incremental = false
 
 [dependencies]
-aarch64-cpu = { workspace = true }
-aarch64-cpu-ext = { workspace = true }
+aarch64-cpu.workspace = true
+aarch64-cpu-ext.workspace = true
 arm-pl011-uart = { version = "0.4.0", default-features = false }
-spin = { workspace = true }
-tock-registers = { workspace = true }
+tock-registers.workspace = true
 protocol = { path = "../protocol" }
-klib = { path = "../klib" }
-uefi = { version = "0.37.0", default-features = false }
+klib.workspace = true
+uefi = { workspace = true, default-features = false }
+uefi-raw.workspace = true
+log.workspace = true
+mars_acpi_driver.workspace = true

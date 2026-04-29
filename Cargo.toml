@@ -1,14 +1,23 @@
 [workspace]
-members = [ "bootloader", "kernel", "klib", "getters", "protocol", "runner" ]
+members = [ "bootloader", "kernel", "kernel/drivers/acpi", "klib", "klib/getters", "protocol", "runner" ]
 resolver = "3"
 
 [workspace.dependencies]
 aarch64-cpu = "11.2.0"
 aarch64-cpu-ext = "0.1.4"
 tock-registers = "0.10.1"
-spin = "0.10.0"
 zerocopy = "0.8.42"
 zerocopy-derive = "0.8.42"
+uefi-raw = "0.14.0"
+uefi = { version = "0.37.0", default-features = false }
+derivative = "2.2.0"
+log = "0.4.29"
+bitflags = "2.10.0"
+
+# self
+mars_getters = { path = "./klib/getters" }
+klib = { path = "./klib" }
+mars_acpi_driver = { path = "./kernel/drivers/acpi" }
 
 [profile.release]
 panic = "abort"

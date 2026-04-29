@@ -9,12 +9,14 @@ plugin = false
 crate-type = [ "rlib" ]
 
 [dependencies]
-aarch64-cpu = { workspace = true }
-aarch64-cpu-ext = { workspace = true }
+aarch64-cpu.workspace = true
+aarch64-cpu-ext.workspace = true
 arm-pl011-uart = { version = "0.4.0", default-features = false }
-tock-registers = { workspace = true }
-spin = { workspace = true }
-zerocopy = { workspace = true }
-zerocopy-derive = { workspace = true }
-getters = { path = "../getters" }
-uefi = { version = "0.37.0", default-features = false }
+tock-registers.workspace = true
+zerocopy.workspace = true
+zerocopy-derive.workspace = true
+mars_getters.workspace = true
+uefi = { workspace = true, default-features = false }
+uefi-raw.workspace = true
+derivative = { workspace = true, features = ["use_core"] }
+log.workspace = true

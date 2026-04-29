@@ -5,9 +5,7 @@ pub mod address_space;
 pub mod allocator;
 pub mod cursor;
 
-extern crate alloc;
-
-use core::{range::Range, usize};
+use core::{ops::Range, usize};
 
 use aarch64_cpu_ext::structures::tte::AccessPermission;
 use alloc::boxed::Box;
@@ -15,6 +13,7 @@ use alloc::boxed::Box;
 use super::{PAGE_SHIFT, TABLE_ENTRIES};
 use crate::sync::RwLock;
 
+#[repr(transparent)]
 pub struct PageDescriptors(RwLock<Option<(&'static [PageDescriptor], Range<usize>)>>);
 
 impl PageDescriptors {
@@ -33,11 +32,11 @@ impl PageDescriptors {
     pub fn get_page_descriptor(&self, pa: usize) -> &PageDescriptor {
         let guard = self.0.read();
 
-        let descs = guard.expect("`PageDescriptors` uninitialized");
+        let descs = guard.as_ref().expect("`PageDescriptors` uninitialized");
 
         assert!(
             descs.1.contains(&pa),
-            "no page descriptor exists for that address"
+            "no page descriptor exists for requested address"
         );
 
         let pa = pa - descs.1.start;
@@ -89,6 +88,7 @@ impl Default for Status {
 
 /// adapted from CortenMM (https://zhou-diyu.github.io/files/cortenmm-sosp25.pdf)
 #[derive(Debug, Copy, Clone, Default)]
+#[repr(transparent)]
 pub struct PteMeta {
     pub status: Status,
 }
@@ -97,10 +97,12 @@ type PteMetaArray = [PteMeta; TABLE_ENTRIES];
 
 /// state protected by a page table page's lock
 /// adapted from CortenMM (https://zhou-diyu.github.io/files/cortenmm-sosp25.pdf)
+#[repr(transparent)]
 pub struct PtState {
     pub meta: Option<Box<PteMetaArray>>,
 }
 
+#[repr(transparent)]
 pub struct PageDescriptor {
     pub lock: RwLock<PtState>,
 }

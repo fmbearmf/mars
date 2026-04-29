@@ -1,36 +1,25 @@
 use core::{
     alloc::Layout,
-    ops::Div,
+    ops::{Div, Range},
     ptr::{NonNull, copy_nonoverlapping, write_volatile},
     slice::from_raw_parts_mut,
 };
 
-use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
-use alloc::alloc::alloc;
-use klib::{
-    pm::page::mapper::map_region,
-    vec::DynVec,
-    vm::{
-        MAIR_NORMAL_INDEX, MemoryRegion, MemoryRegionType, TABLE_ENTRIES, TTENATIVE, TTable,
-        align_up,
-    },
-};
+use alloc::vec;
+use klib::vm::{PAGE_SIZE, TTENATIVE, align_down, align_up};
 use log::{debug, error};
 use uefi::{
     Status,
-    boot::{self, AllocateType, MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE},
-    proto::media::file::{File, FileInfo, RegularFile},
+    boot::{self, AllocateType, MemoryAttribute, MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE},
+    proto::{
+        media::file::{File, FileInfo, RegularFile},
+        security::MemoryProtection,
+    },
 };
 
-use crate::{
-    Elf64Ehdr, Elf64Phdr, PAGE_SIZE, PT_ALLOCATOR, PT_LOAD, PhdrFlags, UEFI_PS, vec::UefiVec,
-};
+use crate::{Elf64Ehdr, Elf64Phdr, PT_LOAD, PhdrFlags, busy_loop_ret};
 
-pub fn load_kernel(
-    mut kernel: RegularFile,
-    mut root_table: NonNull<TTable<TABLE_ENTRIES>>,
-    kregions: &mut UefiVec<MemoryRegion>,
-) -> Result<(u64, u64, u64), Status> {
+pub fn load_kernel(mut kernel: RegularFile) -> Result<(u64, u64, u64, u64), Status> {
     let mut info_buf = [0u8; 512];
     let file_info: &FileInfo = match kernel.get_info(&mut info_buf) {
         Ok(f) => f,
@@ -40,14 +29,19 @@ pub fn load_kernel(
         }
     };
 
+    let mem_attr_proto = {
+        let handle = boot::get_handle_for_protocol::<MemoryProtection>()
+            .expect("UEFI memory attributes not available");
+
+        boot::open_protocol_exclusive::<MemoryProtection>(handle)
+            .expect("couldn't exclusively open memory attribute protocol")
+    };
+
     let file_size = file_info.file_size() as usize;
     debug!("kernel.elf size = {}", file_size);
 
-    let layout = Layout::from_size_align(file_size, PAGE_SIZE).unwrap();
-    let ptr = unsafe { alloc(layout) };
-    let nn_ptr = NonNull::new(ptr).expect("alloc FAIL");
-
-    let elf_bytes: &mut [u8] = unsafe { from_raw_parts_mut(nn_ptr.as_ptr(), file_size) };
+    let mut file_box = vec![0u8; file_size].into_boxed_slice();
+    let elf_bytes: &mut [u8] = &mut file_box;
 
     match kernel.set_position(0) {
         Err(e) => {
@@ -127,15 +121,15 @@ pub fn load_kernel(
     let load_span = max_vaddr - min_vaddr;
     debug!("load span: {:#x} bytes", load_span);
 
-    let load_size = ((load_span + UEFI_PS - 1) / UEFI_PS) * UEFI_PS;
-    let pages = (load_size / UEFI_PS) as usize;
+    let load_size = align_up(load_span as _, UEFI_PAGE_SIZE);
+    let pages = (load_size / UEFI_PAGE_SIZE) as usize;
 
     // allocate extra page(s) so rounding up is safe
     let extra = PAGE_SIZE / UEFI_PAGE_SIZE;
 
     let alloc_result = boot::allocate_pages(
         AllocateType::AnyPages,
-        MemoryType::LOADER_DATA,
+        MemoryType::LOADER_CODE,
         pages + extra,
     );
 
@@ -172,8 +166,6 @@ pub fn load_kernel(
         let memsz = ph.p_memsz as usize;
         let vaddr = TTENATIVE::align_down(ph.p_vaddr);
 
-        let pages = TTENATIVE::align_up(memsz as u64).div(PAGE_SIZE as u64);
-
         debug!(
             "PT_LOAD vaddr={:#x} file_off={:#x} filesz={:#x} memsz={:#x}",
             vaddr, file_off, filesz, memsz
@@ -201,11 +193,10 @@ pub fn load_kernel(
             return Err(Status::LOAD_ERROR);
         }
 
-        let mut offset = (vaddr - min_vaddr) as usize;
-        let dst = TTENATIVE::align_down(base_phys + offset as u64) as *mut u8;
-        offset = dst as usize - base_phys as usize;
-        let src =
-            TTENATIVE::align_down(unsafe { elf_bytes.as_ptr().add(file_off) } as u64) as *mut u8;
+        let offset = (vaddr - min_vaddr) as usize;
+        let dst = (base_phys + offset as u64) as *mut u8;
+        //offset = dst as usize - base_phys as usize;
+        let src = unsafe { elf_bytes.as_ptr().add(file_off) };
 
         debug!(
             "base_phys {:#x} rounded down to {:#x}",
@@ -213,9 +204,12 @@ pub fn load_kernel(
         );
 
         debug!(
-            "COPYING segment: src={:#x} dst={:#x} filesz={}",
+            "COPYING segment: src={:#x} dst={:#x} filesz={:#x}",
             src as u64, dst as u64, filesz
         );
+
+        let start_align = align_up(dst as usize, PAGE_SIZE);
+        let end_align = align_up(dst as usize + filesz as usize, PAGE_SIZE);
 
         unsafe {
             if filesz > 0 {
@@ -230,59 +224,27 @@ pub fn load_kernel(
             }
         }
 
-        debug!(
-            "MAPPING segment: phys={:#x} virt={:#x} pages={}",
-            dst as u64, vaddr, pages
-        );
+        let mut attrs = MemoryAttribute::empty();
 
-        let ap = if w {
-            AccessPermission::PrivilegedReadWrite
-        } else {
-            assert!(r && !w);
-            AccessPermission::PrivilegedReadOnly
-        };
-
-        debug!(
-            "VADDR dst {:#x} -> PADDR dst {:#x}",
-            dst as usize,
-            PT_ALLOCATOR.vaddr_to_paddr_uefi(dst as usize)
-        );
-
-        if x {
-            debug!(
-                "mapping code @ vaddr {:#x} paddr {:#x} offset {:#x}",
-                vaddr,
-                PT_ALLOCATOR.vaddr_to_paddr_uefi(dst as usize),
-                offset
-            )
+        if !r {
+            attrs |= MemoryAttribute::READ_PROTECT;
         }
 
-        map_region(
-            unsafe { root_table.as_mut() },
-            PT_ALLOCATOR.vaddr_to_paddr_uefi(dst as usize),
-            vaddr as usize,
-            pages as usize * PAGE_SIZE,
-            ap,
-            Shareability::InnerShareable,
-            true,
-            !x,
-            MAIR_NORMAL_INDEX,
-            &PT_ALLOCATOR,
-        );
+        if !x {
+            attrs |= MemoryAttribute::EXECUTE_PROTECT;
+        }
 
-        let region_type = if r && x {
-            MemoryRegionType::KernelCode
-        } else if r && w {
-            MemoryRegionType::KernelRwData
-        } else {
-            MemoryRegionType::KernelRoData
-        };
+        debug!("attr: {:?}", attrs);
 
-        kregions.push(MemoryRegion {
-            base: PT_ALLOCATOR.vaddr_to_paddr_uefi(dst as usize),
-            size: pages as usize * PAGE_SIZE,
-            region_type,
-        });
+        mem_attr_proto
+            .set_memory_attributes(
+                Range {
+                    start: start_align as _,
+                    end: end_align as _,
+                },
+                attrs,
+            )
+            .expect("unable to set memory protections");
     }
 
     let entry_vaddr = ehdr.e_entry;
@@ -295,13 +257,12 @@ pub fn load_kernel(
     }
 
     let entry_offset = entry_vaddr - min_vaddr;
+    let entry_paddr = base_phys + entry_offset;
 
     debug!(
         "entrypoint at physical {:#x} virt {:#x} (offset {:#x})",
-        base_phys + entry_offset as u64,
-        entry_vaddr,
-        entry_offset
+        entry_paddr, entry_vaddr, entry_offset
     );
 
-    Ok((entry_vaddr, base_phys, load_size))
+    Ok((entry_offset, min_vaddr, base_phys, load_size as _))
 }

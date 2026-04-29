@@ -1,17 +1,28 @@
 use core::{
     cell::UnsafeCell,
-    ptr::{self, addr_eq},
+    fmt::Debug,
+    ops::Range,
+    ptr::{self},
     sync::atomic::{AtomicUsize, Ordering},
     usize,
 };
 
+use derivative::Derivative;
+
+use crate::{
+    pm::page::mapper::AddressTranslator,
+    vm::{
+        DMAP_START, is_kernel_address,
+        page_allocator::{DmapPageAllocator, PhysicalPageAllocator},
+    },
+};
+
 use super::super::{
     sync::TicketLock,
-    vm::{MemoryRegion, PAGE_MASK, PAGE_SIZE},
+    vm::{PAGE_MASK, PAGE_SIZE},
 };
 
 pub mod mapper;
-pub mod table_allocator;
 
 const MAX_ORDER: usize = 11;
 const FREE_FLAG: u8 = 1 << 7;
@@ -34,46 +45,51 @@ pub struct Zone {
 }
 
 #[repr(C)]
-#[derive(Debug)]
-pub struct PageAllocator {
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct PageAllocator<'a> {
     lock: TicketLock,
     zone_head: *mut Zone,
     free_area: UnsafeCell<[*mut FreeBlock; MAX_ORDER]>,
     total_pages: AtomicUsize,
     allocated_pages: AtomicUsize,
     lowest_address: usize,
+
+    #[derivative(Debug = "ignore")]
+    translator: &'a dyn AddressTranslator,
 }
 
-unsafe impl Send for PageAllocator {}
-unsafe impl Sync for PageAllocator {}
+unsafe impl Send for PageAllocator<'_> {}
+unsafe impl Sync for PageAllocator<'_> {}
 
-impl PageAllocator {
+impl<'a> PageAllocator<'a> {
     /// SAFETY: must be page-aligned, non-overlapping, and usable memory
-    pub unsafe fn init(ranges: &[MemoryRegion]) -> Self {
-        let mut pa = Self {
+    pub const fn new(translator: &'a dyn AddressTranslator) -> Self {
+        let pa = Self {
             lock: TicketLock::new(),
             zone_head: ptr::null_mut(),
             free_area: UnsafeCell::new([ptr::null_mut(); MAX_ORDER]),
             total_pages: AtomicUsize::new(0),
             allocated_pages: AtomicUsize::new(0),
             lowest_address: 0,
+
+            translator,
         };
-        for &r in ranges {
-            if r.size == 0 || (r.base & PAGE_MASK) != 0 || (r.size & PAGE_MASK) != 0 {
-                panic!("region {:?} not page aligned", r);
-            }
-            pa.add_range(r);
-        }
         pa
     }
+}
 
-    pub fn add_range(&mut self, region: MemoryRegion) {
-        assert_ne!(region.size, 0);
+impl PageAllocator<'_> {
+    pub fn add_range(&mut self, region: &Range<usize>) {
+        debug_assert!(!is_kernel_address(region.start), "only add physical ranges");
+        assert!(!region.is_empty(), "empty region");
+        assert_eq!(region.start & PAGE_MASK, 0, "region start not page aligned");
+        assert_eq!(region.end & PAGE_MASK, 0, "region end not page aligned");
 
         self.lock.lock();
 
         unsafe {
-            let total_pages_reg = region.size / PAGE_SIZE;
+            let total_pages_reg = (region.end - region.start) / PAGE_SIZE;
             if total_pages_reg == 0 {
                 self.lock.unlock();
                 return;
@@ -98,9 +114,9 @@ impl PageAllocator {
             let usable_pages = total_pages_reg - reserved_pages;
             assert!(usable_pages > 0);
 
-            let meta_base = region.base;
+            let meta_base = region.start;
             let reserved_bytes = reserved_pages * PAGE_SIZE;
-            let data_base = region.base + reserved_bytes;
+            let data_base = region.start + reserved_bytes;
 
             if self.lowest_address == 0 || data_base < self.lowest_address {
                 self.lowest_address = data_base;
@@ -163,7 +179,102 @@ impl PageAllocator {
         self.lock.unlock()
     }
 
-    pub fn alloc_page(&self) -> *mut u8 {
+    pub fn overlapping_range(&self, range: &Range<usize>) -> Option<Range<usize>> {
+        if range.is_empty() {
+            return None;
+        }
+
+        self.lock.lock();
+
+        let mut current_zone_ptr = self.zone_head;
+        let mut result = None;
+
+        while self.translator.dmap_to_phys(current_zone_ptr as _) != 0 {
+            unsafe {
+                let zone = &*current_zone_ptr;
+
+                let zone_start = self.translator.dmap_to_phys(zone.meta_array as _);
+                let zone_end = self
+                    .translator
+                    .dmap_to_phys((zone.data_base + (zone.total_pages * PAGE_SIZE)) as _);
+
+                if range.start < zone_end && zone_start < range.end {
+                    result = Some(zone_start..zone_end);
+                    break;
+                }
+
+                current_zone_ptr = zone.next;
+            }
+        }
+
+        self.lock.unlock();
+        result
+    }
+
+    fn to_dmap<T>(ptr: *mut T, translator: &dyn AddressTranslator) -> *mut T {
+        if ptr.is_null() {
+            ptr
+        } else {
+            translator.phys_to_dmap(ptr as _) as *mut T
+        }
+    }
+
+    /// convert physical pointers to dmap
+    pub unsafe fn transition_dmap(&mut self) {
+        self.lock.lock();
+
+        self.zone_head = Self::to_dmap(self.zone_head, self.translator);
+        let mut current_zone = self.zone_head;
+
+        while !current_zone.is_null() {
+            let zone = unsafe { &mut *current_zone };
+            zone.meta_array = Self::to_dmap(zone.meta_array, self.translator);
+            zone.next = Self::to_dmap(zone.next, self.translator);
+            current_zone = zone.next;
+        }
+
+        let free_area = unsafe { &mut *self.free_area.get() };
+        for order in 0..MAX_ORDER {
+            free_area[order] = Self::to_dmap(free_area[order], self.translator);
+            let mut current_block = free_area[order];
+
+            while !current_block.is_null() {
+                let block = unsafe { &mut *current_block };
+                block.zone = Self::to_dmap(block.zone, self.translator);
+                block.next = Self::to_dmap(block.next, self.translator);
+                block.prev = Self::to_dmap(block.prev, self.translator);
+
+                current_block = block.next;
+            }
+        }
+
+        self.lock.unlock();
+    }
+
+    /// resets allocator to initial state
+    /// safety: previously allocated memory must not be accessed.
+    pub unsafe fn wipe(&self) {
+        self.lock.lock();
+
+        unsafe {
+            let this = self as *const _ as *mut Self;
+
+            (*this).zone_head = ptr::null_mut();
+            (*this).lowest_address = 0;
+
+            let free_area = &mut *self.free_area.get();
+            for i in 0..MAX_ORDER {
+                free_area[i] = ptr::null_mut();
+            }
+
+            self.total_pages.store(0, Ordering::SeqCst);
+            self.allocated_pages.store(0, Ordering::SeqCst);
+        }
+
+        self.lock.unlock();
+    }
+
+    fn alloc_page(&self) -> *mut u8 {
         self.alloc_pages(0)
     }
 
@@ -195,6 +306,10 @@ impl PageAllocator {
 
                     *meta_array.add(page_i) = target_order as u8;
 
+                    let zone_u8 = zone as *mut u8;
+                    let zone_phys = self.translator.dmap_to_phys(zone_u8) as usize;
+                    let offset = (zone_u8 as usize).wrapping_sub(zone_phys);
+
                     // split
                     let mut split_order = current_order;
                     while split_order > target_order {
@@ -205,7 +320,9 @@ impl PageAllocator {
 
                         *split_meta = (split_order as u8) | FREE_FLAG;
 
-                        let block = ((*zone).data_base + split_i * PAGE_SIZE) as *mut FreeBlock;
+                        let block_phys = (*zone).data_base + split_i * PAGE_SIZE;
+                        let block = block_phys.wrapping_add(offset) as *mut FreeBlock;
+
                         (*block).zone = zone;
                         (*block).page_index = split_i;
 
@@ -287,6 +404,10 @@ impl PageAllocator {
         let zone = unsafe { &mut *zone_ptr };
         let free_area = unsafe { &mut *self.free_area.get() };
 
+        let zone_u8 = zone_ptr as *mut u8;
+        let zone_phys = self.translator.dmap_to_phys(zone_u8) as usize;
+        let offset = (zone_u8 as usize).wrapping_sub(zone_phys);
+
         while order < MAX_ORDER - 1 {
             // the magic buddy XOR
             let index = page_index ^ (1 << order);
@@ -301,7 +422,9 @@ impl PageAllocator {
                 break;
             }
 
-            let block = (zone.data_base + index * PAGE_SIZE) as *mut FreeBlock;
+            let block_phys = zone.data_base + index * PAGE_SIZE;
+            let block = block_phys.wrapping_add(offset) as *mut FreeBlock;
+
             let next = unsafe { (*block).next };
             let prev = unsafe { (*block).prev };
 
@@ -322,7 +445,9 @@ impl PageAllocator {
 
         unsafe { *zone.meta_array.add(page_index) = (order as u8) | FREE_FLAG };
 
-        let block = (zone.data_base + page_index * PAGE_SIZE) as *mut FreeBlock;
+        let block_phys = zone.data_base + page_index * PAGE_SIZE;
+        let block = block_phys.wrapping_add(offset) as *mut FreeBlock;
+
         unsafe { (*block).zone = zone_ptr };
         unsafe { (*block).page_index = page_index };
 
@@ -367,5 +492,30 @@ impl PageAllocator {
 
     pub fn allocated_pages(&self) -> usize {
         self.allocated_pages.load(Ordering::Relaxed)
+    }
+}
+
+impl PhysicalPageAllocator for PageAllocator<'_> {
+    fn alloc_phys_page(&self) -> Result<usize, crate::vm::VmError> {
+        let page_addr = self.alloc_page() as usize;
+
+        Ok(page_addr)
+    }
+    fn free_phys_page(&self, pa: usize) {
+        self.free_pages(pa as _);
+    }
+}
+
+impl DmapPageAllocator for PageAllocator<'_> {
+    fn alloc_dmap_page(&self) -> Result<usize, crate::vm::VmError> {
+        let page_addr = self.alloc_page() as usize;
+        let page_addr = self.translator.phys_to_dmap(page_addr as _) as usize;
+
+        Ok(page_addr)
+    }
+    fn free_dmap_page(&self, pa: usize) {
+        let page_addr = self.translator.dmap_to_phys(pa as _) as usize;
+
+        self.free_pages(page_addr as _);
     }
 }

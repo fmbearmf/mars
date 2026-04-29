@@ -3,6 +3,8 @@ use core::{
     usize,
 };
 
+use crate::pm::page::mapper::AddressTranslator;
+
 use super::{
     context::RegisterFileRef,
     cpu_interface::Mpidr,
@@ -11,8 +13,6 @@ use super::{
     thread::{Thread, ThreadState},
     vm::page_allocator::PhysicalPageAllocator,
 };
-
-extern crate alloc;
 
 use aarch64_cpu::{
     asm::barrier::{self, isb},
@@ -24,12 +24,12 @@ use alloc::{
 };
 
 #[derive(Debug)]
-pub struct LocalScheduler<'a, A: TableAllocator, P: PhysicalPageAllocator> {
-    thread_queue: VecDeque<Arc<Thread<'a, A, P>>>,
-    current_thread: Option<Arc<Thread<'a, A, P>>>,
+pub struct LocalScheduler<'a> {
+    thread_queue: VecDeque<Arc<Thread<'a>>>,
+    current_thread: Option<Arc<Thread<'a>>>,
 }
 
-impl<'a, A: TableAllocator, P: PhysicalPageAllocator> LocalScheduler<'a, A, P> {
+impl LocalScheduler<'_> {
     pub const fn new() -> Self {
         Self {
             thread_queue: VecDeque::new(),
@@ -39,15 +39,15 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> LocalScheduler<'a, A, P> {
 }
 
 #[derive(Debug)]
-pub struct Scheduler<'a, A: TableAllocator, P: PhysicalPageAllocator> {
-    queues: RwLock<BTreeMap<u64, Mutex<LocalScheduler<'a, A, P>>>>,
+pub struct Scheduler<'a> {
+    queues: RwLock<BTreeMap<u64, Mutex<LocalScheduler<'a>>>>,
     spawn_counter: AtomicU8,
 }
 
-unsafe impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Send for Scheduler<'a, A, P> {}
-unsafe impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Sync for Scheduler<'a, A, P> {}
+unsafe impl Send for Scheduler<'_> {}
+unsafe impl Sync for Scheduler<'_> {}
 
-impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Scheduler<'a, A, P> {
+impl<'a> Scheduler<'a> {
     pub const fn new() -> Self {
         Self {
             queues: RwLock::new(BTreeMap::new()),
@@ -60,7 +60,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Scheduler<'a, A, P> {
         queues.insert(mpidr, Mutex::new(LocalScheduler::new()));
     }
 
-    pub fn spawn(&self, thread: Arc<Thread<'a, A, P>>) {
+    pub fn spawn(&self, thread: Arc<Thread<'a>>) {
         let queues = self.queues.read();
         assert!(!queues.is_empty(), "scheduler has no CPUs");
 

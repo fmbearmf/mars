@@ -10,7 +10,7 @@ use super::{
     SystemDescription,
     header::SdtHeader,
 };
-use getters::unaligned_getters;
+use mars_getters::unaligned_getters;
 
 use zerocopy::{FromBytes, Immutable, Unaligned};
 

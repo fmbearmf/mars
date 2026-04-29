@@ -1,6 +1,6 @@
 use arm_pl011_uart::{LineConfig, PL011Registers, Uart, UniqueMmioPointer};
 use core::{fmt::Write, ptr::NonNull};
-use spin::Mutex;
+use klib::sync::Mutex;
 
 pub static EARLYCON: Mutex<Option<EarlyCon>> = Mutex::new(None);
 
@@ -20,6 +20,16 @@ macro_rules! earlycon_writeln {
         use core::fmt::Write;
         if let Some(uart) = crate::earlyinit::earlycon::EARLYCON.lock().as_mut() {
             let _ = core::writeln!(uart.uart, $($arg)*);
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! earlycon_writeln_debug {
+    ($($arg:tt)*) => {{
+        #[cfg(debug_assertions)]
+        {
+            $crate::earlycon_writeln!($($arg)*);
         }
     }};
 }
@@ -44,5 +54,12 @@ impl<'a> EarlyCon<'a> {
         _ = writeln!(uart, "UART {:#x} enabled", serial_uart_addr);
 
         Self { uart }
+    }
+
+    pub fn switch(&mut self, serial_uart_addr: usize) {
+        let uart_ptr = unsafe {
+            UniqueMmioPointer::new(NonNull::new(serial_uart_addr as *mut PL011Registers).unwrap())
+        };
+        self.uart = Uart::new(uart_ptr);
     }
 }

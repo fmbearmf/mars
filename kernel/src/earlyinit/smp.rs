@@ -8,7 +8,7 @@ use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
 use klib::{
     cpu_interface::{Mpidr, SecondaryBootArgs},
     interrupt::InterruptController,
-    timer::init_timer,
+    timer::{init_timer, timer_rearm},
     vcpu::{CpuState, vcpu_fsm_advance},
     vm::phys_addr_to_dmap,
 };
@@ -83,6 +83,7 @@ pub extern "C" fn secondary_init(context_phys: *const SecondaryBootArgs) -> ! {
         .expect("error enabling timer IRQ");
 
     init_timer();
+    timer_rearm();
 
     let new_state = vcpu_fsm_advance(mpidr.affinity_only() as usize);
     assert_eq!(new_state, CpuState::Done);

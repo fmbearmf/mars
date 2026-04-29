@@ -1,17 +1,15 @@
 use core::{fmt::Debug, range::Range};
 
-use super::{
-    context::RegisterFile, pm::page::mapper::TableAllocator, process::Process, sync::RwLock,
-    vm::page_allocator::PhysicalPageAllocator,
-};
+use crate::pm::page::mapper::AddressTranslator;
 
-extern crate alloc;
+use super::{context::RegisterFile, process::Process, sync::RwLock};
 
 use aarch64_cpu::registers::SPSR_EL1;
 use alloc::{
     boxed::Box,
     sync::{Arc, Weak},
 };
+use derivative::Derivative;
 use tock_registers::fields::FieldValue;
 
 pub type ThreadId = u32;
@@ -25,39 +23,44 @@ pub enum ThreadState {
     Dead,
 }
 
-#[derive(Debug)]
-struct ThreadInner<'a, A: TableAllocator, P: PhysicalPageAllocator> {
+#[derive(Derivative)]
+#[derivative(Debug)]
+struct ThreadInner<'a> {
     thread_id: ThreadId,
     state: ThreadState,
     priority: u8,
     ctx: RegisterFile,
     stack: Option<Box<[u8]>>,
-    process: Weak<Process<'a, A, P>>, // avoids a ref count
+    process: Weak<Process<'a>>, // avoids a ref count
+
+    #[derivative(Debug = "ignore")]
+    translator: &'a dyn AddressTranslator,
 }
 
 #[derive(Clone)]
-pub struct Thread<'a, A: TableAllocator, P: PhysicalPageAllocator> {
-    inner: Arc<RwLock<ThreadInner<'a, A, P>>>,
+pub struct Thread<'a> {
+    inner: Arc<RwLock<ThreadInner<'a>>>,
 }
 
-impl<'a, A: TableAllocator + Debug, P: PhysicalPageAllocator + Debug> Debug for Thread<'a, A, P> {
+impl Debug for Thread<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let guard = self.inner.read();
         f.debug_tuple("Thread").field(&*guard).finish()
     }
 }
 
-impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Thread<'a, A, P> {
+impl<'a> Thread<'a> {
     pub fn new(
         thread_id: ThreadId,
-        process: &Arc<Process<'a, A, P>>,
+        process: &Arc<Process<'a>>,
         stack: Box<[u8]>,
         pc: usize,
         priority: u8,
+        translator: &'a dyn AddressTranslator,
     ) -> Self {
         let stack_range = stack.as_ptr_range();
         let stack_top_va = stack_range.end;
-        let stack_top_pa = A::virt_to_phys(stack_top_va as *mut u8);
+        let stack_top_pa = translator.dmap_to_phys(stack_top_va as *mut u8) as _;
 
         const SPSR: FieldValue<u64, SPSR_EL1::Register> = SPSR_EL1::M::EL0t;
 
@@ -73,6 +76,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Thread<'a, A, P> {
             },
             stack: Some(stack),
             process: Arc::downgrade(process),
+            translator,
         };
 
         Self {
@@ -108,7 +112,7 @@ impl<'a, A: TableAllocator, P: PhysicalPageAllocator> Thread<'a, A, P> {
         f(&guard.ctx)
     }
 
-    pub fn process(&self) -> Option<Arc<Process<'a, A, P>>> {
+    pub fn process(&self) -> Option<Arc<Process<'a>>> {
         self.inner.read().process.upgrade()
     }
 

@@ -2,11 +2,9 @@
 
 use core::ptr::NonNull;
 
-use klib::{
-    vec::StaticVec,
-    vm::{MemoryRegion, TABLE_ENTRIES, TTable},
-};
+use klib::vm::{TABLE_ENTRIES, TTable};
 use uefi::mem::memory_map::MemoryMapOwned;
+use uefi_raw::table::system::SystemTable;
 
 #[derive(Debug)]
 pub struct BootInfo {
@@ -16,15 +14,15 @@ pub struct BootInfo {
     /// size of the kernel in bytes
     pub kernel_size: usize,
 
+    /// the TTBR0 that the kernel should load, if any
+    pub page_table_root: Option<*const TTable<TABLE_ENTRIES>>,
+
     /// serial uart
     pub serial_uart_address: usize,
 
-    /// memory map
+    /// UEFI memory map
     pub memory_map: MemoryMapOwned,
 
-    /// root (l0) ttbr1 page table
-    pub root_pt: NonNull<TTable<TABLE_ENTRIES>>,
-
-    /// memory regions (whose ownership needs to be passed to the kernel)
-    pub kernel_regions: StaticVec<MemoryRegion>,
+    /// UEFI system table
+    pub system_table_raw: NonNull<SystemTable>,
 }

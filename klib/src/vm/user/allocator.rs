@@ -1,38 +1,38 @@
+use core::ptr::NonNull;
+
 use super::super::{TABLE_ENTRIES, TTable, page_allocator::PhysicalPageAllocator};
 use super::PAGE_DESCRIPTORS;
-use crate::pm::page::mapper::TableAllocator;
+use crate::pm::page::mapper::{AddressTranslator, TableAllocator};
 
 /// thin wrapper that updates the `PageDescriptors` global
-pub struct UserAllocator<'a, A, P>(pub &'a A, pub &'a P);
+pub struct UserAllocator<'a>(
+    pub &'a dyn TableAllocator,
+    pub &'a dyn PhysicalPageAllocator,
+    pub &'a dyn AddressTranslator,
+);
 
-impl<'a, A: TableAllocator, P> TableAllocator for UserAllocator<'a, A, P> {
-    fn alloc_table(&self) -> core::ptr::NonNull<TTable<TABLE_ENTRIES>> {
+impl TableAllocator for UserAllocator<'_> {
+    fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>> {
         let ptr = self.0.alloc_table();
-        let pa = A::virt_to_phys(ptr.as_ptr());
+        let pa = self.2.dmap_to_phys(ptr.as_ptr() as _);
 
         let desc = PAGE_DESCRIPTORS.get_page_descriptor(pa as usize);
-        desc.lock.write().meta = None;
+        let meta_ref = &mut desc.lock.write().meta;
+        *meta_ref = None;
+
         ptr
     }
 
     fn free_table(&self, table: core::ptr::NonNull<TTable<TABLE_ENTRIES>>) {
-        let pa = A::virt_to_phys(table.as_ptr());
+        let pa = self.2.dmap_to_phys(table.as_ptr() as _);
 
         let desc = PAGE_DESCRIPTORS.get_page_descriptor(pa as usize);
         desc.lock.write().meta = None;
         self.0.free_table(table);
     }
-
-    fn phys_to_virt<T>(phys: u64) -> *mut T {
-        A::phys_to_virt(phys)
-    }
-
-    fn virt_to_phys<T>(virt: *mut T) -> u64 {
-        A::virt_to_phys(virt)
-    }
 }
 
-impl<'a, A, P: PhysicalPageAllocator> PhysicalPageAllocator for UserAllocator<'a, A, P> {
+impl PhysicalPageAllocator for UserAllocator<'_> {
     fn alloc_phys_page(&self) -> Result<usize, crate::vm::VmError> {
         self.1.alloc_phys_page()
     }
