@@ -9,8 +9,10 @@ use aarch64_cpu::{
     registers::{ReadWriteable, Readable, Writeable},
 };
 
+use crate::interrupt::gicv3::registers::GICR_WAKER;
+
 use super::{
-    GICD_CTLR, GICD_TYPER, GICR_CTLR, GICR_WAKER, GicdRegisters, GicrRdRegisters, GicrSgiRegisters,
+    GICD_CTLR, GICD_TYPER, GICR_CTLR, GicdRegisters, GicrRdRegisters, GicrSgiRegisters,
     InterruptController, InterruptInterface,
 };
 

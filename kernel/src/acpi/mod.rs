@@ -1,8 +1,7 @@
 use core::ptr::NonNull;
 
-use klib::pm::page::mapper::AddressTranslator;
+use klib::{acpi::xsdp::Xsdp, pm::page::mapper::AddressTranslator};
 use log::{debug, trace};
-use mars_acpi_driver::acpi::xsdp::Xsdp;
 use protocol::BootInfo;
 use uefi::table::cfg::ConfigTableEntry;
 use uefi_raw::table::{configuration::ConfigurationTable, system::SystemTable};
@@ -52,4 +51,30 @@ pub fn acpi_init() {
 
     trace!("xsdt found at {:#p}", xsdt);
     debug!("xsdt: {:#?}", xsdt);
+}
+
+pub fn parse_gic_addresses(sys: &SystemDescription) -> Option<(u64, u64)> {
+    let madt = sys.madt?;
+
+    let mut gicd_phys_base = None;
+    let mut gicr_phys_base = None;
+
+    for (type_, slice) in madt.entries() {
+        match type_ {
+            MADT_GICD => {
+                let (gicd, _) = GicDistributor::read_from_prefix(slice).unwrap();
+                gicd_phys_base = Some(gicd.phys_base());
+            }
+            MADT_GICR => {
+                let (gicr, _) = GicRedistributor::read_from_prefix(slice).unwrap();
+                gicr_phys_base = Some(gicr.discovery_range_base());
+            }
+            _ => {}
+        }
+    }
+
+    match (gicd_phys_base, gicr_phys_base) {
+        (Some(d), Some(r)) => Some((d, r)),
+        _ => None,
+    }
 }

@@ -8,7 +8,7 @@ default-target = "aarch64-unknown-uefi"
 
 [dependencies]
 log.workspace = true
-protocol = { path = "../protocol" }
+protocol.workspace = true
 klib.workspace = true
 uefi-raw.workspace = true
 uefi = { workspace = true, features = ["logger", "panic_handler", "alloc"] }

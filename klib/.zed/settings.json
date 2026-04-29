@@ -4,6 +4,7 @@
       "initialization_options": {
         "cargo": {
           "target": "aarch64-unknown-none",
+          //"cfgs": ["debug_assertions", "miri", "hax"],
         },
         "check": {
           "workspace": false,

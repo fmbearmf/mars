@@ -32,9 +32,9 @@ aarch64-cpu.workspace = true
 aarch64-cpu-ext.workspace = true
 arm-pl011-uart = { version = "0.4.0", default-features = false }
 tock-registers.workspace = true
-protocol = { path = "../protocol" }
+protocol.workspace = true
 klib.workspace = true
 uefi = { workspace = true, default-features = false }
 uefi-raw.workspace = true
 log.workspace = true
-mars_acpi_driver.workspace = true
+mars-acpi-driver.workspace = true

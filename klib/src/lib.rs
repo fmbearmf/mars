@@ -2,6 +2,7 @@
 #![feature(const_option_ops)]
 #![feature(const_trait_impl)]
 #![feature(generic_atomic)]
+#![feature(new_range_api)]
 
 extern crate alloc;
 
@@ -10,7 +11,6 @@ use core::{
     str::from_utf8,
 };
 
-pub mod acpi;
 pub mod context;
 pub mod cpu_interface;
 pub mod exception;

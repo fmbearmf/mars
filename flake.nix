@@ -11,12 +11,22 @@
       url = "github:nix-community/fenix/monthly";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    hax = {
+      url = "github:cryspen/hax/release-0.3.6";
+      inputs.hacl-star.follows = "hacl-star";
+    };
+    hacl-star = {
+      url = "github:hacl-star/hacl-star";
+      flake = false;
+    };
   };
 
   outputs =
     {
       self,
       fenix,
+      hacl-star,
+      hax,
       naersk,
       nixpkgs,
     }:
@@ -45,6 +55,8 @@
               ];
             };
 
+            pkgsHax = hax.packages.${system};
+
             targets = [
               "aarch64-apple-darwin"
               "aarch64-unknown-none"
@@ -57,7 +69,7 @@
               with fenix.packages.${system};
               combine (
                 [
-                  minimal.cargo
+                  latest.cargo
                   latest.rustc
                   latest.rust-analyzer
                   latest.rust-src
@@ -84,6 +96,7 @@
               mkShell
               OVMF
               pkgs
+              pkgsHax
               pkgsCross
               stdenv
               toolchain
@@ -101,6 +114,7 @@
         {
           toolchain,
           stdenv,
+          pkgsHax,
           naersk',
           ...
         }:
@@ -109,6 +123,7 @@
             src = ./.;
           };
           inherit toolchain stdenv;
+          inherit (pkgsHax) hax;
           default = kernel;
         }
       );
@@ -116,27 +131,60 @@
       devShell = perSystem (
         {
           pkgs,
+          pkgsHax,
           mkShell,
           OVMF,
           toolchain,
           ...
         }:
-        mkShell {
-          nativeBuildInputs = [
-            toolchain
-            pkgs.dtc
-            pkgs.cargo-bloat
-            (pkgs.callPackage ./gdb/package.nix { })
+        let
+          OVMF_DIR = "${OVMF.fd}/FV";
+          OVMF_CODE_PATH = "${OVMF_DIR}/AAVMF_CODE.fd";
+
+          DYLD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+            pkgs.libz
+            pkgsHax.rustc
           ];
+
+          FSTAR_HOME = "${pkgsHax.fstar}";
+          HAX_HOME = ./.;
+        in
+        mkShell {
+          inherit
+            OVMF_DIR
+            OVMF_CODE_PATH
+            DYLD_LIBRARY_PATH
+            FSTAR_HOME
+            HAX_HOME
+            ;
+
+          packages =
+            (with pkgs; [
+              dtc
+              cargo-expand
+              cargo-bloat
+              (callPackage ./gdb/package.nix { })
+            ])
+            ++ [
+              toolchain
+              pkgsHax.hax
+              pkgsHax.fstar
+              pkgsHax.hax-env
+            ];
 
           shellHook = ''
-            export OVMF_DIR="${OVMF.fd}/FV"
-            export OVMF_CODE_PATH="$OVMF_DIR/AAVMF_CODE.fd"
+            eval $(hax-env)
           '';
-
-          buildInputs = [
-          ];
         }
       );
+
+      nixConfig = {
+        extra-substituters = [
+          "https://hax.cachix.org"
+        ];
+        extra-trusted-public-keys = [
+          "hax.cachix.org-1:Oe3CtQr+8tJqpb+QNErHccOgkoA11sMm4/D4KHxOkY8="
+        ];
+      };
     };
 }

@@ -1,0 +1,22 @@
+
+[package]
+name = "mars-models-zerocopy"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+name = "mars_zerocopy"
+
+[dependencies]
+hax-lib.workspace = true
+mars-models-zerocopy-derive.workspace = true
+
+[target.'cfg(not(hax))'.dependencies]
+zerocopy = { workspace = true }
+zerocopy-derive = { workspace = true, optional = true }
+
+[features]
+derive = ["zerocopy-derive"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(hax)'] }

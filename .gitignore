@@ -1,4 +1,5 @@
 .direnv/
+.fstar-cache/
 debug
 target
 result
@@ -6,3 +7,6 @@ result-*
 *.dtb
 *.log
 *.DS_Store
+*.fst
+**/.depend
+**/hax.fst.config.json

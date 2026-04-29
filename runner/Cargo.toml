@@ -4,7 +4,7 @@ version = "0.0.1"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.100"
+anyhow = "1.0.102"
 camino = "1.2.2"
 fatfs = "0.3.6"
-tempfile = "3.24.0"
+tempfile = "3.27.0"

@@ -24,6 +24,11 @@ register_bitfields![u32,
         RWP             OFFSET(3) NUMBITS(1) [ False = 0, True = 1 ],
     ],
 
+    pub GICR_WAKER [
+        ChildrenAsleep  OFFSET(2)  NUMBITS(1) [ True = 1, False = 0 ],
+        ProcessorAsleep OFFSET(1)  NUMBITS(1) [ Sleep = 1, Awake = 0 ],
+    ],
+
     pub GICD_TYPER [
         /// the maximum SPI supported for IntIDs 32-1019
         /// the max SPI IntID is 32(N+1) - 1 where N is the register value

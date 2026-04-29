@@ -1,5 +1,5 @@
 [package]
-name = "mars_acpi_driver"
+name = "mars-acpi-driver"
 version = "0.0.1"
 edition = "2024"
 
@@ -10,3 +10,11 @@ plugin = false
 [dependencies]
 klib.workspace = true
 log.workspace = true
+hax-lib.workspace = true
+mars_getters.workspace = true
+tock-registers.workspace = true
+mars-models.workspace = true
+zerocopy = { workspace = true, package = "mars-models-zerocopy", features = ["derive"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(hax)'] }
