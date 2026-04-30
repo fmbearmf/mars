@@ -18,5 +18,5 @@ uefi = { workspace = true, default-features = false }
 uefi-raw.workspace = true
 derivative = { workspace = true, features = ["use_core"] }
 log.workspace = true
-
-zerocopy = { workspace = true, package = "mars-models-zerocopy", features = ["derive"] }
+mars-models.workspace = true
+mars-models-zerocopy = { workspace = true, features = ["derive"] }

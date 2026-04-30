@@ -1,5 +1,6 @@
 use core::{fmt::Debug, ops::Deref};
 
+use mars_models::declare_structs;
 use tock_registers::{
     RegisterLongName, UIntLike,
     interfaces::{Debuggable, ReadWriteable, Readable, Writeable},
@@ -58,57 +59,39 @@ pub trait InterruptInterface {
     fn set_priority_mask(&self, mask: u8);
 }
 
-trait Reg {}
-impl<U: UIntLike, R: RegisterLongName> Reg for ReadWrite<U, R> {}
-impl<U: UIntLike, R: RegisterLongName> Reg for ReadOnly<U, R> {}
-impl<U: UIntLike, R: RegisterLongName> Reg for WriteOnly<U, R> {}
-
-#[repr(transparent)]
-#[derive(Clone, KnownLayout, FromBytes)]
-pub struct ZeroReg<T: Reg>(pub T);
-
-impl<T: Reg> Deref for ZeroReg<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 register_structs! {
     #[allow(non_snake_case)]
     #[derive(KnownLayout)]
     pub GicdRegisters {
-        (0x0000 => pub CTLR: ZeroReg<ReadWrite<u32, GICD_CTLR::Register>>),
-        (0x0004 => pub TYPER: ZeroReg<ReadOnly<u32, GICD_TYPER::Register>>),
-        (0x0008 => pub IIDR: ZeroReg<ReadOnly<u32, GICD_IIDR::Register>>),
+        (0x0000 => pub CTLR: ReadWrite<u32, GICD_CTLR::Register>),
+        (0x0004 => pub TYPER: ReadOnly<u32, GICD_TYPER::Register>),
+        (0x0008 => pub IIDR: ReadOnly<u32, GICD_IIDR::Register>),
         (0x000C => _reserved0),
-        (0x0100 => pub IGROUPR: [ZeroReg<ReadWrite<u32, GICD_INT::Register>>; 32]),
-        (0x0180 => pub ISENABLER: [ZeroReg<ReadWrite<u32, GICD_INT::Register>>; 32]),
-        (0x0200 => pub ICENABLER: [ZeroReg<ReadWrite<u32, GICD_INT::Register>>; 32]),
-        (0x0280 => pub ISPENDR: [ZeroReg<ReadWrite<u32, GICD_INT::Register>>; 32]),
-        (0x0300 => pub ICPENDR: [ZeroReg<ReadWrite<u32, GICD_INT::Register>>; 32]),
-        (0x0380 => pub ISACTIVER: [ZeroReg<ReadWrite<u32, GICD_INT::Register>>; 32]),
-        (0x0400 => pub IPRIORITYR: [ZeroReg<ReadWrite<u8>>; 1020]),
+        (0x0100 => pub IGROUPR: [ReadWrite<u32, GICD_INT::Register>; 32]),
+        (0x0180 => pub ISENABLER: [ReadWrite<u32, GICD_INT::Register>; 32]),
+        (0x0200 => pub ICENABLER: [ReadWrite<u32, GICD_INT::Register>; 32]),
+        (0x0280 => pub ISPENDR: [ReadWrite<u32, GICD_INT::Register>; 32]),
+        (0x0300 => pub ICPENDR: [ReadWrite<u32, GICD_INT::Register>; 32]),
+        (0x0380 => pub ISACTIVER: [ReadWrite<u32, GICD_INT::Register>; 32]),
+        (0x0400 => pub IPRIORITYR: [ReadWrite<u8>; 1020]),
         (0x07FC => _reserved1),
-        (0x0C00 => pub ICFGR: [ZeroReg<ReadWrite<u32, GICD_ICFGR::Register>>; 64]),
+        (0x0C00 => pub ICFGR: [ReadWrite<u32, GICD_ICFGR::Register>; 64]),
         (0x0D00 => _reserved2),
         // IROUTER is present for SPIs (32-1019). so map 1024 elements starting at 0x6000
         // to align the array index with `int_id`
-        (0x6000 => pub IROUTER: [ZeroReg<ReadWrite<u64, GICD_IROUTER::Register>>; 1024]),
+        (0x6000 => pub IROUTER: [ReadWrite<u64, GICD_IROUTER::Register>; 1024]),
         (0x8000 => @END),
     }
 }
 
 register_structs! {
     #[allow(non_snake_case)]
-    #[derive(KnownLayout)]
     pub GicrRdRegisters {
-        (0x0000 => pub CTLR: ZeroReg<ReadWrite<u32, GICR_CTLR::Register>>),
-        (0x0004 => pub IIDR: ZeroReg<ReadOnly<u32>>),
-        (0x0008 => pub TYPER: ZeroReg<ReadOnly<u64>>),
+        (0x0000 => pub CTLR: ReadWrite<u32, GICR_CTLR::Register>),
+        (0x0004 => pub IIDR: ReadOnly<u32>),
+        (0x0008 => pub TYPER: ReadOnly<u64>),
         (0x0010 => _reserved0),
-        (0x0014 => pub WAKER: ZeroReg<ReadWrite<u32, GICR_WAKER::Register>>),
+        (0x0014 => pub WAKER: ReadWrite<u32, GICR_WAKER::Register>),
         (0x0018 => @END),
     }
 }
@@ -117,27 +100,26 @@ unsafe impl Sync for GicrRdRegisters {}
 
 register_structs! {
     #[allow(non_snake_case)]
-    #[derive(KnownLayout)]
     pub GicrSgiRegisters {
         (0x0000 => _reserved0),
-        (0x0080 => pub IGROUPR0: ZeroReg<ReadWrite<u32>>),
+        (0x0080 => pub IGROUPR0: ReadWrite<u32>),
         (0x0084 => _reserved1),
-        (0x0100 => pub ISENABLER0: ZeroReg<ReadWrite<u32>>),
+        (0x0100 => pub ISENABLER0: ReadWrite<u32>),
         (0x0104 => _reserved2),
-        (0x0180 => pub ICENABLER0: ZeroReg<ReadWrite<u32>>),
+        (0x0180 => pub ICENABLER0: ReadWrite<u32>),
         (0x0184 => _reserved3),
-        (0x0200 => pub ISPENDR0: ZeroReg<ReadWrite<u32>>),
+        (0x0200 => pub ISPENDR0: ReadWrite<u32>),
         (0x0204 => _reserved4),
-        (0x0280 => pub ICPENDR0: ZeroReg<ReadWrite<u32>>),
+        (0x0280 => pub ICPENDR0: ReadWrite<u32>),
         (0x0284 => _reserved5),
-        (0x0300 => pub ISACTIVER0: ZeroReg<ReadWrite<u32>>),
+        (0x0300 => pub ISACTIVER0: ReadWrite<u32>),
         (0x0304 => _reserved6),
-        (0x0400 => pub IPRIORITYR: [ZeroReg<ReadWrite<u8>>; 32]),
+        (0x0400 => pub IPRIORITYR: [ReadWrite<u8>; 32]),
         (0x0420 => _reserved7),
-        (0x0C00 => pub ICFGR0: ZeroReg<ReadWrite<u32>>),
-        (0x0C04 => pub ICFGR1: ZeroReg<ReadWrite<u32>>),
+        (0x0C00 => pub ICFGR0: ReadWrite<u32>),
+        (0x0C04 => pub ICFGR1: ReadWrite<u32>),
         (0x0C08 => _reserved8),
-        (0x0D00 => pub IGRPMODR0: ZeroReg<ReadWrite<u32>>),
+        (0x0D00 => pub IGRPMODR0: ReadWrite<u32>),
         (0x0D04 => @END),
     }
 }

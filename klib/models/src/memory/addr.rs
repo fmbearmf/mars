@@ -5,8 +5,12 @@ use hax_lib::{
 
 const ADDR_SIZE: u64 = 8;
 
+// make sure that's actually the size of a memory address
 #[exclude]
-const _: () = assert!(ADDR_SIZE as usize == core::mem::size_of::<u64>());
+const _: () = {
+    assert!(ADDR_SIZE as usize == core::mem::size_of::<usize>());
+    assert!(ADDR_SIZE as usize == core::mem::size_of::<u64>());
+};
 
 #[refinement_type(|x| x != 0 && x % ADDR_SIZE == 0)]
 #[repr(transparent)]
@@ -62,18 +66,9 @@ mod addr_impl {
             assert!(value > 0);
             assert!(self.get() % ADDR_SIZE == 0);
             assert!(offset % ADDR_SIZE == 0);
-
             assert!(value % ADDR_SIZE == 0);
 
             value.into_checked()
         }
     }
-
-    //#[attributes]
-    //impl From<Addr> for u64 {
-    //    #[ensures(|result| result != 0 && result % 8 == 0)]
-    //    fn from(value: Addr) -> u64 {
-    //        value.get()
-    //    }
-    //}
 }

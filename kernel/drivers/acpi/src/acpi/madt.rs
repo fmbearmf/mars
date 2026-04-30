@@ -149,8 +149,6 @@ impl<'a> GicrFrameBlock<'a> {
         let rd_slice = frame_slice.get(0..GICR_SGI_OFFSET)?;
         let sgi_slice = frame_slice.get(GICR_SGI_OFFSET..GICR_FRAME_SIZE)?;
 
-        //let rd = GicrRdRegisters
-
         Some(GicrFrame {
             rd: rd_slice,
             sgi: sgi_slice,

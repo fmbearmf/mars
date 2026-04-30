@@ -16,7 +16,7 @@ resolver = "3"
 aarch64-cpu = "11.2.0"
 aarch64-cpu-ext = "0.1.4"
 tock-registers = "0.10.1"
-zerocopy = "0.8.48"
+zerocopy = { version = "0.8.48" }
 zerocopy-derive = "0.8.48"
 uefi-raw = "0.14.0"
 uefi = { version = "0.37.0", default-features = false }

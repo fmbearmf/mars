@@ -9,6 +9,7 @@ name = "mars_models"
 [dependencies]
 hax-lib.workspace = true
 paste.workspace = true
+mars-models-zerocopy = { workspace = true, features = ["derive"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(hax)'] }

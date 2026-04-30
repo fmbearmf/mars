@@ -1,17 +1,9 @@
 #![no_std]
+#![feature(proc_macro_hygiene)]
 
 #[cfg(hax)]
-#[path = "./shim/mod.rs"]
-pub(self) mod shim;
+#[hax_lib::exclude]
+include!("./shim/mod.rs");
 
 #[cfg(not(hax))]
-pub(self) mod shim {
-    pub use zerocopy::*;
-
-    extern crate self as zerocopy;
-
-    #[cfg(feature = "derive")]
-    pub use zerocopy_derive::*;
-}
-
-pub use self::shim::*;
+include!("./dummy.rs");

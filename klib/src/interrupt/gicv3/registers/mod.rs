@@ -1,6 +1,7 @@
 use aarch64_cpu_ext::registers::MPIDR_EL1::Aff0;
 use tock_registers::register_bitfields;
 
+pub mod gic;
 pub mod icc_igrpen1_el1;
 pub mod icc_pmr_el1;
 pub mod icc_sre_el1;

@@ -1,6 +1,6 @@
-//! Hax doesn't support foreign types.
-//! Doing so creates unresolved references in the outputted F*.
-//! These shims exist to make sure that F* has placeholders.
+// Hax doesn't support foreign types.
+// Doing so creates unresolved references in the outputted F*.
+// These shims exist to make sure that F* has placeholders.
 
 pub mod error;
 
@@ -37,5 +37,5 @@ pub trait Unaligned {
     fn ul_noop(); // Hax bug: marker traits don't work
 }
 pub trait Immutable {
-    fn im_noop() {} // Hax bug: marker traits don't work
+    fn im_noop(); // Hax bug: marker traits don't work
 }

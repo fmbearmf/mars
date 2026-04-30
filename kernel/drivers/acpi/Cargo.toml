@@ -14,7 +14,7 @@ hax-lib.workspace = true
 mars_getters.workspace = true
 tock-registers.workspace = true
 mars-models.workspace = true
-zerocopy = { workspace = true, package = "mars-models-zerocopy", features = ["derive"] }
+mars-models-zerocopy = { workspace = true, features = ["derive"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(hax)'] }

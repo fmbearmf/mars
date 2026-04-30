@@ -383,11 +383,12 @@ dependencies = [
  "arm-pl011-uart",
  "derivative",
  "log",
+ "mars-models",
+ "mars-models-zerocopy",
  "mars_getters",
  "tock-registers 0.10.1",
  "uefi",
  "uefi-raw",
- "zerocopy",
 ]
 
 [[package]]
@@ -422,9 +423,9 @@ dependencies = [
  "klib",
  "log",
  "mars-models",
+ "mars-models-zerocopy",
  "mars_getters",
  "tock-registers 0.10.1",
- "zerocopy",
 ]
 
 [[package]]
@@ -432,6 +433,7 @@ name = "mars-models"
 version = "0.0.1"
 dependencies = [
  "hax-lib",
+ "mars-models-zerocopy",
  "paste",
 ]
 
