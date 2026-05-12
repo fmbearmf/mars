@@ -58,6 +58,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic_refcell"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21e4227379beff4205943696e6c3e0cd809bacdf3f0edd6e3dd153e2269571a4"
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -365,6 +371,7 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
  "arm-pl011-uart",
+ "atomic_refcell",
  "klib",
  "log",
  "mars-acpi-driver",
@@ -381,6 +388,7 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
  "arm-pl011-uart",
+ "atomic_refcell",
  "derivative",
  "log",
  "mars-models",

@@ -14,9 +14,11 @@ use core::{
 pub mod context;
 pub mod cpu_interface;
 pub mod exception;
+pub mod guard;
 pub mod hardware;
 pub mod hash_map;
 pub mod interrupt;
+pub mod per_cpu;
 pub mod pm;
 pub mod process;
 pub mod scheduler;

@@ -8,10 +8,13 @@ use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
 use klib::{
     cpu_interface::{Mpidr, SecondaryBootArgs},
     interrupt::InterruptController,
+    this_cpu,
     timer::{init_timer, timer_rearm},
     vcpu::{CpuState, vcpu_fsm_advance},
     vm::phys_addr_to_dmap,
 };
+
+use crate::interrupt::get_interrupt_controller;
 
 use super::super::busy_loop;
 
@@ -74,13 +77,15 @@ pub extern "C" fn secondary_init(context_phys: *const SecondaryBootArgs) -> ! {
     let context_ptr = phys_addr_to_dmap(context_phys as u64) as *const SecondaryBootArgs;
     let context = unsafe { &*context_ptr };
 
-    let desc = unsafe { &*(context.cpu_desc) };
-
-    let mut gic = desc.gic.expect("`None` gic");
+    let gic = get_interrupt_controller();
 
     gic.init().expect("gic init fail");
-    gic.enable_interrupt(desc.timer_irq as u32)
-        .expect("error enabling timer IRQ");
+    gic.enable_interrupt(
+        this_cpu!()
+            .timer_irq
+            .load(core::sync::atomic::Ordering::Relaxed) as _,
+    )
+    .expect("error enabling timer IRQ");
 
     init_timer();
     timer_rearm();

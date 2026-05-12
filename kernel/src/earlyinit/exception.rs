@@ -1,15 +1,18 @@
+use core::sync::atomic::Ordering;
+
 use aarch64_cpu::registers::{DAIF, ESR_EL1, ReadWriteable, Readable, TTBR0_EL1, Writeable};
 use klib::{
     context::RegisterFileRef,
     cpu_interface::Mpidr,
     exception::ExceptionHandler,
     interrupt::InterruptController,
+    this_cpu,
     timer::{timer_disarm, timer_rearm, timer_schedule},
     vcpu::with_this_cpu,
 };
 use log::{error, trace};
 
-use crate::{GLOBAL_SCHEDULER, busy_loop_ret};
+use crate::{GLOBAL_SCHEDULER, busy_loop_ret, interrupt::get_interrupt_controller};
 
 use super::super::earlycon_writeln;
 
@@ -54,8 +57,8 @@ impl ExceptionHandler for Exceptions {
         let daif = daif_save();
 
         trace!("fiq: before scheduling: {:?}", register_file);
-        let regs: RegisterFileRef = with_this_cpu(|cpu| {
-            let mut gic = cpu.gic.expect("`None` GIC");
+        let regs: RegisterFileRef = {
+            let gic = get_interrupt_controller();
 
             let ack = gic.acknowledge_interrupt().expect("ack failure");
 
@@ -64,7 +67,7 @@ impl ExceptionHandler for Exceptions {
                     timer_disarm();
                     timer_rearm();
 
-                    let regs = if int as u64 == cpu.timer_irq {
+                    let regs = if int == this_cpu!().timer_irq.load(Ordering::Relaxed) as u32 {
                         GLOBAL_SCHEDULER.schedule(register_file)
                     } else {
                         register_file
@@ -77,7 +80,7 @@ impl ExceptionHandler for Exceptions {
             };
 
             regs
-        });
+        };
 
         trace!("fiq: after scheduling: {:?}", regs);
 
@@ -95,8 +98,8 @@ impl ExceptionHandler for Exceptions {
             Mpidr::current().affinity_only(),
             register_file
         );
-        let regs: RegisterFileRef = with_this_cpu(|cpu| {
-            let mut gic = cpu.gic.expect("`None` GIC");
+        let regs: RegisterFileRef = {
+            let gic = get_interrupt_controller();
 
             let ack = gic.acknowledge_interrupt().expect("ack failure");
 
@@ -105,7 +108,7 @@ impl ExceptionHandler for Exceptions {
                     timer_disarm();
                     timer_rearm();
 
-                    let regs = if int as u64 == cpu.timer_irq {
+                    let regs = if int == this_cpu!().timer_irq.load(Ordering::Relaxed) as u32 {
                         GLOBAL_SCHEDULER.schedule(register_file)
                     } else {
                         register_file
@@ -118,7 +121,7 @@ impl ExceptionHandler for Exceptions {
             };
 
             regs
-        });
+        };
 
         trace!(
             "irq (CPU {}): after scheduling: {:?}",

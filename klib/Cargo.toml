@@ -20,3 +20,4 @@ derivative = { workspace = true, features = ["use_core"] }
 log.workspace = true
 mars-models.workspace = true
 mars-models-zerocopy = { workspace = true, features = ["derive"] }
+atomic_refcell.workspace = true

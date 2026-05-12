@@ -10,9 +10,6 @@ use hax_lib::{attributes, ensures, opaque};
 #[cfg(feature = "derive")]
 pub use mars_zerocopy_derive::*;
 
-#[cfg(feature = "derive")]
-//extern crate mars_zerocopy_derive as
-
 pub trait FromZeroes {}
 
 #[attributes]
@@ -28,6 +25,16 @@ pub trait FromBytes {
     fn read_from_prefix(source: &[u8]) -> Result<(Self, &[u8]), CastError<&[u8], Self>>
     where
         Self: Sized;
+}
+
+pub trait IntoBytes {
+    fn as_bytes(&self) -> &[u8]
+    where
+        Self: Immutable;
+
+    fn as_mut_bytes(&mut self) -> &mut [u8]
+    where
+        Self: FromBytes;
 }
 
 pub trait KnownLayout {

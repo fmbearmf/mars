@@ -14,4 +14,4 @@ macro_rules! noop_derive {
     };
 }
 
-noop_derive!(FromBytes, Unaligned, Immutable, KnownLayout);
+noop_derive!(FromBytes, IntoBytes, Unaligned, Immutable, KnownLayout);

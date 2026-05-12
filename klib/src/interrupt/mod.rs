@@ -1,44 +1,52 @@
-use core::{fmt::Debug, ops::Deref};
+use mars_models::memory::registers::volatile::{
+    PureReadable, RPureReadOnly, RPureReadPureWrite, RPureReadWrite, RWriteOnly, Writeable,
+};
 
 use mars_models::declare_structs;
 use tock_registers::{
-    RegisterLongName, UIntLike,
-    interfaces::{Debuggable, ReadWriteable, Readable, Writeable},
-    register_bitfields, register_structs,
-    registers::{ReadOnly, ReadWrite, WriteOnly},
+    register_structs,
+    registers::{ReadOnly, ReadWrite},
 };
 use zerocopy::*;
 
-use super::interrupt::gicv3::registers::{
-    GICD_CTLR, GICD_ICFGR, GICD_IIDR, GICD_INT, GICD_IROUTER, GICD_TYPER, GICR_CTLR, GICR_WAKER,
-};
-
 pub mod gicv3;
 
-pub trait InterruptController {
-    type Error;
+use gicv3::registers::{
+    GICD_CTLR, GICD_ICFGR, GICD_IIDR, GICD_INT, GICD_IROUTER, GICD_TYPER, GICR_CTLR, GICR_WAKER,
+    gic::{
+        GicBitfield32, GicBitfield64, GicIcfgr, GicdCtlr, GicdTyper, GicrCtlr, GicrPropBar,
+        GicrTyper, GicrWaker,
+    },
+};
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum InterruptError {
+    InvalidInterruptId,
+    NotSupported,
+}
+
+pub trait InterruptController: Send + Sync {
     /// initializes the controller.
-    fn init(&mut self) -> Result<(), Self::Error>;
+    fn init(&self) -> Result<(), InterruptError>;
 
     /// enables a specific interrupt by id.
-    fn enable_interrupt(&mut self, int_id: u32) -> Result<(), Self::Error>;
+    fn enable_interrupt(&self, int_id: u32) -> Result<(), InterruptError>;
 
     /// disables a specific interrupt by id.
-    fn disable_interrupt(&mut self, int_id: u32) -> Result<(), Self::Error>;
+    fn disable_interrupt(&self, int_id: u32) -> Result<(), InterruptError>;
 
     /// acknowledges highest priority pending interrupt.
     /// `Some(id)` if the interrupt is pending; `None` if it's spurious.
-    fn acknowledge_interrupt(&mut self) -> Result<Option<u32>, Self::Error>;
+    fn acknowledge_interrupt(&self) -> Result<Option<u32>, InterruptError>;
 
     /// signals EOI for an interrupt id.
-    fn end_of_interrupt(&mut self, int_id: u32) -> Result<(), Self::Error>;
+    fn end_of_interrupt(&self, int_id: u32) -> Result<(), InterruptError>;
 
     /// sets priority of interrupt.
-    fn set_priority(&mut self, int_id: u32, priority: u8) -> Result<(), Self::Error>;
+    fn set_priority(&self, int_id: u32, priority: u8) -> Result<(), InterruptError>;
 
     /// routes interrupt to a specific CPU.
-    fn set_affinity(&mut self, int_id: u32, affinity: u64) -> Result<(), Self::Error>;
+    fn set_affinity(&self, int_id: u32, affinity: u64) -> Result<(), InterruptError>;
 }
 
 /// abstract interface
@@ -84,44 +92,51 @@ register_structs! {
     }
 }
 
-register_structs! {
-    #[allow(non_snake_case)]
-    pub GicrRdRegisters {
-        (0x0000 => pub CTLR: ReadWrite<u32, GICR_CTLR::Register>),
-        (0x0004 => pub IIDR: ReadOnly<u32>),
-        (0x0008 => pub TYPER: ReadOnly<u64>),
-        (0x0010 => _reserved0),
-        (0x0014 => pub WAKER: ReadWrite<u32, GICR_WAKER::Register>),
-        (0x0018 => @END),
+declare_structs!(
+    #[derive(KnownLayout, FromBytes, IntoBytes)]
+    pub GicdRegistersN {
+        (0x0000 => pub ctl: RPureReadPureWrite<u32, GicdCtlr>),
+        (0x0004 => pub type_: RPureReadOnly<u32, GicdTyper>),
+        (0x0080 => pub igroup: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
+        (0x0100 => pub iset_enable: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
+        (0x0180 => pub iclear_enable: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
+        (0x0200 => pub iset_pend: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
+        (0x0280 => pub iclear_pend: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
+        (0x0300 => pub iset_active: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
+        (0x0380 => pub iclear_active: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
+        (0x0400 => pub ipriority: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
+        (0x0C00 => pub icfg: [RPureReadPureWrite<u32, GicIcfgr>; 64]),
+        (0x6100 => pub irouter: [RPureReadPureWrite<u64, GicBitfield64>; 992]),
+        (0x10000 => @END)
     }
-}
+);
 
-unsafe impl Sync for GicrRdRegisters {}
+unsafe impl Sync for GicdRegistersN {}
 
-register_structs! {
-    #[allow(non_snake_case)]
-    pub GicrSgiRegisters {
-        (0x0000 => _reserved0),
-        (0x0080 => pub IGROUPR0: ReadWrite<u32>),
-        (0x0084 => _reserved1),
-        (0x0100 => pub ISENABLER0: ReadWrite<u32>),
-        (0x0104 => _reserved2),
-        (0x0180 => pub ICENABLER0: ReadWrite<u32>),
-        (0x0184 => _reserved3),
-        (0x0200 => pub ISPENDR0: ReadWrite<u32>),
-        (0x0204 => _reserved4),
-        (0x0280 => pub ICPENDR0: ReadWrite<u32>),
-        (0x0284 => _reserved5),
-        (0x0300 => pub ISACTIVER0: ReadWrite<u32>),
-        (0x0304 => _reserved6),
-        (0x0400 => pub IPRIORITYR: [ReadWrite<u8>; 32]),
-        (0x0420 => _reserved7),
-        (0x0C00 => pub ICFGR0: ReadWrite<u32>),
-        (0x0C04 => pub ICFGR1: ReadWrite<u32>),
-        (0x0C08 => _reserved8),
-        (0x0D00 => pub IGRPMODR0: ReadWrite<u32>),
-        (0x0D04 => @END),
+declare_structs!(
+    #[derive(KnownLayout, Immutable, FromBytes, IntoBytes)]
+    pub GicrRegisters {
+        // RD_base
+        (0x0000 => pub ctl: RPureReadWrite<u32, GicrCtlr>),
+        (0x0008 => pub type_: RPureReadOnly<u64, GicrTyper>),
+        (0x0014 => pub wake: RPureReadWrite<u32, GicrWaker>),
+        (0x0040 => pub set_lpi: RWriteOnly<u64, GicBitfield64>),
+        (0x0048 => pub clear_lpi: RWriteOnly<u64, GicBitfield64>),
+        (0x0070 => pub property_bar: RPureReadWrite<u64, GicrPropBar>),
+        (0x0078 => pub pending_bar: RPureReadWrite<u64, GicBitfield64>),
+
+        // SGI_base
+        (0x10080 => igroup0: RPureReadWrite<u32, GicBitfield32>),
+        (0x10100 => iset_enable0: RPureReadWrite<u32, GicBitfield32>),
+        (0x10180 => iclear_enable0: RPureReadWrite<u32, GicBitfield32>),
+        (0x10200 => iset_pend0: RPureReadWrite<u32, GicBitfield32>),
+        (0x10280 => iclear_pend0: RPureReadWrite<u32, GicBitfield32>),
+        (0x10300 => iset_active0: RPureReadWrite<u32, GicBitfield32>),
+        (0x10380 => iclear_active0: RPureReadWrite<u32, GicBitfield32>),
+        (0x10400 => ipriority: [RPureReadWrite<u32, GicBitfield32>; 8]),
+        (0x10C00 => icfg0: RPureReadWrite<u32, GicIcfgr>),
+        (0x10C04 => icfg1: RPureReadWrite<u32, GicIcfgr>),
+        (0x10D00 => igroup_mod: RPureReadWrite<u32, GicBitfield32>),
+        (0x20000 => @END)
     }
-}
-
-unsafe impl Sync for GicrSgiRegisters {}
+);

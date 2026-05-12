@@ -1,4 +1,3 @@
-use aarch64_cpu_ext::registers::MPIDR_EL1::Aff0;
 use tock_registers::register_bitfields;
 
 pub mod gic;

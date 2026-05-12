@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
-use core::ops::{Add, BitAnd, BitOr, Not, Shl, Shr, Sub};
+use core::ops::{Add, BitAnd, BitOr, BitOrAssign, Not, Shl, Shr, Sub};
 
-use hax_lib::{exclude, opaque};
+use hax_lib::opaque;
 
 #[opaque]
 pub trait RegisterValue:
@@ -43,6 +43,27 @@ pub trait FieldType<T: RegisterValue>: Sized {
     fn into_bits(self) -> T;
 }
 
+macro_rules! impl_fieldtype_widen {
+    ($target:ty : $($src:ty), + $(,)?) => {
+        $(
+            impl FieldType<$target> for $src
+            {
+                fn from_bits(bits: $target) -> Self {
+                    bits as Self
+                }
+
+                fn into_bits(self) -> $target {
+                    self as $target
+                }
+            }
+        )+
+    };
+}
+
+impl_fieldtype_widen!(u16: u8);
+impl_fieldtype_widen!(u32: u8, u16);
+impl_fieldtype_widen!(u64: u8, u16, u32);
+
 impl<T: RegisterValue> FieldType<T> for T {
     fn from_bits(bits: T) -> Self {
         bits
@@ -58,6 +79,33 @@ impl<T: RegisterValue> FieldType<T> for bool {
     }
     fn into_bits(self) -> T {
         if self { T::from(1) } else { T::ZERO }
+    }
+}
+
+#[opaque]
+impl<
+    T: RegisterValue + Shr<usize, Output = T> + Shl<usize, Output = T> + BitOrAssign,
+    const N: usize,
+> FieldType<T> for [bool; N]
+{
+    fn from_bits(bits: T) -> Self {
+        let mut result = [false; N];
+
+        for i in 0..N {
+            let mask = T::from(1) << i;
+            result[i] = (bits & mask) != T::ZERO;
+        }
+        result
+    }
+
+    fn into_bits(self) -> T {
+        let mut bits = T::ZERO;
+        for i in 0..N {
+            if self[i] {
+                bits |= T::from(1) << i;
+            }
+        }
+        bits
     }
 }
 

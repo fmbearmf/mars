@@ -120,7 +120,6 @@ pub struct SecondaryBootArgs {
     pub stack_top_virt: u64,
     pub entry_virt: u64,
     pub sctlr: u64,
-    pub cpu_desc: *const CpuDescriptor,
 }
 
 pub fn mpidr_key(mpidr: u64) -> u64 {

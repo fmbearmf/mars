@@ -5,18 +5,22 @@ extern crate alloc;
 
 mod allocator;
 mod earlyinit;
+mod interrupt;
 mod log;
 
 use ::log::{LevelFilter, debug, info, trace};
 use aarch64_cpu::asm::wfe;
+use atomic_refcell::AtomicRefCell;
 use core::{
     arch::{asm, naked_asm},
     mem::MaybeUninit,
     panic::PanicInfo,
     ptr::{self},
+    sync::atomic::AtomicPtr,
 };
 use klib::{
     bytes_to_human_readable,
+    interrupt::InterruptController,
     pm::page::PageAllocator,
     register_drivers,
     scheduler::Scheduler,

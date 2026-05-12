@@ -161,6 +161,7 @@
           packages =
             (with pkgs; [
               dtc
+              qemu
               cargo-expand
               cargo-bloat
               (callPackage ./gdb/package.nix { })

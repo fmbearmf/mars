@@ -1,19 +1,30 @@
 use core::{
     arch::asm,
     fmt::Debug,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU8, Ordering},
 };
 
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
-    registers::{ReadWriteable, Readable, Writeable},
+    registers::{ReadWriteable as TRW, Writeable as TW},
+};
+use atomic_refcell::{AtomicRef, AtomicRefMut};
+use mars_models::memory::registers::volatile::{PureReadable, PureWriteable, Writeable};
+
+use crate::{
+    interrupt::{
+        GicdRegistersN, GicrRegisters, InterruptError,
+        gicv3::registers::{
+            GICR_WAKER,
+            gic::{GicdCtlr, GicrCtlr, GicrWaker},
+        },
+    },
+    sync::Mutex,
+    this_cpu,
 };
 
-use crate::interrupt::gicv3::registers::GICR_WAKER;
-
 use super::{
-    GICD_CTLR, GICD_TYPER, GICR_CTLR, GicdRegisters, GicrRdRegisters, GicrSgiRegisters,
-    InterruptController, InterruptInterface,
+    GICD_CTLR, GICD_TYPER, GICR_CTLR, GicdRegisters, InterruptController, InterruptInterface,
 };
 
 use self::registers::{icc_pmr_el1::ICC_PMR_EL1, icc_sre_el1::ICC_SRE_EL1};
@@ -22,54 +33,49 @@ pub mod registers;
 
 static INIT_STATE: AtomicU8 = AtomicU8::new(0);
 
-#[derive(Copy, Clone)]
-pub struct GicV3<'a, I: InterruptInterface> {
-    pub distributor: &'a GicdRegisters,
-    pub redistributor_rd: &'a GicrRdRegisters,
-    pub redistributor_sgi: &'a GicrSgiRegisters,
+pub struct GicV3<'a, I: InterruptInterface + Send + Sync> {
+    pub distributor: &'a GicdRegistersN,
     pub iface: I,
 }
 
-impl<I: InterruptInterface> Debug for GicV3<'_, I> {
+impl<I: InterruptInterface + Send + Sync> Debug for GicV3<'_, I> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GicV3").finish()
     }
 }
 
-impl<'a, I: InterruptInterface> GicV3<'a, I> {
-    pub fn new(
-        distributor: &'a GicdRegisters,
-        redistributor_rd: &'a GicrRdRegisters,
-        redistributor_sgi: &'a GicrSgiRegisters,
-        iface: I,
-    ) -> Self {
-        Self {
-            distributor,
-            redistributor_rd,
-            redistributor_sgi,
-            iface,
-        }
+impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
+    pub fn new(distributor: &'a mut GicdRegistersN, iface: I) -> Self {
+        Self { distributor, iface }
     }
 
     fn wait_for_distributor_rwp(&self) {
-        dsb(barrier::SY);
-        while self.distributor.CTLR.matches_all(GICD_CTLR::RWP::True) {
+        dsb(barrier::ST);
+
+        while self
+            .distributor
+            .ctl
+            .read_field_pure(GicdCtlr::RegisterWritePending)
+            == true
+        {
             core::hint::spin_loop();
         }
     }
 
     fn wait_for_redistributor_rwp(&self) {
-        dsb(barrier::SY);
-        while self.redistributor_rd.CTLR.matches_all(GICR_CTLR::RWP::True) {
+        dsb(barrier::ISHST);
+
+        let guard = this_cpu!().redistributor.borrow();
+        let redist = guard.as_ref().expect("`None` redistributor");
+
+        while redist.ctl.read_field_pure(GicrCtlr::RegisterWritePending) == true {
             core::hint::spin_loop();
         }
     }
 }
 
-impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
-    type Error = GicError;
-
-    fn init(&mut self) -> Result<(), Self::Error> {
+impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, I> {
+    fn init(&self) -> Result<(), InterruptError> {
         ICC_SRE_EL1.modify(ICC_SRE_EL1::SRE::Enabled);
         {
             let value = 0;
@@ -82,29 +88,29 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
         match INIT_STATE.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed) {
             Ok(_) => {
                 self.distributor
-                    .CTLR
-                    .modify(GICD_CTLR::EnableGrp1::Disabled + GICD_CTLR::EnableGrp1A::Disabled);
+                    .ctl
+                    .modify_field_pure(GicdCtlr::EnableGroup1, false);
 
                 self.wait_for_distributor_rwp();
 
-                self.distributor.CTLR.modify(GICD_CTLR::ARE_NS::Enabled);
+                self.distributor.ctl.modify_field_pure(GicdCtlr::Are, true);
 
                 self.wait_for_distributor_rwp();
 
                 // shared peripheral interrupts
                 for i in 1..32 {
-                    self.distributor.ICENABLER[i].set(0xFFFF_FFFF); // disable
-                    self.distributor.ICPENDR[i].set(0xFFFF_FFFF); // clear pending
-                    self.distributor.IGROUPR[i].set(0xFFFF_FFFF); // group 1 (non-secure)
+                    self.distributor.iclear_enable[i].write_pure(0xFFFF_FFFF); // disable
+                    self.distributor.iclear_pend[i].write_pure(0xFFFF_FFFF); // clear pending
+                    self.distributor.igroup[i].write_pure(0xFFFF_FFFF); // group 1 (non-secure)
                 }
 
                 for i in 32..1020 {
-                    self.distributor.IPRIORITYR[i].set(0xA0); // default priority
+                    self.distributor.ipriority[i].write_pure(0xA0); // default priority
                 }
 
                 self.distributor
-                    .CTLR
-                    .modify(GICD_CTLR::EnableGrp1::Enabled + GICD_CTLR::EnableGrp1A::Enabled);
+                    .ctl
+                    .modify_field_pure(GicdCtlr::EnableGroup1, true);
 
                 self.wait_for_distributor_rwp();
 
@@ -117,37 +123,32 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
             }
         }
 
-        self.redistributor_rd
-            .WAKER
-            .modify(GICR_WAKER::ProcessorAsleep::Awake);
+        let guard = this_cpu!().redistributor.borrow_mut();
+        let mut redist = AtomicRefMut::map(guard, |opt| {
+            opt.as_mut().expect("redistributor not initialized")
+        });
+
+        redist.wake.modify_field(GicrWaker::ProcessorSleep, false);
         dsb(barrier::SY);
 
-        while self
-            .redistributor_rd
-            .WAKER
-            .matches_all(GICR_WAKER::ProcessorAsleep::Sleep)
-        {
+        while redist.wake.read_field_pure(GicrWaker::ProcessorSleep) == true {
             core::hint::spin_loop();
         }
 
-        while self
-            .redistributor_rd
-            .WAKER
-            .matches_all(GICR_WAKER::ChildrenAsleep::True)
-        {
+        while redist.wake.read_field_pure(GicrWaker::ChildrenAsleep) == true {
             core::hint::spin_loop();
         }
 
         // software generated interrupts and private peripheral interrupts
-        self.redistributor_sgi.ICENABLER0.set(0xFFFF_FFFF); // disable SGI/PPI
-        self.redistributor_sgi.ICPENDR0.set(0xFFFF_FFFF); // clear pending
-        self.redistributor_sgi.IGROUPR0.set(0xFFFF_FFFF); // group 1 (non-secure)
-        self.redistributor_sgi.IGRPMODR0.set(0xFFFF_FFFF);
+        redist.iclear_enable0.write(0xFFFF_FFFF); // disable SGI/PPI
+        redist.iclear_pend0.write(0xFFFF_FFFF); // clear pending
+        redist.igroup0.write(0xFFFF_FFFF); // group 1 (non-secure)
+        redist.igroup_mod.write(0xFFFF_FFFF);
 
         self.wait_for_redistributor_rwp();
 
         for i in 0..32 {
-            self.redistributor_sgi.IPRIORITYR[i].set(0xA0); // default priority
+            redist.ipriority[i].write(0xA0); // default priority
         }
 
         isb(barrier::SY);
@@ -155,37 +156,47 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
         Ok(())
     }
 
-    fn enable_interrupt(&mut self, int_id: u32) -> Result<(), Self::Error> {
+    fn enable_interrupt(&self, int_id: u32) -> Result<(), InterruptError> {
         if int_id < 32 {
-            self.redistributor_sgi.ISENABLER0.set(1 << int_id);
+            let guard = this_cpu!().redistributor.borrow_mut();
+            let mut redist = AtomicRefMut::map(guard, |opt| {
+                opt.as_mut().expect("redistributor not initialized")
+            });
+
+            redist.iset_enable0.write(1 << int_id);
             self.wait_for_redistributor_rwp();
         } else if int_id < 1020 {
             let reg_i = (int_id / 32) as usize;
             let bit = int_id % 32;
-            self.distributor.ISENABLER[reg_i].set(1 << bit);
+            self.distributor.iset_enable[reg_i].write_pure(1 << bit);
             self.wait_for_distributor_rwp();
         } else {
-            return Err(GicError::InvalidInterruptId);
+            return Err(InterruptError::InvalidInterruptId);
         }
         Ok(())
     }
 
-    fn disable_interrupt(&mut self, int_id: u32) -> Result<(), Self::Error> {
+    fn disable_interrupt(&self, int_id: u32) -> Result<(), InterruptError> {
         if int_id < 32 {
-            self.redistributor_sgi.ICENABLER0.set(1 << int_id);
+            let guard = this_cpu!().redistributor.borrow_mut();
+            let mut redist = AtomicRefMut::map(guard, |opt| {
+                opt.as_mut().expect("redistributor not initialized")
+            });
+
+            redist.iclear_enable0.write(1 << int_id);
             self.wait_for_redistributor_rwp();
         } else if int_id < 1020 {
             let reg_i = (int_id / 32) as usize;
             let bit = int_id % 32;
-            self.distributor.ICENABLER[reg_i].set(1 << bit);
+            self.distributor.iclear_enable[reg_i].write_pure(1 << bit);
             self.wait_for_distributor_rwp();
         } else {
-            return Err(GicError::InvalidInterruptId);
+            return Err(InterruptError::InvalidInterruptId);
         }
         Ok(())
     }
 
-    fn acknowledge_interrupt(&mut self) -> Result<Option<u32>, Self::Error> {
+    fn acknowledge_interrupt(&self) -> Result<Option<u32>, InterruptError> {
         let int_id = self.iface.read_iar();
 
         // id 1023 is defined as spurious
@@ -196,41 +207,40 @@ impl<'a, I: InterruptInterface> InterruptController for GicV3<'a, I> {
         }
     }
 
-    fn end_of_interrupt(&mut self, int_id: u32) -> Result<(), Self::Error> {
+    fn end_of_interrupt(&self, int_id: u32) -> Result<(), InterruptError> {
         if int_id < 1020 {
             self.iface.write_eoir(int_id);
             Ok(())
         } else {
-            Err(GicError::InvalidInterruptId)
+            Err(InterruptError::InvalidInterruptId)
         }
     }
 
-    fn set_priority(&mut self, int_id: u32, priority: u8) -> Result<(), Self::Error> {
+    fn set_priority(&self, int_id: u32, priority: u8) -> Result<(), InterruptError> {
         if int_id < 32 {
-            self.redistributor_sgi.IPRIORITYR[int_id as usize].set(priority);
+            let guard = this_cpu!().redistributor.borrow_mut();
+            let mut redist = AtomicRefMut::map(guard, |opt| {
+                opt.as_mut().expect("redistributor not initialized")
+            });
+
+            redist.ipriority[int_id as usize].write(priority as u32);
         } else if int_id < 1020 {
-            self.distributor.IPRIORITYR[int_id as usize].set(priority);
+            self.distributor.ipriority[int_id as usize].write_pure(priority as u32);
         } else {
-            return Err(GicError::InvalidInterruptId);
+            return Err(InterruptError::InvalidInterruptId);
         }
         Ok(())
     }
 
-    fn set_affinity(&mut self, int_id: u32, affinity: u64) -> Result<(), Self::Error> {
+    fn set_affinity(&self, int_id: u32, affinity: u64) -> Result<(), InterruptError> {
         if int_id < 32 {
             // SGIs and PPIs are private to a core
-            return Err(GicError::NotSupported);
+            return Err(InterruptError::NotSupported);
         } else if int_id >= 1020 {
-            return Err(GicError::InvalidInterruptId);
+            return Err(InterruptError::InvalidInterruptId);
         }
 
-        self.distributor.IROUTER[int_id as usize].set(affinity);
+        self.distributor.irouter[int_id as usize].write_pure(affinity);
         Ok(())
     }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum GicError {
-    InvalidInterruptId,
-    NotSupported,
 }

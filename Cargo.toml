@@ -24,6 +24,7 @@ derivative = "2.2.0"
 log = "0.4.29"
 bitflags = "2.11.1"
 hax-lib = { git = "https://github.com/cryspen/hax", version = "0.3.6" }
+atomic_refcell = "0.1.14"
 
 # self
 mars_getters = { path = "./klib/getters" }

@@ -1,15 +1,12 @@
 use core::marker::PhantomData;
-use core::ops::{BitAnd, Shr};
 use core::ptr;
+use std::cell::UnsafeCell;
 
-use hax_lib::opaque;
-use zerocopy::{FromBytes, Immutable, KnownLayout};
+use hax_lib::{fstar, opaque};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::memory::registers::field::FieldType;
-use crate::{
-    memory::registers::field::{Field, RegisterValue},
-    to_mask,
-};
+use crate::memory::registers::field::{Field, RegisterValue};
 
 pub trait Register {
     type Output: RegisterValue + Copy;
@@ -43,6 +40,16 @@ pub trait Writeable: Register {
 
     fn modify_field<const O: u8, const W: u8, V: FieldType<Self::Output>>(
         &mut self,
+        field: Field<Self::Tag, O, W, Self::Output, V>,
+        value: V,
+    );
+}
+
+pub trait PureWriteable: Writeable {
+    fn write_pure(&self, value: Self::Output);
+
+    fn modify_field_pure<const O: u8, const W: u8, V: FieldType<Self::Output>>(
+        &self,
         field: Field<Self::Tag, O, W, Self::Output, V>,
         value: V,
     );
@@ -90,7 +97,7 @@ impl<'a, T: RegisterValue, Tag> RegisterModifier<T, Tag> {
 }
 
 #[repr(transparent)]
-#[derive(FromBytes, Immutable, KnownLayout)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct Volatile<T: RegisterValue, Tag> {
     data: T,
     _phantom_tag: PhantomData<Tag>,
@@ -100,7 +107,7 @@ pub struct Volatile<T: RegisterValue, Tag> {
 impl<T: RegisterValue + Copy, Tag> Volatile<T, Tag> {
     #[inline]
     pub fn read(&self) -> T {
-        unsafe { ptr::read_volatile(&self.data as *const T) }
+        unsafe { ptr::read_volatile(&self.data) }
     }
     #[inline]
     pub fn write(&mut self, value: T) {
@@ -137,9 +144,57 @@ impl<T: RegisterValue + Copy, Tag> Volatile<T, Tag> {
     }
 }
 
+#[repr(transparent)]
+#[derive(FromBytes, IntoBytes, KnownLayout)]
+pub struct DirtyVolatile<T: RegisterValue, Tag> {
+    data: UnsafeCell<T>,
+    _phantom_tag: PhantomData<Tag>,
+}
+
+#[opaque]
+impl<T: RegisterValue + Copy, Tag> DirtyVolatile<T, Tag> {
+    #[inline]
+    pub fn read(&self) -> T {
+        unsafe { ptr::read_volatile(self.data.get()) }
+    }
+    #[inline]
+    pub fn write(&self, value: T) {
+        unsafe { ptr::write_volatile(self.data.get(), value) }
+    }
+
+    #[inline]
+    pub fn read_field<const O: u8, const W: u8, V: FieldType<T>>(
+        &self,
+        field: Field<Tag, O, W, T, V>,
+    ) -> V {
+        field.lift(self.read())
+    }
+
+    #[inline]
+    pub fn modify_field<const O: u8, const W: u8, V: FieldType<T>>(
+        &self,
+        field: Field<Tag, O, W, T, V>,
+        value: V,
+    ) {
+        let mask = field.mask();
+        let old = self.read();
+        let new = (old & !mask) | field.lower(value);
+
+        self.write(new);
+    }
+
+    #[inline]
+    pub fn builder(&self) -> RegisterModifier<T, Tag> {
+        RegisterModifier {
+            value: self.read(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
 /// read-only field that has side effects
 #[repr(transparent)]
-#[derive(FromBytes, Immutable, KnownLayout)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RReadOnly<T: RegisterValue, Tag>(Volatile<T, Tag>);
 
 mod r_ro {
@@ -169,7 +224,7 @@ mod r_ro {
 
 /// read-only field that doesn't have side effects
 #[repr(transparent)]
-#[derive(FromBytes, Immutable, KnownLayout)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RPureReadOnly<T: RegisterValue, Tag>(Volatile<T, Tag>);
 
 mod r_purero {
@@ -216,7 +271,7 @@ mod r_purero {
 
 /// write-only field
 #[repr(transparent)]
-#[derive(FromBytes, Immutable, KnownLayout)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RWriteOnly<T: RegisterValue, Tag>(Volatile<T, Tag>);
 
 mod r_writeonly {
@@ -241,9 +296,124 @@ mod r_writeonly {
     }
 }
 
+/// pure write-only field
+#[repr(transparent)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct RPureWriteOnly<T: RegisterValue, Tag>(DirtyVolatile<T, Tag>);
+
+mod r_pure_writeonly {
+    use super::*;
+    impl<T: RegisterValue + Copy, Tag> Register for RPureWriteOnly<T, Tag> {
+        type Output = T;
+        type Tag = Tag;
+    }
+
+    impl<T: RegisterValue + Copy, Tag> Writeable for RPureWriteOnly<T, Tag> {
+        fn write(&mut self, value: T) {
+            self.0.write(value)
+        }
+        fn modify_field<const O: u8, const W: u8, V: FieldType<T>>(
+            &mut self,
+            field: Field<Self::Tag, O, W, T, V>,
+            value: V,
+        ) {
+            // can't read. just write.
+            self.0.write(field.lower(value));
+        }
+    }
+
+    impl<T: RegisterValue + Copy, Tag> PureWriteable for RPureWriteOnly<T, Tag> {
+        fn write_pure(&self, value: Self::Output) {
+            self.0.write(value);
+        }
+
+        fn modify_field_pure<const O: u8, const W: u8, V: FieldType<Self::Output>>(
+            &self,
+            field: Field<Self::Tag, O, W, Self::Output, V>,
+            value: V,
+        ) {
+            self.0.write(field.lower(value));
+        }
+    }
+}
+
+/// r&w field where reading and writing don't cause side effects
+#[repr(transparent)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct RPureReadPureWrite<T: RegisterValue, Tag>(DirtyVolatile<T, Tag>);
+
+mod r_purer_purew {
+    use super::*;
+    impl<T: RegisterValue + Copy, Tag> Register for RPureReadPureWrite<T, Tag> {
+        type Output = T;
+        type Tag = Tag;
+    }
+
+    impl<T: RegisterValue + Copy, Tag> Writeable for RPureReadPureWrite<T, Tag> {
+        fn write(&mut self, value: Self::Output) {
+            self.0.write(value)
+        }
+
+        fn modify_field<const O: u8, const W: u8, V: FieldType<T>>(
+            &mut self,
+            field: Field<Self::Tag, O, W, Self::Output, V>,
+            value: V,
+        ) {
+            self.0.modify_field(field, value)
+        }
+    }
+
+    impl<T: RegisterValue + Copy, Tag> PureWriteable for RPureReadPureWrite<T, Tag> {
+        fn write_pure(&self, value: Self::Output) {
+            self.0.write(value)
+        }
+        fn modify_field_pure<const O: u8, const W: u8, V: FieldType<T>>(
+            &self,
+            field: Field<Self::Tag, O, W, Self::Output, V>,
+            value: V,
+        ) {
+            self.0.modify_field(field, value)
+        }
+    }
+
+    impl<T: RegisterValue + Copy, Tag> Readable for RPureReadPureWrite<T, Tag> {
+        fn read_impure(&mut self) -> T {
+            self.0.read()
+        }
+
+        fn read_field_impure<const O: u8, const W: u8, V: FieldType<T>>(
+            &mut self,
+            field: Field<Tag, O, W, T, V>,
+        ) -> V {
+            self.0.read_field(field)
+        }
+
+        fn builder_impure(&mut self) -> RegisterModifier<T, Self::Tag> {
+            self.0.builder()
+        }
+    }
+
+    impl<T: RegisterValue + Copy, Tag> PureReadable for RPureReadPureWrite<T, Tag> {
+        fn read_pure(&self) -> T {
+            self.0.read()
+        }
+
+        fn read_field_pure<const O: u8, const W: u8, V: FieldType<T>>(
+            &self,
+            field: Field<Tag, O, W, T, V>,
+        ) -> V {
+            self.0.read_field(field)
+        }
+
+        fn builder_pure(&self) -> RegisterModifier<T, Self::Tag> {
+            self.0.builder()
+        }
+    }
+}
+
 /// r&w field where reading doesn't cause side effects
 #[repr(transparent)]
-#[derive(FromBytes, Immutable, KnownLayout)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RPureReadWrite<T: RegisterValue, Tag>(Volatile<T, Tag>);
 
 mod r_purerw {
@@ -303,7 +473,7 @@ mod r_purerw {
 
 /// r&w field where reading causes side effects
 #[repr(transparent)]
-#[derive(FromBytes, Immutable, KnownLayout)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RReadWrite<T: RegisterValue, Tag>(Volatile<T, Tag>);
 
 mod r_rw {

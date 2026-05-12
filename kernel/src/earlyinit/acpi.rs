@@ -44,7 +44,8 @@ pub fn acpi_init() {
 
     assert_eq!(iter.next(), None, "more than one ACPI2 table?");
 
-    let xsdp = unsafe { Xsdp::try_from_ptr(xsdp) }.unwrap_or_else(|e| panic!("XSDP err: {}", e));
+    let xsdp =
+        unsafe { Xsdp::try_from_addr(xsdp as _) }.unwrap_or_else(|e| panic!("XSDP err: {}", e));
 
     trace!("xsdp found at {:#p}", xsdp);
 

@@ -268,7 +268,7 @@ pub fn populate_alloc_stage0<T: MemoryMap>(map: &T) {
     }
 }
 
-/// wipe and then fully populate the allocator
+/// wipe and then fully populate the allocator.
 /// safety: only call when UEFI boot services data is safe to be clobbered
 pub fn populate_alloc_stage1<T: MemoryMap>(map: &T) {
     let page_alloc = unsafe { KALLOCATOR.page_alloc_mut() };

@@ -157,6 +157,7 @@ macro_rules! _declare_fields {
     ) => {
         $crate::paste! {
             $(#[$m])*
+            #[allow(non_snake_case)]
             #[repr(C)]
             $v struct $n {
                 $($facc)*

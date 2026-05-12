@@ -41,7 +41,7 @@ pub struct Mutex<T: ?Sized> {
 }
 
 // SAFETY: only 1 core can access `data` at a time
-unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
+unsafe impl<T: ?Sized + Sync> Sync for Mutex<T> {}
 unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
 
 pub struct MutexGuard<'a, T> {

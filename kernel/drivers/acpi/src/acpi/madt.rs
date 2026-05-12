@@ -1,10 +1,7 @@
 use core::{fmt::Debug, iter::FusedIterator, marker::PhantomData, ptr, slice, u32, u64};
 
 use hax_lib::{attributes, ensures, opaque, requires};
-use klib::{
-    interrupt::{GicrRdRegisters, GicrSgiRegisters},
-    vm::phys_addr_to_dmap,
-};
+use klib::{interrupt::GicrRegisters, vm::phys_addr_to_dmap};
 use tock_registers::interfaces::Debuggable;
 
 use crate::{acpi::AcpiTableTrait, impl_table};
@@ -20,7 +17,6 @@ pub const MADT_GICR: u8 = 0x0E;
 pub const MADT_ITS: u8 = 0x0F;
 
 pub const GICR_FRAME_SIZE: usize = 0x002_0000; // 128kib
-pub const GICR_SGI_OFFSET: usize = 0x001_0000;
 
 impl_table! {
     #[derive(Debug, Clone, Copy)]
@@ -102,14 +98,13 @@ pub struct GicrFrameBlock<'a> {
 
 #[derive(Copy, Clone)]
 pub struct GicrFrame<'a> {
-    pub rd: &'a GicrRdRegisters,
-    pub sgi: &'a GicrSgiRegisters,
+    pub reg: &'a GicrRegisters,
 }
 
 #[opaque]
 impl<'a> Debug for GicrFrame<'a> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "GicrFrame {{ rd: {:p}, sgi: {:p} }}", self.rd, self.sgi)
+        write!(f, "GicrFrame {{ regs: {:p} }}", self.reg)
     }
 }
 
@@ -146,13 +141,11 @@ impl<'a> GicrFrameBlock<'a> {
 
         let frame_slice = self.data.get(offset..offset + GICR_FRAME_SIZE)?;
 
-        let rd_slice = frame_slice.get(0..GICR_SGI_OFFSET)?;
-        let sgi_slice = frame_slice.get(GICR_SGI_OFFSET..GICR_FRAME_SIZE)?;
+        let regs_slice = frame_slice.get(0..GICR_FRAME_SIZE)?;
+        let regs_slice =
+            GicrRegisters::ref_from_bytes(regs_slice).expect("slice to gicrregisters fail");
 
-        Some(GicrFrame {
-            rd: rd_slice,
-            sgi: sgi_slice,
-        })
+        Some(GicrFrame { reg: regs_slice })
     }
 }
 

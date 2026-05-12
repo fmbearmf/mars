@@ -87,7 +87,6 @@ pub struct CpuDescriptor {
     pub mpidr: u64,
     pub available: bool,
     pub efficiency_class: u8,
-    pub gic: Option<GicV3<'static, Arm64InterruptInterface>>,
     pub timer_irq: u64,
 }
 
@@ -98,7 +97,6 @@ impl CpuDescriptor {
             mpidr: u64::MAX,
             available: false,
             efficiency_class: 0,
-            gic: None,
             timer_irq: 0_u64,
         }
     }
