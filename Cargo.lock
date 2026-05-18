@@ -375,6 +375,7 @@ dependencies = [
  "klib",
  "log",
  "mars-acpi-driver",
+ "mars-models-zerocopy",
  "protocol",
  "tock-registers 0.10.1",
  "uefi",

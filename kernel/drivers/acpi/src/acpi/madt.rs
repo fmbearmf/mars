@@ -6,7 +6,7 @@ use tock_registers::interfaces::Debuggable;
 
 use crate::{acpi::AcpiTableTrait, impl_table};
 
-use super::{SystemDescription, header::SdtHeader};
+use super::header::SdtHeader;
 use mars_getters::{unaligned_getters, unaligned_getters_hax};
 
 use super::FromBytes;
@@ -189,6 +189,7 @@ pub struct MadtIter {
 
 impl Iterator for MadtIter {
     type Item = (u8, &'static [u8]);
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.ptr >= self.end {
             return None;
@@ -214,37 +215,5 @@ impl Madt {
             let end = (self as *const _ as *const u8).add(self.header.len() as usize);
             MadtIter { ptr: start, end }
         }
-    }
-}
-
-pub fn parse_gic_addresses(sys: &SystemDescription) -> Option<(u64, u64)> {
-    let madt = sys.madt?;
-
-    let mut gicd_phys_base = None;
-    let mut gicr_phys_base = None;
-
-    for (type_, slice) in madt.entries() {
-        match type_ {
-            MADT_GICD => {
-                let (gicd, _) = match GicDistributor::read_from_prefix(slice) {
-                    Ok(gicd) => gicd,
-                    Err(_) => unreachable!(),
-                };
-                gicd_phys_base = Some(gicd.phys_base());
-            }
-            MADT_GICR => {
-                let (gicr, _) = match GicRedistributor::read_from_prefix(slice) {
-                    Ok(gicr) => gicr,
-                    Err(_) => unreachable!(),
-                };
-                gicr_phys_base = Some(gicr.discovery_range_base());
-            }
-            _ => {}
-        }
-    }
-
-    match (gicd_phys_base, gicr_phys_base) {
-        (Some(d), Some(r)) => Some((d, r)),
-        _ => None,
     }
 }

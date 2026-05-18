@@ -91,7 +91,7 @@ fn panic(info: &PanicInfo) -> ! {
     busy_loop();
 }
 
-register_drivers!([mars_acpi_driver::DRIVER]);
+register_drivers!([]);
 
 #[allow(dead_code)]
 fn busy_loop() -> ! {

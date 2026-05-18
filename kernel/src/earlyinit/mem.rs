@@ -166,6 +166,8 @@ pub fn clone_and_process_mmap<T: MemoryMap>(map: &T) -> MemoryMapRefMut<'static>
             }
         }
 
+        desc.virt_start = KernelAddressTranslator.phys_to_dmap(desc.phys_start as _) as _;
+
         let ptr = unsafe { dest_ptr.add(write_i * desc_size) as *mut MemoryDescriptor };
         unsafe {
             ptr::write(ptr, desc);
@@ -305,7 +307,7 @@ pub fn populate_alloc_stage1<T: MemoryMap>(map: &T) {
         flush(page_alloc, start, end);
     }
 
-    unsafe { page_alloc.transition_dmap() };
+    //unsafe { page_alloc.transition_dmap() };
 }
 
 fn flush(page_alloc: &mut PageAllocator, start: usize, end: usize) {
@@ -327,6 +329,9 @@ fn flush(page_alloc: &mut PageAllocator, start: usize, end: usize) {
 fn add_subrange(page_alloc: &mut PageAllocator, start: usize, end: usize) {
     let start = align_up(start, PAGE_SIZE);
     let end = align_down(end, PAGE_SIZE);
+
+    let start = KernelAddressTranslator.phys_to_dmap(start) as usize;
+    let end = KernelAddressTranslator.phys_to_dmap(end) as usize;
 
     if end > start {
         let size = end - start;
@@ -653,6 +658,16 @@ fn map_all_dmap<'a, F, FM, I>(
             if let Some(desc) = optimal {
                 let (access, share, uxn, pxn, attr_index) = get_params(desc);
                 let va = phys_addr_to_dmap(current_pa as _) as usize;
+
+                if ((current_pa + PAGE_SIZE) <= align_up(0x6e258010, PAGE_SIZE)
+                    && current_pa >= align_down(0x6e258010, PAGE_SIZE))
+                {
+                    trace!(
+                        "interesting map {:#x}: {:?}",
+                        current_pa,
+                        (access, share, uxn, pxn, attr_index)
+                    );
+                }
 
                 map_page(
                     root_table,

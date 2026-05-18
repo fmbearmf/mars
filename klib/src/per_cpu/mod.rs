@@ -27,7 +27,7 @@ pub struct PerCpu;
 
 impl PerCpu {
     pub fn init(cores: usize) {
-        assert_ne!(
+        debug_assert_eq!(
             REGISTRY_PTR.load(core::sync::atomic::Ordering::Acquire),
             core::ptr::null_mut()
         );
@@ -68,6 +68,7 @@ impl PerCpu {
     /// the assumption is that the caller has an initialized TPIDR_EL1
     pub fn local() -> &'static PerCpuData {
         let ptr = TPIDR_EL1.get() as *const PerCpuData;
+        debug_assert!(!ptr.is_null());
         unsafe { &*ptr }
     }
 }

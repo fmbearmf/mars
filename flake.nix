@@ -164,7 +164,8 @@
               qemu
               cargo-expand
               cargo-bloat
-              (callPackage ./gdb/package.nix { })
+              #(callPackage ./gdb/package.nix { })
+              gdb
             ])
             ++ [
               toolchain

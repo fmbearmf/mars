@@ -45,27 +45,3 @@ mod macros {
         };
     }
 }
-
-pub static DRIVER: DriverDescriptor = DriverDescriptor {
-    name: "acpi",
-    compatible: &["idek"],
-    probe,
-};
-
-pub struct Acpi<'a> {
-    xsdp: &'a Xsdp,
-}
-
-impl Device for Acpi<'_> {
-    fn shutdown(&self) {
-        if self.xsdp.checksum() == 1 {
-            trace!("blug");
-        }
-    }
-}
-
-fn probe(node: &DeviceNode) -> Result<Box<dyn Device>, DriverError> {
-    trace!("probe! {:?}", node.id);
-
-    Err(DriverError::MissingResources)
-}

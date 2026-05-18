@@ -9,7 +9,8 @@ pub mod user;
 pub type TTENATIVE = TTE16K48;
 pub type TTEUEFI = TTE4K48;
 
-pub const DMAP_START: usize = 0xFFFF << 48;
+pub const VA_WIDTH: usize = 48;
+pub const DMAP_START: usize = 0xFFFF_usize << VA_WIDTH;
 
 pub const PAGE_INDEX_BITS: usize = TABLE_ENTRIES.trailing_zeros() as usize;
 pub const PAGE_SHIFT: usize = 14; // 16kib
@@ -177,13 +178,11 @@ pub const fn phys_addr_to_dmap(phys_addr: u64) -> u64 {
     if is_kernel_address(phys_addr as usize) {
         return phys_addr;
     }
-    DMAP_START as u64 + phys_addr
+    phys_addr | DMAP_START as u64
 }
 
 pub const fn dmap_addr_to_phys(dmap_addr: u64) -> u64 {
-    dmap_addr
-        .checked_sub(DMAP_START as u64)
-        .unwrap_or(dmap_addr)
+    dmap_addr & !DMAP_START as u64
 }
 
 #[inline]

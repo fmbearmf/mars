@@ -51,7 +51,10 @@ pub fn uefi_arm64_bootstrap(boot_info_ref: *mut BootInfo) {
     let uefi_mmap = &mut boot_info.memory_map;
     uefi_mmap.sort();
 
-    trace!("uefi_mmap @ {:p}", uefi_mmap.buffer() as *const _);
+    trace!(
+        "uefi_mmap @ {:p}",
+        uefi_mmap.buffer() as *const _ as *const ()
+    );
 
     let uefi_mmap = clone_and_process_mmap(uefi_mmap);
     trace!("processed uefi_mmap @ {:p}", uefi_mmap.buffer() as *const _);

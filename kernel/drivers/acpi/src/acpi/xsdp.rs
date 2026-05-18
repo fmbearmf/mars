@@ -148,13 +148,18 @@ impl<'a> XsdtIter<'a> {
 
     #[opaque]
     #[requires(addr != 0)]
-    fn cast_addr_header(&self, addr: u64) -> &'a SdtHeader {
-        unsafe { &*(addr as *const SdtHeader) }
+    fn cast_addr_header(&self, addr: u64) -> &'a [u8] {
+        unsafe {
+            let header_ptr = addr as *const SdtHeader;
+            let len = (*header_ptr).len() as usize;
+
+            core::slice::from_raw_parts(addr as *const u8, len)
+        }
     }
 }
 
 impl<'a> Iterator for XsdtIter<'a> {
-    type Item = &'a SdtHeader;
+    type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.curr < self.count {

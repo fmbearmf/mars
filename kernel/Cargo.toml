@@ -38,4 +38,5 @@ uefi = { workspace = true, default-features = false }
 uefi-raw.workspace = true
 log.workspace = true
 mars-acpi-driver.workspace = true
+mars-models-zerocopy = { workspace = true }
 atomic_refcell.workspace = true
