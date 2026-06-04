@@ -1,6 +1,8 @@
-use core::arch::asm;
+use core::{arch::asm, hash::BuildHasherDefault};
 
 use aarch64_cpu::registers::{MPIDR_EL1, Readable};
+use hashbrown::HashMap;
+use rustc_hash::FxHasher;
 
 use super::{interrupt::InterruptInterface, vcpu::CpuDescriptor};
 
@@ -94,22 +96,39 @@ impl InterruptInterface for Arm64InterruptInterface {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Mpidr(u64);
+pub struct CpuTopologyId(u32);
 
-impl Mpidr {
-    pub const fn new(aff3: u8, aff2: u8, aff1: u8, aff0: u8) -> Self {
-        Self(((aff3 as u64) << 32) | ((aff2 as u64) << 16) | ((aff1 as u64) << 8) | (aff0 as u64))
+impl CpuTopologyId {
+    pub const fn new(affinities: u32) -> Self {
+        Self(affinities)
     }
 
-    #[inline]
+    pub const fn from_mpidr(mpidr: u64) -> Self {
+        let aff3 = ((mpidr >> 32) & 0xFF) as u32;
+        let aff2 = ((mpidr >> 16) & 0xFF) as u32;
+        let aff1 = ((mpidr >> 8) & 0xFF) as u32;
+        let aff0 = (mpidr & 0xFF) as u32;
+        Self(aff0 | (aff1 << 8) | (aff2 << 16) | (aff3 << 24))
+    }
+
     pub fn current() -> Self {
-        Self(MPIDR_EL1.get())
+        Self::from_mpidr(MPIDR_EL1.get())
     }
 
-    pub fn affinity_only(&self) -> u64 {
-        mpidr_key(self.0)
+    pub const fn to_mpidr(&self) -> u64 {
+        let (aff3, aff2, aff1, aff0) = mpidr_affinities(self.0);
+
+        aff0 as u64 | ((aff1 as u64) << 8) | ((aff2 as u64) << 16) | ((aff3 as u64) << 32)
     }
 }
+
+type Map<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+
+static CPU_ID_MAP: Map<(u8, u8), u32> = Map::with_hasher(BuildHasherDefault::new());
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct CpuIdLogical(u32);
 
 #[derive(Debug)]
 pub struct SecondaryBootArgs {
@@ -122,20 +141,11 @@ pub struct SecondaryBootArgs {
     pub sctlr: u64,
 }
 
-pub fn mpidr_key(mpidr: u64) -> u64 {
-    let aff0 = MPIDR_EL1::Aff0.read(mpidr);
-    let aff1 = MPIDR_EL1::Aff1.read(mpidr);
-    let aff2 = MPIDR_EL1::Aff2.read(mpidr);
-    let aff3 = MPIDR_EL1::Aff3.read(mpidr);
+pub const fn mpidr_affinities(mpidr: u32) -> (u8, u8, u8, u8) {
+    let aff0 = mpidr & 0xFF;
+    let aff1 = (mpidr >> 8) & 0xFF;
+    let aff2 = (mpidr >> 16) & 0xFF;
+    let aff3 = (mpidr >> 24) & 0xFF;
 
-    (aff3 << 32) | (aff2 << 16) | (aff1 << 8) | aff0
-}
-
-pub fn mpidr_affinities(mpidr: u64) -> (u8, u8, u8, u8) {
-    let aff0 = MPIDR_EL1::Aff0.read(mpidr) as u8;
-    let aff1 = MPIDR_EL1::Aff1.read(mpidr) as u8;
-    let aff2 = MPIDR_EL1::Aff2.read(mpidr) as u8;
-    let aff3 = MPIDR_EL1::Aff3.read(mpidr) as u8;
-
-    (aff3, aff2, aff1, aff0)
+    (aff3 as u8, aff2 as u8, aff1 as u8, aff0 as u8)
 }

@@ -6,7 +6,7 @@ use aarch64_cpu::{
 };
 use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
 use klib::{
-    cpu_interface::{Mpidr, SecondaryBootArgs},
+    cpu_interface::{CpuTopologyId, SecondaryBootArgs},
     interrupt::InterruptController,
     this_cpu,
     timer::{init_timer, timer_rearm},
@@ -73,7 +73,7 @@ pub extern "C" fn secondary_init(context_phys: *const SecondaryBootArgs) -> ! {
     dsb(barrier::ISH);
     isb(barrier::SY);
 
-    let mpidr = Mpidr::current();
+    let mpidr = CpuTopologyId::current();
     let context_ptr = phys_addr_to_dmap(context_phys as u64) as *const SecondaryBootArgs;
     let context = unsafe { &*context_ptr };
 
@@ -90,7 +90,7 @@ pub extern "C" fn secondary_init(context_phys: *const SecondaryBootArgs) -> ! {
     init_timer();
     timer_rearm();
 
-    let new_state = vcpu_fsm_advance(mpidr.affinity_only() as usize);
+    let new_state = vcpu_fsm_advance(mpidr.to_mpidr() as usize);
     assert_eq!(new_state, CpuState::Done);
 
     busy_loop()

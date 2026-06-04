@@ -1,10 +1,10 @@
 use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize};
 
-use aarch64_cpu::registers::{Readable, TPIDR_EL1};
+use aarch64_cpu::registers::{Readable, TPIDR_EL1, Writeable};
 use alloc::vec::Vec;
 use atomic_refcell::AtomicRefCell;
 
-use crate::interrupt::{GicdRegistersN, GicrRegisters};
+use crate::interrupt::GicrRegisters;
 
 static REGISTRY_PTR: AtomicPtr<PerCpuData> = AtomicPtr::new(core::ptr::null_mut());
 static REGISTRY_LEN: AtomicUsize = AtomicUsize::new(0);
@@ -48,8 +48,8 @@ impl PerCpu {
     }
 
     pub fn all() -> &'static [PerCpuData] {
-        // a store should only be ran once (at boot),
-        // and this path might theoretically be hot,
+        // a store should only be ran once (at boot, on one core),
+        // and this path could be hot,
         // so Relaxed is optimal
         let ptr = REGISTRY_PTR.load(core::sync::atomic::Ordering::Relaxed);
         let len = REGISTRY_LEN.load(core::sync::atomic::Ordering::Relaxed);
@@ -63,6 +63,15 @@ impl PerCpu {
 
     pub fn get(id: usize) -> Option<&'static PerCpuData> {
         Self::all().get(id)
+    }
+
+    pub fn register_local(id: usize) -> Result<(), ()> {
+        debug_assert_eq!(TPIDR_EL1.get(), 0);
+
+        let pcpu = Self::get(id).ok_or(())?;
+        TPIDR_EL1.set(pcpu as *const _ as u64);
+
+        Ok(())
     }
 
     /// the assumption is that the caller has an initialized TPIDR_EL1

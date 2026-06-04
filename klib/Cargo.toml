@@ -21,3 +21,5 @@ log.workspace = true
 mars-models.workspace = true
 mars-models-zerocopy = { workspace = true, features = ["derive"] }
 atomic_refcell.workspace = true
+hashbrown.workspace = true
+rustc-hash.workspace = true

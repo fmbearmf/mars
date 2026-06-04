@@ -2,6 +2,14 @@
 rustflags = [
     "-C", "link-arg=-static",
     "-C", "relocation-model=static",
+    "-Z", "unstable-options",
+]
+
+[target.aarch64-mars-none]
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "relocation-model=static",
+    "-Z", "unstable-options",
 ]
 
 [target.aarch64-unknown-uefi]

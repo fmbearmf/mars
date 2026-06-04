@@ -3,8 +3,7 @@
     "rust-analyzer": {
       "initialization_options": {
         "cargo": {
-          "target": "aarch64-unknown-none",
-          "cfgs": ["debug_assertions", "miri", "hax"],
+          "target": "aarch64-unknown-none-softfloat",
         },
         "check": {
           "workspace": false,

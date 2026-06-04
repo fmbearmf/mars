@@ -63,7 +63,7 @@
               "aarch64-unknown-uefi"
             ];
 
-            stds = builtins.map (t: fenix.packages.${system}.targets.${t}.latest.rust-std) targets;
+            stds = map (t: fenix.packages.${system}.targets.${t}.latest.rust-std) targets;
 
             toolchain =
               with fenix.packages.${system};
@@ -146,6 +146,8 @@
             pkgsHax.rustc
           ];
 
+          RUST_TARGET_PATH = ./target-specs;
+
           FSTAR_HOME = "${pkgsHax.fstar}";
           HAX_HOME = ./.;
         in
@@ -155,12 +157,14 @@
             OVMF_CODE_PATH
             DYLD_LIBRARY_PATH
             FSTAR_HOME
+            RUST_TARGET_PATH
             HAX_HOME
             ;
 
           packages =
             (with pkgs; [
               dtc
+              acpica-tools
               qemu
               cargo-expand
               cargo-bloat

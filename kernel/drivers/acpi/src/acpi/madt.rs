@@ -136,7 +136,7 @@ impl<'a> GicrFrameBlock<'a> {
     }
 
     #[requires(index < self.count)]
-    pub fn get(&self, index: usize, virt: bool) -> Option<GicrFrame<'a>> {
+    pub fn get(&self, index: usize) -> Option<GicrFrame<'a>> {
         let offset = index.checked_mul(GICR_FRAME_SIZE)?;
 
         let frame_slice = self.data.get(offset..offset + GICR_FRAME_SIZE)?;

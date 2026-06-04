@@ -7,7 +7,7 @@ use crate::pm::page::mapper::AddressTranslator;
 
 use super::{
     context::RegisterFileRef,
-    cpu_interface::Mpidr,
+    cpu_interface::CpuTopologyId,
     pm::page::mapper::TableAllocator,
     sync::{Mutex, RwLock},
     thread::{Thread, ThreadState},
@@ -74,7 +74,7 @@ impl<'a> Scheduler<'a> {
     }
 
     pub fn schedule<'ctx>(&self, ctx: RegisterFileRef<'ctx>) -> RegisterFileRef<'ctx> {
-        let mpidr = Mpidr::current().affinity_only();
+        let mpidr = CpuTopologyId::current().to_mpidr();
 
         let queues_guard = self.queues.read();
         let queue_mutex = queues_guard.get(&mpidr).expect("CPU not registered");

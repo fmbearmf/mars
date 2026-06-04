@@ -51,17 +51,17 @@ pub fn uefi_arm64_bootstrap(boot_info_ref: *mut BootInfo) {
     let uefi_mmap = &mut boot_info.memory_map;
     uefi_mmap.sort();
 
-    trace!(
-        "uefi_mmap @ {:p}",
-        uefi_mmap.buffer() as *const _ as *const ()
-    );
+    //trace!(
+    //    "uefi_mmap @ {:p}",
+    //    uefi_mmap.buffer() as *const _ as *const ()
+    //);
 
     let uefi_mmap = clone_and_process_mmap(uefi_mmap);
     trace!("processed uefi_mmap @ {:p}", uefi_mmap.buffer() as *const _);
 
-    for desc in uefi_mmap.entries() {
-        trace!("{:x?}", desc);
-    }
+    //for desc in uefi_mmap.entries() {
+    //    trace!("{:x?}", desc);
+    //}
 
     populate_alloc_stage0(&uefi_mmap);
 
@@ -76,9 +76,9 @@ pub fn uefi_arm64_bootstrap(boot_info_ref: *mut BootInfo) {
 
     print_mem_usage();
 
-    acpi_init();
-
     populate_alloc_stage1(&uefi_mmap);
+
+    acpi_init();
 
     print_mem_usage();
 

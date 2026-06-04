@@ -21,7 +21,16 @@ fn main() -> Result<()> {
     let root = workspace_root();
 
     let kernel_status = Command::new("cargo")
-        .args(["build", "--package", "kernel"])
+        .args([
+            "build",
+            "-Z",
+            "build-std=core,compiler_builtins,alloc",
+            "--target",
+            "aarch64-mars-none", // https://github.com/rust-lang/cargo/issues/15365
+            "--package",
+            "kernel",
+        ])
+        .env("RUSTFLAGS", "-Z unstable-options")
         .status()
         .context("Kernel build failed.")?;
 
@@ -39,7 +48,7 @@ fn main() -> Result<()> {
     }
 
     let kernel_path = root
-        .join("target/aarch64-unknown-none/debug/kernel")
+        .join("target/aarch64-mars-none/debug/kernel")
         .canonicalize()
         .unwrap();
     let boot_path = root

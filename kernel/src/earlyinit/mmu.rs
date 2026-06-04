@@ -1,9 +1,9 @@
 use aarch64_cpu::{
     asm::{
         self,
-        barrier::{self, isb},
+        barrier::{self, dsb, isb},
     },
-    registers::{CPACR_EL1, DAIF, MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1},
+    registers::{CPACR_EL1, DAIF, MAIR_EL1, SCTLR_EL1, TCR_EL1, TPIDR_EL1, TTBR0_EL1},
 };
 use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
 use klib::vm::{TABLE_ENTRIES, TTable};
@@ -58,10 +58,14 @@ pub fn init_mmu(ttbr0: Option<*const TTable<TABLE_ENTRIES>>) {
 }
 
 pub fn init_cpu() {
+    TPIDR_EL1.set(0);
+
     CPACR_EL1.modify(CPACR_EL1::FPEN::TrapNothing);
     CPACR_EL1.modify(CPACR_EL1::ZEN::TrapNothing);
     CPACR_EL1.modify(CPACR_EL1::TTA::NoTrap);
-    isb(barrier::SY);
 
     DAIF.write(DAIF::D::Masked + DAIF::A::Masked + DAIF::I::Masked + DAIF::F::Masked);
+
+    dsb(barrier::SY);
+    isb(barrier::SY);
 }

@@ -11,12 +11,9 @@ use zerocopy::*;
 
 pub mod gicv3;
 
-use gicv3::registers::{
-    GICD_CTLR, GICD_ICFGR, GICD_IIDR, GICD_INT, GICD_IROUTER, GICD_TYPER, GICR_CTLR, GICR_WAKER,
-    gic::{
-        GicBitfield32, GicBitfield64, GicIcfgr, GicdCtlr, GicdTyper, GicrCtlr, GicrPropBar,
-        GicrTyper, GicrWaker,
-    },
+use gicv3::registers::gic::{
+    GicBitfield32, GicBitfield64, GicIcfgr, GicdCtlr, GicdTyper, GicrCtlr, GicrPropBar, GicrTyper,
+    GicrWaker,
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -67,34 +64,9 @@ pub trait InterruptInterface {
     fn set_priority_mask(&self, mask: u8);
 }
 
-register_structs! {
-    #[allow(non_snake_case)]
-    #[derive(KnownLayout)]
-    pub GicdRegisters {
-        (0x0000 => pub CTLR: ReadWrite<u32, GICD_CTLR::Register>),
-        (0x0004 => pub TYPER: ReadOnly<u32, GICD_TYPER::Register>),
-        (0x0008 => pub IIDR: ReadOnly<u32, GICD_IIDR::Register>),
-        (0x000C => _reserved0),
-        (0x0100 => pub IGROUPR: [ReadWrite<u32, GICD_INT::Register>; 32]),
-        (0x0180 => pub ISENABLER: [ReadWrite<u32, GICD_INT::Register>; 32]),
-        (0x0200 => pub ICENABLER: [ReadWrite<u32, GICD_INT::Register>; 32]),
-        (0x0280 => pub ISPENDR: [ReadWrite<u32, GICD_INT::Register>; 32]),
-        (0x0300 => pub ICPENDR: [ReadWrite<u32, GICD_INT::Register>; 32]),
-        (0x0380 => pub ISACTIVER: [ReadWrite<u32, GICD_INT::Register>; 32]),
-        (0x0400 => pub IPRIORITYR: [ReadWrite<u8>; 1020]),
-        (0x07FC => _reserved1),
-        (0x0C00 => pub ICFGR: [ReadWrite<u32, GICD_ICFGR::Register>; 64]),
-        (0x0D00 => _reserved2),
-        // IROUTER is present for SPIs (32-1019). so map 1024 elements starting at 0x6000
-        // to align the array index with `int_id`
-        (0x6000 => pub IROUTER: [ReadWrite<u64, GICD_IROUTER::Register>; 1024]),
-        (0x8000 => @END),
-    }
-}
-
 declare_structs!(
     #[derive(KnownLayout, FromBytes, IntoBytes)]
-    pub GicdRegistersN {
+    pub GicdRegisters {
         (0x0000 => pub ctl: RPureReadPureWrite<u32, GicdCtlr>),
         (0x0004 => pub type_: RPureReadOnly<u32, GicdTyper>),
         (0x0080 => pub igroup: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
@@ -111,7 +83,7 @@ declare_structs!(
     }
 );
 
-unsafe impl Sync for GicdRegistersN {}
+unsafe impl Sync for GicdRegisters {}
 
 declare_structs!(
     #[derive(KnownLayout, Immutable, FromBytes, IntoBytes)]

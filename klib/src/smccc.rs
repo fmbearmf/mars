@@ -1,6 +1,6 @@
 use core::arch::asm;
 
-use super::cpu_interface::Mpidr;
+use super::cpu_interface::CpuTopologyId;
 
 pub const PSCI_0_2_FN64_CPU_ON: u32 = 0xC400_0003;
 
@@ -82,7 +82,7 @@ unsafe fn smccc_call_smc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
 /// power on a CPU by its MPIDR using PSCI.
 pub fn cpu_on(
     use_hvc: bool,
-    target_cpu: Mpidr,
+    target_cpu: CpuTopologyId,
     entry_point_paddr: u64,
     context_id: u64,
 ) -> Result<(), PsciError> {
@@ -90,14 +90,14 @@ pub fn cpu_on(
         if use_hvc {
             smccc_call_hvc(
                 PSCI_0_2_FN64_CPU_ON,
-                target_cpu.affinity_only(),
+                target_cpu.to_mpidr(),
                 entry_point_paddr,
                 context_id,
             )
         } else {
             smccc_call_smc(
                 PSCI_0_2_FN64_CPU_ON,
-                target_cpu.affinity_only(),
+                target_cpu.to_mpidr(),
                 entry_point_paddr,
                 context_id,
             )

@@ -1,40 +1,31 @@
 use core::{
     arch::asm,
     fmt::Debug,
-    sync::atomic::{AtomicPtr, AtomicU8, Ordering},
+    sync::atomic::{AtomicU8, Ordering},
 };
 
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
-    registers::{ReadWriteable as TRW, Writeable as TW},
+    registers::ReadWriteable as TRW,
 };
 use atomic_refcell::{AtomicRef, AtomicRefMut};
 use mars_models::memory::registers::volatile::{PureReadable, PureWriteable, Writeable};
 
-use crate::{
-    interrupt::{
-        GicdRegistersN, GicrRegisters, InterruptError,
-        gicv3::registers::{
-            GICR_WAKER,
-            gic::{GicdCtlr, GicrCtlr, GicrWaker},
-        },
-    },
-    sync::Mutex,
-    this_cpu,
-};
+use crate::{interrupt::GicrRegisters, this_cpu};
 
 use super::{
-    GICD_CTLR, GICD_TYPER, GICR_CTLR, GicdRegisters, InterruptController, InterruptInterface,
+    GicdRegisters, InterruptController, InterruptError, InterruptInterface,
+    gicv3::registers::gic::{GicdCtlr, GicrCtlr, GicrWaker},
 };
 
-use self::registers::{icc_pmr_el1::ICC_PMR_EL1, icc_sre_el1::ICC_SRE_EL1};
+use self::registers::icc_sre_el1::ICC_SRE_EL1;
 
 pub mod registers;
 
 static INIT_STATE: AtomicU8 = AtomicU8::new(0);
 
 pub struct GicV3<'a, I: InterruptInterface + Send + Sync> {
-    pub distributor: &'a GicdRegistersN,
+    pub distributor: &'a GicdRegisters,
     pub iface: I,
 }
 
@@ -45,8 +36,16 @@ impl<I: InterruptInterface + Send + Sync> Debug for GicV3<'_, I> {
 }
 
 impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
-    pub fn new(distributor: &'a mut GicdRegistersN, iface: I) -> Self {
+    pub fn new(distributor: &'a mut GicdRegisters, iface: I) -> Self {
         Self { distributor, iface }
+    }
+
+    fn redistributor(&self) -> AtomicRef<'_, Option<&'static mut GicrRegisters>> {
+        this_cpu!().redistributor.borrow()
+    }
+
+    fn redistributor_mut(&self) -> AtomicRefMut<'_, Option<&'static mut GicrRegisters>> {
+        this_cpu!().redistributor.borrow_mut()
     }
 
     fn wait_for_distributor_rwp(&self) {
@@ -65,7 +64,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
     fn wait_for_redistributor_rwp(&self) {
         dsb(barrier::ISHST);
 
-        let guard = this_cpu!().redistributor.borrow();
+        let guard = self.redistributor();
         let redist = guard.as_ref().expect("`None` redistributor");
 
         while redist.ctl.read_field_pure(GicrCtlr::RegisterWritePending) == true {
@@ -123,7 +122,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
             }
         }
 
-        let guard = this_cpu!().redistributor.borrow_mut();
+        let guard = self.redistributor_mut();
         let mut redist = AtomicRefMut::map(guard, |opt| {
             opt.as_mut().expect("redistributor not initialized")
         });
@@ -158,7 +157,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
 
     fn enable_interrupt(&self, int_id: u32) -> Result<(), InterruptError> {
         if int_id < 32 {
-            let guard = this_cpu!().redistributor.borrow_mut();
+            let guard = self.redistributor_mut();
             let mut redist = AtomicRefMut::map(guard, |opt| {
                 opt.as_mut().expect("redistributor not initialized")
             });
@@ -178,7 +177,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
 
     fn disable_interrupt(&self, int_id: u32) -> Result<(), InterruptError> {
         if int_id < 32 {
-            let guard = this_cpu!().redistributor.borrow_mut();
+            let guard = self.redistributor_mut();
             let mut redist = AtomicRefMut::map(guard, |opt| {
                 opt.as_mut().expect("redistributor not initialized")
             });
@@ -218,7 +217,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
 
     fn set_priority(&self, int_id: u32, priority: u8) -> Result<(), InterruptError> {
         if int_id < 32 {
-            let guard = this_cpu!().redistributor.borrow_mut();
+            let guard = self.redistributor_mut();
             let mut redist = AtomicRefMut::map(guard, |opt| {
                 opt.as_mut().expect("redistributor not initialized")
             });

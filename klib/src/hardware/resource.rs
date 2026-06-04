@@ -3,7 +3,7 @@ use core::ops::Range;
 /// descriptor of a hardware resource
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resource {
-    Mmio { range: Range<*mut u8> },
+    Mmio { range: Range<usize> },
     Irq { number: u32, polarity: IrqPolarity },
 }
 

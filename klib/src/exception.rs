@@ -1,12 +1,12 @@
 use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Readable};
 
-use super::{context::RegisterFileRef, cpu_interface::Mpidr};
+use super::{context::RegisterFileRef, cpu_interface::CpuTopologyId};
 
 pub trait ExceptionHandler {
     extern "C" fn sync_current(register_file: RegisterFileRef) -> RegisterFileRef {
         panic!(
             "Unexpected sync exception from CPU MPIDR={} (ESR: {:#x}, FAR: {:#x}) from current EL: {:?}",
-            Mpidr::current().affinity_only(),
+            CpuTopologyId::current().to_mpidr(),
             ESR_EL1.get(),
             FAR_EL1.get(),
             register_file
@@ -16,7 +16,7 @@ pub trait ExceptionHandler {
     extern "C" fn irq_current(register_file: RegisterFileRef) -> RegisterFileRef {
         panic!(
             "Unexpected current EL IRQ from CPU MPIDR={} (FAR: {:#x}) from current EL: {:?}",
-            Mpidr::current().affinity_only(),
+            CpuTopologyId::current().to_mpidr(),
             FAR_EL1.get(),
             register_file
         );
@@ -25,7 +25,7 @@ pub trait ExceptionHandler {
     extern "C" fn fiq_current(register_file: RegisterFileRef) -> RegisterFileRef {
         panic!(
             "Unexpected current EL FIQ from CPU MPIDR={} (FAR: {:#x}) from current EL: {:?}",
-            Mpidr::current().affinity_only(),
+            CpuTopologyId::current().to_mpidr(),
             FAR_EL1.get(),
             register_file
         );

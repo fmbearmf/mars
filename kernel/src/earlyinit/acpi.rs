@@ -1,19 +1,30 @@
 use core::ptr::NonNull;
 
-use alloc::boxed::Box;
-use klib::pm::page::mapper::AddressTranslator;
-use log::{debug, trace};
+use aarch64_cpu::registers::{MPIDR_EL1, Readable};
+use alloc::{boxed::Box, vec, vec::Vec};
+use klib::{
+    cpu_interface::CpuTopologyId,
+    hardware::{device::DeviceClass, resource::Resource},
+    interrupt::{
+        GicdRegisters, GicrRegisters,
+        gicv3::{GicV3, registers::gic::GicrTyper},
+    },
+    per_cpu::PerCpu,
+    pm::page::mapper::AddressTranslator,
+};
+use log::{debug, error, trace};
 use mars_acpi_driver::acpi::{
     header::SdtHeader,
-    madt::{GicDistributor, Madt},
+    madt::{GicCpuInterface, GicDistributor, GicRedistributor, Madt},
     xsdp::{Xsdp, XsdtIter},
 };
+use mars_models::memory::registers::volatile::PureReadable;
 use protocol::BootInfo;
 use uefi::table::cfg::ConfigTableEntry;
 use uefi_raw::table::{configuration::ConfigurationTable, system::SystemTable};
 use zerocopy::{FromBytes, IntoBytes};
 
-use crate::{BOOT_INFO, allocator::KernelAddressTranslator, busy_loop_ret};
+use crate::{BOOT_INFO, DEVICE_TREE, allocator::KernelAddressTranslator, busy_loop_ret};
 
 fn config_table(st: NonNull<SystemTable>) -> &'static [ConfigTableEntry] {
     let st = KernelAddressTranslator.phys_to_dmap(st.as_ptr() as _) as *const SystemTable;
@@ -96,15 +107,149 @@ pub fn acpi_init() {
 
 fn handle_madt(table: &[u8]) {
     let (madt, _entries): (&Madt, &[u8]) = Madt::ref_from_prefix(table).expect("invalid madt size");
-    for subtable in madt.entries() {
-        match subtable.0 {
-            12 => {
-                // GIC distributor
-                let gicd = GicDistributor::ref_from_bytes(subtable.1)
-                    .expect("MADT GIC Distributor entry contained wrong bytes for a distributor");
-                trace!("GIC distributor: {:#x?}", gicd);
+
+    let mut dt = DEVICE_TREE.borrow_mut();
+
+    let mut cpu_topologies = Vec::new();
+    for (entry_type, slice) in madt.entries().filter(|&(ty, _)| ty == 0xB) {
+        let gicc: &GicCpuInterface = GicCpuInterface::ref_from_bytes(slice)
+            .expect("MADT GIC CPU Interface entry contained wrong bytes");
+        cpu_topologies.push(CpuTopologyId::from_mpidr(gicc.mpidr()));
+    }
+
+    PerCpu::init(cpu_topologies.len());
+
+    let current_topo = CpuTopologyId::from_mpidr(MPIDR_EL1.get());
+    for (i, &topo) in cpu_topologies.iter().enumerate() {
+        if topo == current_topo {
+            PerCpu::register_local(i).expect("invalid index");
+            break;
+        }
+    }
+
+    let gicd_entry_slice = madt
+        .entries()
+        .find(|(entry_type, _)| *entry_type == 0xC)
+        .map(|(_, slice)| slice)
+        .expect("MADT didn't contain a GIC Distributor entry");
+
+    let gicd: &GicDistributor = GicDistributor::ref_from_bytes(gicd_entry_slice)
+        .expect("MADT GIC Distributor entry contained wrong bytes");
+
+    trace!("    GIC distributor: {:#x?}", gicd);
+
+    if gicd.gic_version() != 3 {
+        error!(
+            "    GIC version isn't 3 (unsupported): {}",
+            gicd.gic_version()
+        );
+        unimplemented!();
+    }
+
+    let gicd_regs: &mut GicdRegisters = {
+        let base = gicd.phys_base();
+        assert_ne!(base, 0, "GICD physical base is null");
+
+        let virt_base = KernelAddressTranslator.phys_to_dmap(base as _);
+        let slice =
+            unsafe { core::slice::from_raw_parts_mut(virt_base, size_of::<GicdRegisters>()) };
+
+        GicdRegisters::mut_from_bytes(slice).expect("GICD Distributor mapping failed")
+    };
+
+    dt.add_device(
+        None,
+        DeviceClass::InterruptDistributor,
+        Vec::new(),
+        vec![Resource::Mmio {
+            range: (gicd_regs as *const GicdRegisters as usize)..(unsafe {
+                (gicd_regs as *const GicdRegisters).add(1)
+            } as usize),
+        }],
+    );
+
+    for (entry_type, slice) in madt.entries() {
+        match entry_type {
+            0xB => {
+                // GICC
+                let gicc: &GicCpuInterface = GicCpuInterface::ref_from_bytes(slice)
+                    .expect("MADT GIC CPU Interface entry contained wrong bytes for a GICC");
+
+                trace!("    GIC cpu interface: {:#x?}", gicc);
+
+                let cpu_id = gicc.mpidr();
+                let cpu_id = CpuTopologyId::from_mpidr(cpu_id);
+
+                dt.add_device(
+                    None,
+                    DeviceClass::Cpu {
+                        id: cpu_id,
+                        acpi_uid: gicc.acpi_cpu_uid(),
+                    },
+                    Vec::new(),
+                    Vec::new(),
+                );
             }
-            _ => trace!("unrecognized madt subtable type: {}", subtable.0),
+            0xC => continue, // GICD
+            0xE => {
+                // GICR
+                let gicr_handle: &GicRedistributor = GicRedistributor::ref_from_bytes(slice)
+                    .expect("MADT GIC Redistributor entry contained wrong bytes for a GICR block");
+
+                trace!("    gic redistributor block: {:#x?}", gicr_handle);
+
+                let gicr_block = gicr_handle
+                    .frames()
+                    .expect("MADT GIC Redistributor entry contained invalid GICR block");
+
+                for i in 0..gicr_block.len() {
+                    let gicr = gicr_block.get(i);
+
+                    if gicr.is_none() {
+                        break;
+                    }
+
+                    let gicr_frame = gicr.unwrap();
+                    let gicr = gicr_frame.reg;
+
+                    let last = gicr.type_.read_field_pure(GicrTyper::LastRedistributor);
+                    let id = gicr.type_.read_field_pure(GicrTyper::AffinityValue);
+
+                    trace!("    gic redistributor #{}: {:#x?}", i, gicr_frame);
+
+                    let redist_topo = CpuTopologyId::new(id);
+
+                    if let Some(i) = cpu_topologies.iter().position(|&t| t == redist_topo) {
+                        let pcpu = PerCpu::get(i).expect("pcpu entry not found");
+
+                        let virt_gicr = KernelAddressTranslator
+                            .phys_to_dmap(gicr as *const GicrRegisters as usize)
+                            as *mut GicrRegisters;
+
+                        *pcpu.redistributor.borrow_mut() = Some(unsafe { &mut *virt_gicr });
+                        trace!("initialized redistributor of pcpu struct #{}", i);
+                    }
+
+                    dt.add_device(
+                        None,
+                        DeviceClass::InterruptRedistributor {
+                            cpu_id: CpuTopologyId::new(id),
+                        },
+                        Vec::new(),
+                        vec![Resource::Mmio {
+                            range: (gicr as *const GicrRegisters as usize)..(unsafe {
+                                (gicr as *const GicrRegisters).add(1)
+                            }
+                                as usize),
+                        }],
+                    );
+
+                    if last {
+                        break;
+                    }
+                }
+            }
+            _ => trace!("   unrecognized madt subtable type: {:x}", entry_type),
         }
     }
 }

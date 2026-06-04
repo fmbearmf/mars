@@ -249,8 +249,8 @@ impl<'a> SlabAllocator<'a> {
             }
         };
 
-        use log::trace;
-        trace!("alloc_impl returned ptr: {:#p}", ptr);
+        //use log::trace;
+        //trace!("alloc_impl returned ptr: {:#p}", ptr);
 
         if !ptr.is_null() {
             self.used_bytes.fetch_add(layout.size(), Ordering::Relaxed);

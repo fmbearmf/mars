@@ -4,7 +4,7 @@ cargo-features = [ "per-package-target" ]
 name = "kernel"
 version = "0.0.1"
 edition = "2024"
-forced-target = "aarch64-unknown-none"
+forced-target = "aarch64-mars-none"
 
 [[bin]]
 name = "kernel"
@@ -38,5 +38,6 @@ uefi = { workspace = true, default-features = false }
 uefi-raw.workspace = true
 log.workspace = true
 mars-acpi-driver.workspace = true
+mars-models.workspace = true
 mars-models-zerocopy = { workspace = true }
 atomic_refcell.workspace = true

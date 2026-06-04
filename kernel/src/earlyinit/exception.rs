@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use aarch64_cpu::registers::{DAIF, ESR_EL1, ReadWriteable, Readable, TTBR0_EL1, Writeable};
 use klib::{
     context::RegisterFileRef,
-    cpu_interface::Mpidr,
+    cpu_interface::CpuTopologyId,
     exception::ExceptionHandler,
     interrupt::InterruptController,
     this_cpu,
@@ -95,7 +95,7 @@ impl ExceptionHandler for Exceptions {
 
         trace!(
             "irq (CPU {}): before scheduling: {:?}",
-            Mpidr::current().affinity_only(),
+            CpuTopologyId::current().to_mpidr(),
             register_file
         );
         let regs: RegisterFileRef = {
@@ -125,7 +125,7 @@ impl ExceptionHandler for Exceptions {
 
         trace!(
             "irq (CPU {}): after scheduling: {:?}",
-            Mpidr::current().affinity_only(),
+            CpuTopologyId::current().to_mpidr(),
             regs
         );
 

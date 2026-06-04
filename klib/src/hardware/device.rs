@@ -1,7 +1,7 @@
 use core::mem::discriminant;
 
 use super::resource::Resource;
-use crate::cpu_interface::Mpidr;
+use crate::cpu_interface::CpuTopologyId;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -18,7 +18,7 @@ pub struct DeviceTree {
 }
 
 impl DeviceTree {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             nodes: Vec::new(),
             roots: Vec::new(),
@@ -80,10 +80,11 @@ pub struct DeviceNode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceClass {
-    Cpu { id: Mpidr },
+    Cpu { id: CpuTopologyId, acpi_uid: u32 },
     Uart,
     Timer,
-    InterruptController,
+    InterruptRedistributor { cpu_id: CpuTopologyId },
+    InterruptDistributor,
     PciHostBridge,
     Other,
 }

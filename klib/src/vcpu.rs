@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use super::{
-    cpu_interface::{Arm64InterruptInterface, Mpidr},
+    cpu_interface::{Arm64InterruptInterface, CpuTopologyId},
     interrupt::gicv3::GicV3,
     scheduler::Scheduler,
     sync::RwLock,
@@ -151,7 +151,7 @@ where
     F: FnOnce(&CpuDescriptor) -> R,
 {
     let vcpus = VCPUS.read();
-    let mpidr = Mpidr::current().affinity_only();
+    let mpidr = CpuTopologyId::current().to_mpidr();
     let cpu = vcpus.cpus.get(mpidr as usize).expect("mpidr OOB");
 
     f(cpu)

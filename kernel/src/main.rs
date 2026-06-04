@@ -8,55 +8,37 @@ mod earlyinit;
 mod interrupt;
 mod log;
 
-use ::log::{LevelFilter, debug, info, trace};
+use ::log::{debug, trace};
 use aarch64_cpu::asm::wfe;
 use atomic_refcell::AtomicRefCell;
 use core::{
     arch::{asm, naked_asm},
     mem::MaybeUninit,
     panic::PanicInfo,
-    ptr::{self},
-    sync::atomic::AtomicPtr,
 };
 use klib::{
     bytes_to_human_readable,
-    interrupt::InterruptController,
+    hardware::device::DeviceTree,
     pm::page::PageAllocator,
     register_drivers,
     scheduler::Scheduler,
-    vm::{
-        slab::SlabAllocator,
-        user::{PAGE_DESCRIPTORS, address_space::AddressSpace},
-    },
+    vm::{slab::SlabAllocator, user::address_space::AddressSpace},
 };
 use protocol::BootInfo;
-use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
 use crate::{
     allocator::KernelAddressTranslator,
-    earlyinit::{
-        acpi::acpi_init,
-        mem::{
-            clone_and_process_mmap, create_page_descriptors, populate_alloc_stage0,
-            switch_to_new_page_tables,
-        },
-        mmu::init_cpu,
-        platform::uefi_arm64_bootstrap,
-    },
-    log::LOGGER,
+    earlyinit::{mmu::init_cpu, platform::uefi_arm64_bootstrap},
 };
 
 use self::{
     allocator::KernelPTAllocator,
-    earlyinit::{
-        earlycon::{EARLYCON, EarlyCon},
-        exception::Exceptions,
-        mmu::init_mmu,
-        smp::{secondary_entry, secondary_init},
-    },
+    earlyinit::{earlycon::EARLYCON, exception::Exceptions},
 };
 
 klib::exception_handlers!(Exceptions);
+
+static DEVICE_TREE: AtomicRefCell<DeviceTree> = AtomicRefCell::new(DeviceTree::new());
 
 // use `KALLOCATOR`
 static KPAGE_ALLOCATOR: PageAllocator = PageAllocator::new(&KernelAddressTranslator);
@@ -143,9 +125,9 @@ pub unsafe extern "C" fn _start(_boot_info_ref: *mut BootInfo) {
     );
 }
 
-fn kaddr_to_paddr(kernel_load_paddr: usize, kaddr: usize) -> usize {
-    (kaddr - unsafe { &__KBASE as *const _ as usize }) + kernel_load_paddr
-}
+// fn kaddr_to_paddr(kernel_load_paddr: usize, kaddr: usize) -> usize {
+//     (kaddr - unsafe { &__KBASE as *const _ as usize }) + kernel_load_paddr
+// }
 
 fn kentry(boot_info_ref: *mut BootInfo) -> ! {
     unsafe {
@@ -163,6 +145,7 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
     {
         let mut lock = EARLYCON.lock();
         if let Some(uart) = &mut *lock {
+            _ = uart;
             // TODO: correctly map the rest of MMIO into DMAP
             //uart.switch(KernelAddressTranslator.phys_to_dmap(boot_info.serial_uart_address) as _);
         }
@@ -184,7 +167,7 @@ fn print_mem_usage() {
     );
 }
 
-pub extern "C" fn alloc_init() -> PageAllocator<'static> {
+pub fn alloc_init() -> PageAllocator<'static> {
     let page_allocator = PageAllocator::new(&KernelAddressTranslator);
 
     page_allocator
