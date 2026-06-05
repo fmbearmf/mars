@@ -5,6 +5,8 @@ use core::{
     sync::atomic::{Atomic, AtomicBool, AtomicUsize, Ordering},
 };
 
+use aarch64_cpu::asm::{sev, wfe};
+
 #[repr(C, align(64))]
 #[derive(Debug)]
 pub struct TicketLock {
@@ -24,13 +26,14 @@ impl TicketLock {
     pub fn lock(&self) {
         let ticket = self.ticket.fetch_add(1, Ordering::Relaxed);
         while self.users.load(Ordering::Acquire) != ticket {
-            core::hint::spin_loop();
+            wfe();
         }
     }
 
     #[inline]
     pub fn unlock(&self) {
         self.users.fetch_add(1, Ordering::Release);
+        sev();
     }
 }
 
@@ -63,7 +66,7 @@ impl<T> Mutex<T> {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            core::hint::spin_loop();
+            wfe();
         }
 
         MutexGuard { mutex: self }
@@ -79,6 +82,7 @@ impl<T> Mutex<T> {
     #[inline]
     fn unlock(&self) {
         self.lock.store(false, Ordering::Release);
+        sev();
     }
 }
 
@@ -99,6 +103,7 @@ impl<'a, T> DerefMut for MutexGuard<'a, T> {
 impl<'a, T> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
         self.mutex.unlock();
+        sev();
     }
 }
 
@@ -145,7 +150,7 @@ impl<T: ?Sized> RwLock<T> {
                 }
             }
 
-            core::hint::spin_loop();
+            wfe();
             state = self.state.load(Ordering::Relaxed);
         }
     }
@@ -167,7 +172,7 @@ impl<T: ?Sized> RwLock<T> {
                         }
 
                         while self.state.load(Ordering::Acquire) != WRITER {
-                            core::hint::spin_loop();
+                            wfe();
                         }
 
                         return RwLockWriteGuard { lock: self };
@@ -175,7 +180,6 @@ impl<T: ?Sized> RwLock<T> {
                     Err(next) => state = next,
                 }
             } else {
-                core::hint::spin_loop();
                 state = self.state.load(Ordering::Relaxed);
             }
         }
@@ -199,6 +203,7 @@ impl<'a, T: ?Sized> Deref for RwLockReadGuard<'a, T> {
 impl<'a, T: ?Sized> Drop for RwLockReadGuard<'a, T> {
     fn drop(&mut self) {
         self.lock.state.fetch_sub(1, Ordering::Release);
+        sev();
     }
 }
 
@@ -230,6 +235,7 @@ impl<'a, T: ?Sized> DerefMut for RwLockWriteGuard<'a, T> {
 impl<'a, T: ?Sized> Drop for RwLockWriteGuard<'a, T> {
     fn drop(&mut self) {
         self.lock.state.store(0, Ordering::Release);
+        sev();
     }
 }
 
