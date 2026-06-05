@@ -8,7 +8,6 @@ use klib::{
     interrupt::InterruptController,
     this_cpu,
     timer::{timer_disarm, timer_rearm, timer_schedule},
-    vcpu::with_this_cpu,
 };
 use log::{error, trace};
 
@@ -32,11 +31,11 @@ impl ExceptionHandler for Exceptions {
     extern "C" fn sync_lower(register_file: RegisterFileRef) -> RegisterFileRef {
         let daif = daif_save();
 
-        let mpidr = with_this_cpu(|cpu| cpu.mpidr);
+        let current = this_cpu!();
 
         error!(
-            "Sync exception from CPU MPIDR={} from lower: {:?} with ESR={:#x} and TTBR0={:#x}",
-            mpidr,
+            "Sync exception from CPU ID={} from lower: {:?} with ESR={:#x} and TTBR0={:#x}",
+            current.id,
             register_file,
             ESR_EL1.get(),
             TTBR0_EL1.get(),

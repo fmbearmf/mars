@@ -181,7 +181,7 @@ impl<'a> SlabAllocator<'a> {
 
                 if page.is_null() {
                     panic!("OOM");
-                    return ptr::null_mut();
+                    // return ptr::null_mut();
                 }
 
                 let size_class = CLASS_SIZES[i];

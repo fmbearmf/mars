@@ -1,4 +1,4 @@
-use core::ptr::NonNull;
+use core::{ptr::NonNull, sync::atomic::AtomicPtr};
 
 use aarch64_cpu::registers::{MPIDR_EL1, Readable};
 use alloc::{boxed::Box, vec, vec::Vec};
@@ -49,7 +49,7 @@ pub fn acpi_init() {
 
     let st = bi.system_table_raw;
 
-    debug!("st: {:p}", st);
+    trace!("st: {:p}", st);
 
     let cfg_table = config_table(st);
 
@@ -75,7 +75,7 @@ pub fn acpi_init() {
 
     trace!("xsdt offset to virtual {:#p}", xsdt);
 
-    debug!("xsdt: {:#?}", xsdt);
+    trace!("xsdt: {:#?}", xsdt);
 
     let xsdt_iter = XsdtIter::new(xsdt);
     for phys_table_bytes in xsdt_iter {
@@ -202,6 +202,10 @@ fn handle_madt(table: &[u8]) {
                     .frames()
                     .expect("MADT GIC Redistributor entry contained invalid GICR block");
 
+                let mut redistributors: Vec<AtomicPtr<GicrRegisters>> = (0..cpu_topologies.len())
+                    .map(|_| AtomicPtr::new(core::ptr::null_mut()))
+                    .collect();
+
                 for i in 0..gicr_block.len() {
                     let gicr = gicr_block.get(i);
 
@@ -220,14 +224,12 @@ fn handle_madt(table: &[u8]) {
                     let redist_topo = CpuTopologyId::new(id);
 
                     if let Some(i) = cpu_topologies.iter().position(|&t| t == redist_topo) {
-                        let pcpu = PerCpu::get(i).expect("pcpu entry not found");
-
                         let virt_gicr = KernelAddressTranslator
                             .phys_to_dmap(gicr as *const GicrRegisters as usize)
                             as *mut GicrRegisters;
 
-                        *pcpu.redistributor.borrow_mut() = Some(unsafe { &mut *virt_gicr });
-                        trace!("initialized redistributor of pcpu struct #{}", i);
+                        redistributors[i] = AtomicPtr::new(virt_gicr);
+                        trace!("initialized redistributor of cpu #{}", i);
                     }
 
                     dt.add_device(

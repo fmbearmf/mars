@@ -1,10 +1,14 @@
-use core::{arch::asm, hash::BuildHasherDefault};
+use core::{arch::asm, fmt::Display, hash::BuildHasherDefault};
 
-use aarch64_cpu::registers::{MPIDR_EL1, Readable};
+use aarch64_cpu::registers::{MPIDR_EL1, Readable, TPIDR_EL1};
+use alloc::vec::Vec;
+use atomic_refcell::AtomicRefCell;
 use hashbrown::HashMap;
 use rustc_hash::FxHasher;
 
-use super::{interrupt::InterruptInterface, vcpu::CpuDescriptor};
+use crate::{pm::page::mapper::id_map, this_cpu};
+
+use super::interrupt::InterruptInterface;
 
 #[derive(Debug, Copy, Clone)]
 pub struct Arm64InterruptInterface;
@@ -94,7 +98,7 @@ impl InterruptInterface for Arm64InterruptInterface {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct CpuTopologyId(u32);
 
@@ -120,15 +124,67 @@ impl CpuTopologyId {
 
         aff0 as u64 | ((aff1 as u64) << 8) | ((aff2 as u64) << 16) | ((aff3 as u64) << 32)
     }
+
+    pub fn to_logical(self) -> Option<CpuIdLogical> {
+        CPU_ID_MAP.borrow().get(&self).copied()
+    }
 }
 
 type Map<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
-static CPU_ID_MAP: Map<(u8, u8), u32> = Map::with_hasher(BuildHasherDefault::new());
+static CPU_ID_MAP: AtomicRefCell<Map<CpuTopologyId, CpuIdLogical>> =
+    AtomicRefCell::new(Map::with_hasher(BuildHasherDefault::new()));
+static CPU_TOPOLOGIES: AtomicRefCell<Vec<CpuTopologyId>> = AtomicRefCell::new(Vec::new());
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub fn init_cpu_maps(topologies: &[CpuTopologyId]) {
+    let mut id_map = CPU_ID_MAP.borrow_mut();
+    let mut topology_map = CPU_TOPOLOGIES.borrow_mut();
+
+    id_map.clear();
+    topology_map.clear();
+
+    for (i, &topology) in topologies.iter().enumerate() {
+        let logical = CpuIdLogical::new(i as u32);
+        topology_map.push(topology);
+        id_map.insert(topology, logical);
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct CpuIdLogical(u32);
+
+impl Display for CpuIdLogical {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl CpuIdLogical {
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    pub const fn to_usize(self) -> usize {
+        self.0 as _
+    }
+
+    pub const fn to_u32(self) -> u32 {
+        self.0 as _
+    }
+
+    /// current CPU's logical ID.
+    pub fn current() -> Self {
+        let tpidr = TPIDR_EL1.get();
+        if tpidr == 0 {
+            CpuTopologyId::current()
+                .to_logical()
+                .unwrap_or(Self::new(0))
+        } else {
+            this_cpu!().id
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct SecondaryBootArgs {

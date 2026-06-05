@@ -1,18 +1,22 @@
 use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize};
 
 use aarch64_cpu::registers::{Readable, TPIDR_EL1, Writeable};
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use atomic_refcell::AtomicRefCell;
 
-use crate::interrupt::GicrRegisters;
+use crate::{
+    cpu_interface::CpuIdLogical,
+    interrupt::GicrRegisters,
+    thread::{Thread, ThreadId},
+};
 
 static REGISTRY_PTR: AtomicPtr<PerCpuData> = AtomicPtr::new(core::ptr::null_mut());
 static REGISTRY_LEN: AtomicUsize = AtomicUsize::new(0);
 
 #[repr(C, align(64))]
 pub struct PerCpuData {
-    pub id: usize,
-    pub redistributor: AtomicRefCell<Option<&'static mut GicrRegisters>>,
+    pub id: CpuIdLogical,
+    pub current_thread: Option<ThreadId>,
     pub timer_irq: AtomicU8,
 }
 
@@ -35,8 +39,8 @@ impl PerCpu {
         let mut cpus = Vec::with_capacity(cores);
         for i in 0..cores {
             cpus.push(PerCpuData {
-                id: i,
-                redistributor: AtomicRefCell::new(None),
+                id: CpuIdLogical::new(i as _),
+                current_thread: None,
                 timer_irq: AtomicU8::new(0),
             });
         }

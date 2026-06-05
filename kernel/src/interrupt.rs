@@ -3,6 +3,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use aarch64_cpu::asm::barrier::{self, dsb, isb};
 use alloc::boxed::Box;
 use klib::interrupt::InterruptController;
 
@@ -17,8 +18,7 @@ pub fn set_interrupt_controller(imp: Box<dyn InterruptController>) {
 }
 
 pub fn get_interrupt_controller() -> &'static dyn InterruptController {
-    // only expect to write once, from one core.
-    debug_assert_eq!(CONTROLLER_STATUS.load(Ordering::Relaxed), true);
+    debug_assert_eq!(CONTROLLER_STATUS.load(Ordering::Acquire), true);
 
     #[allow(static_mut_refs)]
     unsafe {

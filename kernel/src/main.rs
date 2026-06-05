@@ -67,7 +67,7 @@ pub static KERNEL_ADDRESS_SPACE: AddressSpace = unsafe {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     unsafe {
-        EARLYCON.force_unlock();
+        EARLYCON.steal();
         earlycon_writeln!("{}", info);
     }
     busy_loop();
@@ -165,10 +165,4 @@ fn print_mem_usage() {
         bytes_to_human_readable(KALLOCATOR.page_usage() as u64, &mut bufs_tuple.0[0]),
         bytes_to_human_readable(KALLOCATOR.capacity() as u64, &mut bufs_tuple.1[0]),
     );
-}
-
-pub fn alloc_init() -> PageAllocator<'static> {
-    let page_allocator = PageAllocator::new(&KernelAddressTranslator);
-
-    page_allocator
 }

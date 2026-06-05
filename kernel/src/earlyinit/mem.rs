@@ -659,16 +659,6 @@ fn map_all_dmap<'a, F, FM, I>(
                 let (access, share, uxn, pxn, attr_index) = get_params(desc);
                 let va = phys_addr_to_dmap(current_pa as _) as usize;
 
-                if ((current_pa + PAGE_SIZE) <= align_up(0x6e258010, PAGE_SIZE)
-                    && current_pa >= align_down(0x6e258010, PAGE_SIZE))
-                {
-                    trace!(
-                        "interesting map {:#x}: {:?}",
-                        current_pa,
-                        (access, share, uxn, pxn, attr_index)
-                    );
-                }
-
                 map_page(
                     root_table,
                     current_pa,

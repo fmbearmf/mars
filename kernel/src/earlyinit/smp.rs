@@ -10,7 +10,6 @@ use klib::{
     interrupt::InterruptController,
     this_cpu,
     timer::{init_timer, timer_rearm},
-    vcpu::{CpuState, vcpu_fsm_advance},
     vm::phys_addr_to_dmap,
 };
 
@@ -73,9 +72,7 @@ pub extern "C" fn secondary_init(context_phys: *const SecondaryBootArgs) -> ! {
     dsb(barrier::ISH);
     isb(barrier::SY);
 
-    let mpidr = CpuTopologyId::current();
-    let context_ptr = phys_addr_to_dmap(context_phys as u64) as *const SecondaryBootArgs;
-    let context = unsafe { &*context_ptr };
+    // let context_ptr = phys_addr_to_dmap(context_phys as u64) as *const SecondaryBootArgs;
 
     let gic = get_interrupt_controller();
 
@@ -90,8 +87,8 @@ pub extern "C" fn secondary_init(context_phys: *const SecondaryBootArgs) -> ! {
     init_timer();
     timer_rearm();
 
-    let new_state = vcpu_fsm_advance(mpidr.to_mpidr() as usize);
-    assert_eq!(new_state, CpuState::Done);
+    // let new_state = vcpu_fsm_advance(mpidr.to_mpidr() as usize);
+    // assert_eq!(new_state, CpuState::Done);
 
     busy_loop()
 }

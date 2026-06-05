@@ -70,7 +70,7 @@ impl<T> Mutex<T> {
     }
 
     #[inline]
-    pub unsafe fn force_unlock(&self) -> MutexGuard<'_, T> {
+    pub unsafe fn steal(&self) -> MutexGuard<'_, T> {
         self.lock.store(true, Ordering::Release);
 
         MutexGuard { mutex: self }

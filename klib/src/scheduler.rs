@@ -3,7 +3,7 @@ use core::{
     usize,
 };
 
-use crate::pm::page::mapper::AddressTranslator;
+use crate::{cpu_interface::CpuIdLogical, pm::page::mapper::AddressTranslator, this_cpu};
 
 use super::{
     context::RegisterFileRef,
@@ -21,6 +21,7 @@ use aarch64_cpu::{
 use alloc::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
+    vec::Vec,
 };
 
 #[derive(Debug)]
@@ -40,7 +41,7 @@ impl LocalScheduler<'_> {
 
 #[derive(Debug)]
 pub struct Scheduler<'a> {
-    queues: RwLock<BTreeMap<u64, Mutex<LocalScheduler<'a>>>>,
+    queues: RwLock<Vec<Mutex<LocalScheduler<'a>>>>,
     spawn_counter: AtomicU8,
 }
 
@@ -50,35 +51,34 @@ unsafe impl Sync for Scheduler<'_> {}
 impl<'a> Scheduler<'a> {
     pub const fn new() -> Self {
         Self {
-            queues: RwLock::new(BTreeMap::new()),
+            queues: RwLock::new(Vec::new()),
             spawn_counter: AtomicU8::new(0),
         }
     }
 
-    pub fn register_cpu(&self, mpidr: u64) {
+    pub fn register_cpu(&self, cpu_id: CpuIdLogical) {
         let mut queues = self.queues.write();
-        queues.insert(mpidr, Mutex::new(LocalScheduler::new()));
+        if cpu_id.to_usize() >= queues.len() {
+            queues.resize_with(cpu_id.to_usize() + 1, || Mutex::new(LocalScheduler::new()));
+        }
     }
 
     pub fn spawn(&self, thread: Arc<Thread<'a>>) {
         let queues = self.queues.read();
         assert!(!queues.is_empty(), "scheduler has no CPUs");
 
-        let counter = self.spawn_counter.fetch_add(1, Ordering::Relaxed);
+        let counter = self.spawn_counter.fetch_add(1, Ordering::AcqRel);
         let cpu_i = counter as usize % queues.len();
-
-        let (_mpidr, target_queue) = queues.iter().nth(cpu_i as usize).expect("cpu index OOB");
+        let target_queue = &queues[cpu_i];
 
         thread.set_state(ThreadState::Ready);
         target_queue.lock().thread_queue.push_back(thread);
     }
 
     pub fn schedule<'ctx>(&self, ctx: RegisterFileRef<'ctx>) -> RegisterFileRef<'ctx> {
-        let mpidr = CpuTopologyId::current().to_mpidr();
-
+        let cpu_id = CpuIdLogical::current();
         let queues_guard = self.queues.read();
-        let queue_mutex = queues_guard.get(&mpidr).expect("CPU not registered");
-
+        let queue_mutex = &queues_guard[cpu_id.to_usize()];
         let mut local_queue = queue_mutex.lock();
 
         let prev_thread = local_queue.current_thread.take();
@@ -108,7 +108,9 @@ impl<'a> Scheduler<'a> {
             }
 
             next.set_state(ThreadState::Running);
-            TPIDR_EL1.set(Arc::as_ptr(&next) as u64);
+            this_cpu!();
+
+            // TPIDR_EL1.set(Arc::as_ptr(&next) as u64);
 
             if let Some(process) = next.process() {
                 process.with_address_space(|addr_space| {

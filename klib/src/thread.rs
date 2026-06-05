@@ -60,7 +60,7 @@ impl<'a> Thread<'a> {
     ) -> Self {
         let stack_range = stack.as_ptr_range();
         let stack_top_va = stack_range.end;
-        let stack_top_pa = translator.dmap_to_phys(stack_top_va as *mut u8) as _;
+        // let stack_top_pa = translator.dmap_to_phys(stack_top_va as *mut u8) as _;
 
         const SPSR: FieldValue<u64, SPSR_EL1::Register> = SPSR_EL1::M::EL0t;
 
@@ -70,7 +70,7 @@ impl<'a> Thread<'a> {
             priority,
             ctx: RegisterFile {
                 registers: [0; 31],
-                sp: stack_top_pa,
+                sp: stack_top_va as u64,
                 spsr: SPSR.value,
                 elr: pc,
             },

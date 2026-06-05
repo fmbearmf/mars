@@ -1,13 +1,14 @@
 use core::{
     arch::asm,
     fmt::Debug,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU8, Ordering},
 };
 
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
     registers::ReadWriteable as TRW,
 };
+use alloc::vec::Vec;
 use atomic_refcell::{AtomicRef, AtomicRefMut};
 use mars_models::memory::registers::volatile::{PureReadable, PureWriteable, Writeable};
 
@@ -26,6 +27,7 @@ static INIT_STATE: AtomicU8 = AtomicU8::new(0);
 
 pub struct GicV3<'a, I: InterruptInterface + Send + Sync> {
     pub distributor: &'a GicdRegisters,
+    pub redistributors: &'a [AtomicPtr<GicrRegisters>],
     pub iface: I,
 }
 
@@ -36,16 +38,25 @@ impl<I: InterruptInterface + Send + Sync> Debug for GicV3<'_, I> {
 }
 
 impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
-    pub fn new(distributor: &'a mut GicdRegisters, iface: I) -> Self {
-        Self { distributor, iface }
+    pub fn new(
+        distributor: &'a mut GicdRegisters,
+        redists: &'a [AtomicPtr<GicrRegisters>],
+        iface: I,
+    ) -> Self {
+        Self {
+            distributor,
+            redistributors: redists,
+            iface,
+        }
     }
 
-    fn redistributor(&self) -> AtomicRef<'_, Option<&'static mut GicrRegisters>> {
-        this_cpu!().redistributor.borrow()
-    }
+    fn redistributor_mut(&self) -> &'a mut GicrRegisters {
+        let cpu_id = this_cpu!().id;
+        // no actual race conditions; relaxed is fine
+        let ptr = self.redistributors[cpu_id.to_usize()].load(Ordering::Relaxed);
 
-    fn redistributor_mut(&self) -> AtomicRefMut<'_, Option<&'static mut GicrRegisters>> {
-        this_cpu!().redistributor.borrow_mut()
+        debug_assert!(!ptr.is_null());
+        unsafe { &mut *ptr }
     }
 
     fn wait_for_distributor_rwp(&self) {
@@ -64,8 +75,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
     fn wait_for_redistributor_rwp(&self) {
         dsb(barrier::ISHST);
 
-        let guard = self.redistributor();
-        let redist = guard.as_ref().expect("`None` redistributor");
+        let redist = self.redistributor_mut();
 
         while redist.ctl.read_field_pure(GicrCtlr::RegisterWritePending) == true {
             core::hint::spin_loop();
@@ -122,10 +132,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
             }
         }
 
-        let guard = self.redistributor_mut();
-        let mut redist = AtomicRefMut::map(guard, |opt| {
-            opt.as_mut().expect("redistributor not initialized")
-        });
+        let redist = self.redistributor_mut();
 
         redist.wake.modify_field(GicrWaker::ProcessorSleep, false);
         dsb(barrier::SY);
@@ -157,10 +164,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
 
     fn enable_interrupt(&self, int_id: u32) -> Result<(), InterruptError> {
         if int_id < 32 {
-            let guard = self.redistributor_mut();
-            let mut redist = AtomicRefMut::map(guard, |opt| {
-                opt.as_mut().expect("redistributor not initialized")
-            });
+            let redist = self.redistributor_mut();
 
             redist.iset_enable0.write(1 << int_id);
             self.wait_for_redistributor_rwp();
@@ -177,10 +181,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
 
     fn disable_interrupt(&self, int_id: u32) -> Result<(), InterruptError> {
         if int_id < 32 {
-            let guard = self.redistributor_mut();
-            let mut redist = AtomicRefMut::map(guard, |opt| {
-                opt.as_mut().expect("redistributor not initialized")
-            });
+            let redist = self.redistributor_mut();
 
             redist.iclear_enable0.write(1 << int_id);
             self.wait_for_redistributor_rwp();
@@ -217,10 +218,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
 
     fn set_priority(&self, int_id: u32, priority: u8) -> Result<(), InterruptError> {
         if int_id < 32 {
-            let guard = self.redistributor_mut();
-            let mut redist = AtomicRefMut::map(guard, |opt| {
-                opt.as_mut().expect("redistributor not initialized")
-            });
+            let redist = self.redistributor_mut();
 
             redist.ipriority[int_id as usize].write(priority as u32);
         } else if int_id < 1020 {

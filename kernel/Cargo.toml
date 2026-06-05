@@ -27,6 +27,9 @@ strip = "symbols"
 debug = 0
 incremental = false
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_analyzer)'] }
+
 [dependencies]
 aarch64-cpu.workspace = true
 aarch64-cpu-ext.workspace = true

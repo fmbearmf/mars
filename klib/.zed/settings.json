@@ -3,8 +3,16 @@
     "rust-analyzer": {
       "initialization_options": {
         "cargo": {
-          "target": "aarch64-unknown-none-softfloat",
-          "cfgs": ["debug_assertions", "miri", "hax"],
+          "target": "aarch64-mars-none",
+          "extraArgs": [
+            "-p",
+            "kernel",
+            "-Z",
+            "build-std=core,compiler_builtins,alloc",
+          ],
+          "extraEnv": {
+            "RUSTFLAGS": "-Zunstable-options",
+          },
         },
         "check": {
           "workspace": false,
