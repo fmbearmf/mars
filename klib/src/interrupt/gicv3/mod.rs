@@ -5,11 +5,12 @@ use core::{
 };
 
 use aarch64_cpu::{
-    asm::barrier::{self, dsb, isb},
+    asm::{
+        barrier::{self, dsb, isb},
+        sev, wfe,
+    },
     registers::ReadWriteable as TRW,
 };
-use alloc::vec::Vec;
-use atomic_refcell::{AtomicRef, AtomicRefMut};
 use mars_models::memory::registers::volatile::{PureReadable, PureWriteable, Writeable};
 
 use crate::{interrupt::GicrRegisters, this_cpu};
@@ -124,10 +125,11 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
                 self.wait_for_distributor_rwp();
 
                 INIT_STATE.store(2, Ordering::Release);
+                sev();
             }
             Err(_) => {
                 while INIT_STATE.load(Ordering::Acquire) != 2 {
-                    core::hint::spin_loop();
+                    wfe();
                 }
             }
         }

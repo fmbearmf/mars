@@ -1,30 +1,30 @@
 use core::{ptr::NonNull, sync::atomic::AtomicPtr};
 
 use aarch64_cpu::registers::{MPIDR_EL1, Readable};
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{string::String, vec, vec::Vec};
+use atomic_refcell::AtomicRefMut;
 use klib::{
     cpu_interface::CpuTopologyId,
-    hardware::{device::DeviceClass, resource::Resource},
-    interrupt::{
-        GicdRegisters, GicrRegisters,
-        gicv3::{GicV3, registers::gic::GicrTyper},
+    hardware::{
+        device::{DeviceClass, DeviceTree},
+        resource::Resource,
     },
+    interrupt::{GicdRegisters, GicrRegisters, gicv3::registers::gic::GicrTyper},
     per_cpu::PerCpu,
     pm::page::mapper::AddressTranslator,
 };
 use log::{debug, error, trace};
 use mars_acpi_driver::acpi::{
     header::SdtHeader,
-    madt::{GicCpuInterface, GicDistributor, GicRedistributor, Madt},
+    madt::{GicCpuInterface, GicDistributor, GicRedistributor, Madt, MadtIter},
     xsdp::{Xsdp, XsdtIter},
 };
 use mars_models::memory::registers::volatile::PureReadable;
-use protocol::BootInfo;
 use uefi::table::cfg::ConfigTableEntry;
 use uefi_raw::table::{configuration::ConfigurationTable, system::SystemTable};
 use zerocopy::{FromBytes, IntoBytes};
 
-use crate::{BOOT_INFO, DEVICE_TREE, allocator::KernelAddressTranslator, busy_loop_ret};
+use crate::{BOOT_INFO, DEVICE_TREE, allocator::KernelAddressTranslator};
 
 fn config_table(st: NonNull<SystemTable>) -> &'static [ConfigTableEntry] {
     let st = KernelAddressTranslator.phys_to_dmap(st.as_ptr() as _) as *const SystemTable;
@@ -108,10 +108,18 @@ pub fn acpi_init() {
 fn handle_madt(table: &[u8]) {
     let (madt, _entries): (&Madt, &[u8]) = Madt::ref_from_prefix(table).expect("invalid madt size");
 
+    let madt_iter = move || madt.entries();
+
     let mut dt = DEVICE_TREE.borrow_mut();
 
+    if madt_iter().any(|(ty, _)| matches!(ty, 0xB | 0xC | 0xE)) {
+        handle_gicv3(madt_iter, &mut dt);
+    }
+}
+
+fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTree>) {
     let mut cpu_topologies = Vec::new();
-    for (entry_type, slice) in madt.entries().filter(|&(ty, _)| ty == 0xB) {
+    for (_, slice) in madt().filter(|&(ty, _)| ty == 0xB) {
         let gicc: &GicCpuInterface = GicCpuInterface::ref_from_bytes(slice)
             .expect("MADT GIC CPU Interface entry contained wrong bytes");
         cpu_topologies.push(CpuTopologyId::from_mpidr(gicc.mpidr()));
@@ -127,8 +135,7 @@ fn handle_madt(table: &[u8]) {
         }
     }
 
-    let gicd_entry_slice = madt
-        .entries()
+    let gicd_entry_slice = madt()
         .find(|(entry_type, _)| *entry_type == 0xC)
         .map(|(_, slice)| slice)
         .expect("MADT didn't contain a GIC Distributor entry");
@@ -168,7 +175,7 @@ fn handle_madt(table: &[u8]) {
         }],
     );
 
-    for (entry_type, slice) in madt.entries() {
+    for (entry_type, slice) in madt() {
         match entry_type {
             0xB => {
                 // GICC
@@ -222,12 +229,11 @@ fn handle_madt(table: &[u8]) {
                     trace!("    gic redistributor #{}: {:#x?}", i, gicr_frame);
 
                     let redist_topo = CpuTopologyId::new(id);
+                    let virt_gicr = KernelAddressTranslator
+                        .phys_to_dmap(gicr as *const GicrRegisters as usize)
+                        as *mut GicrRegisters;
 
                     if let Some(i) = cpu_topologies.iter().position(|&t| t == redist_topo) {
-                        let virt_gicr = KernelAddressTranslator
-                            .phys_to_dmap(gicr as *const GicrRegisters as usize)
-                            as *mut GicrRegisters;
-
                         redistributors[i] = AtomicPtr::new(virt_gicr);
                         trace!("initialized redistributor of cpu #{}", i);
                     }
@@ -237,7 +243,8 @@ fn handle_madt(table: &[u8]) {
                         DeviceClass::InterruptRedistributor {
                             cpu_id: CpuTopologyId::new(id),
                         },
-                        Vec::new(),
+                        // no that is not a standard name.
+                        vec![String::from("arm,gic-v3-redistributor")],
                         vec![Resource::Mmio {
                             range: (gicr as *const GicrRegisters as usize)..(unsafe {
                                 (gicr as *const GicrRegisters).add(1)

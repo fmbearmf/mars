@@ -9,7 +9,7 @@ use super::{
     context::RegisterFileRef,
     cpu_interface::CpuTopologyId,
     pm::page::mapper::TableAllocator,
-    sync::{Mutex, RwLock},
+    sync::{RwLock, UnfairSpinlock},
     thread::{Thread, ThreadState},
     vm::page_allocator::PhysicalPageAllocator,
 };
@@ -41,7 +41,7 @@ impl LocalScheduler<'_> {
 
 #[derive(Debug)]
 pub struct Scheduler<'a> {
-    queues: RwLock<Vec<Mutex<LocalScheduler<'a>>>>,
+    queues: RwLock<Vec<UnfairSpinlock<LocalScheduler<'a>>>>,
     spawn_counter: AtomicU8,
 }
 
@@ -59,7 +59,9 @@ impl<'a> Scheduler<'a> {
     pub fn register_cpu(&self, cpu_id: CpuIdLogical) {
         let mut queues = self.queues.write();
         if cpu_id.to_usize() >= queues.len() {
-            queues.resize_with(cpu_id.to_usize() + 1, || Mutex::new(LocalScheduler::new()));
+            queues.resize_with(cpu_id.to_usize() + 1, || {
+                UnfairSpinlock::new(LocalScheduler::new())
+            });
         }
     }
 

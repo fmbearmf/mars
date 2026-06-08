@@ -85,6 +85,8 @@ pub enum DeviceClass {
     Timer,
     InterruptRedistributor { cpu_id: CpuTopologyId },
     InterruptDistributor,
+    // hopefully you have less than 4 billion redistributors
+    GicV3 { redistributor_count: u32 },
     PciHostBridge,
     Other,
 }

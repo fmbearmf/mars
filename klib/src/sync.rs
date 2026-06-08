@@ -5,7 +5,11 @@ use core::{
     sync::atomic::{Atomic, AtomicBool, AtomicUsize, Ordering},
 };
 
-use aarch64_cpu::asm::{sev, wfe};
+use aarch64_cpu::{
+    asm::{sev, wfe},
+    registers::DAIF,
+};
+use tock_registers::fields::FieldValue;
 
 #[repr(C, align(64))]
 #[derive(Debug)]
@@ -24,7 +28,7 @@ impl TicketLock {
 
     #[inline]
     pub fn lock(&self) {
-        let ticket = self.ticket.fetch_add(1, Ordering::Relaxed);
+        let ticket = self.ticket.fetch_add(1, Ordering::AcqRel);
         while self.users.load(Ordering::Acquire) != ticket {
             wfe();
         }
@@ -32,26 +36,26 @@ impl TicketLock {
 
     #[inline]
     pub fn unlock(&self) {
-        self.users.fetch_add(1, Ordering::Release);
+        self.users.fetch_add(1, Ordering::AcqRel);
         sev();
     }
 }
 
 #[derive(Debug)]
-pub struct Mutex<T: ?Sized> {
+pub struct UnfairSpinlock<T: ?Sized> {
     lock: AtomicBool,
     data: UnsafeCell<T>,
 }
 
 // SAFETY: only 1 core can access `data` at a time
-unsafe impl<T: ?Sized + Sync> Sync for Mutex<T> {}
-unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
+unsafe impl<T: ?Sized + Sync> Sync for UnfairSpinlock<T> {}
+unsafe impl<T: ?Sized + Send> Send for UnfairSpinlock<T> {}
 
-pub struct MutexGuard<'a, T> {
-    mutex: &'a Mutex<T>,
+pub struct UnfairSpinlockGuard<'a, T> {
+    mutex: &'a UnfairSpinlock<T>,
 }
 
-impl<T> Mutex<T> {
+impl<T> UnfairSpinlock<T> {
     pub const fn new(data: T) -> Self {
         Self {
             lock: AtomicBool::new(false),
@@ -60,7 +64,7 @@ impl<T> Mutex<T> {
     }
 
     #[inline]
-    pub fn lock(&self) -> MutexGuard<'_, T> {
+    pub fn lock(&self) -> UnfairSpinlockGuard<'_, T> {
         while self
             .lock
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -69,14 +73,14 @@ impl<T> Mutex<T> {
             wfe();
         }
 
-        MutexGuard { mutex: self }
+        UnfairSpinlockGuard { mutex: self }
     }
 
     #[inline]
-    pub unsafe fn steal(&self) -> MutexGuard<'_, T> {
+    pub unsafe fn steal(&self) -> UnfairSpinlockGuard<'_, T> {
         self.lock.store(true, Ordering::Release);
 
-        MutexGuard { mutex: self }
+        UnfairSpinlockGuard { mutex: self }
     }
 
     #[inline]
@@ -86,7 +90,7 @@ impl<T> Mutex<T> {
     }
 }
 
-impl<'a, T> Deref for MutexGuard<'a, T> {
+impl<'a, T> Deref for UnfairSpinlockGuard<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -94,13 +98,13 @@ impl<'a, T> Deref for MutexGuard<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for MutexGuard<'a, T> {
+impl<'a, T> DerefMut for UnfairSpinlockGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.mutex.data.get() }
     }
 }
 
-impl<'a, T> Drop for MutexGuard<'a, T> {
+impl<'a, T> Drop for UnfairSpinlockGuard<'a, T> {
     fn drop(&mut self) {
         self.mutex.unlock();
         sev();
