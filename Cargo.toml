@@ -27,6 +27,7 @@ hax-lib = { git = "https://github.com/cryspen/hax", version = "0.3.6" }
 atomic_refcell = "0.1.14"
 hashbrown = "0.17.1"
 rustc-hash = { version = "2.1.2", default-features = false }
+phf = { version = "0.13.1", default-features = false }
 
 # self
 mars_getters = { path = "./klib/getters" }

@@ -44,3 +44,4 @@ mars-acpi-driver.workspace = true
 mars-models.workspace = true
 mars-models-zerocopy = { workspace = true }
 atomic_refcell.workspace = true
+phf = { workspace = true, default-features = false, features = ["macros"] }

@@ -1,12 +1,12 @@
-use core::ptr;
+use core::{ptr, range::Range};
 
-use klib::vm::user::PAGE_DESCRIPTORS;
+use klib::{hardware::device::DeviceNode, vm::user::PAGE_DESCRIPTORS};
 use log::{LevelFilter, info, trace};
 use protocol::BootInfo;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
 use crate::{
-    BOOT_INFO, KALLOCATOR, KERNEL_ADDRESS_SPACE,
+    BOOT_INFO, DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE,
     earlyinit::{
         acpi::acpi_init,
         earlycon::{EARLYCON, EarlyCon},
@@ -17,6 +17,7 @@ use crate::{
         mmu::init_mmu,
     },
     log::LOGGER,
+    lut::DEVICE_TABLE,
     print_mem_usage,
 };
 
@@ -74,15 +75,22 @@ pub fn uefi_arm64_bootstrap(boot_info_ref: *mut BootInfo) {
 
     KERNEL_ADDRESS_SPACE.init_from_table(new_pt);
 
-    print_mem_usage();
-
     populate_alloc_stage1(&uefi_mmap);
 
     acpi_init();
 
-    print_mem_usage();
+    for node in DEVICE_TREE.borrow_mut().nodes.iter_mut() {
+        let mut handler_opt: Option<fn(&mut DeviceNode)> = None;
 
-    trace!("dsfsdf");
+        // the assumption is that the most specific string is first
+        for compatible_string in node.compatible.iter() {
+            if let Some(handler) = DEVICE_TABLE.get(compatible_string) {
+                handler_opt = Some(*handler);
+            }
+        }
 
-    //print_pt(unsafe { pt_root.as_mut() }, false);
+        if let Some(handler) = handler_opt {
+            handler(node);
+        }
+    }
 }

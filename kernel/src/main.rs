@@ -7,6 +7,7 @@ mod allocator;
 mod earlyinit;
 mod interrupt;
 mod log;
+mod lut;
 
 use ::log::{debug, trace};
 use aarch64_cpu::asm::wfe;
@@ -48,14 +49,13 @@ static KPAGE_ALLOCATOR: PageAllocator = PageAllocator::new(&KernelAddressTransla
 static mut BOOT_INFO: MaybeUninit<BootInfo> = MaybeUninit::uninit();
 
 #[global_allocator]
-pub static KALLOCATOR: SlabAllocator =
-    SlabAllocator::new(&KPAGE_ALLOCATOR, &KernelAddressTranslator);
+static KALLOCATOR: SlabAllocator = SlabAllocator::new(&KPAGE_ALLOCATOR, &KernelAddressTranslator);
 
-pub static KPT_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
+static KPT_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
 
-pub static GLOBAL_SCHEDULER: Scheduler = Scheduler::new();
+static GLOBAL_SCHEDULER: Scheduler = Scheduler::new();
 
-pub static KERNEL_ADDRESS_SPACE: AddressSpace = unsafe {
+static KERNEL_ADDRESS_SPACE: AddressSpace = unsafe {
     AddressSpace::new_dangling(
         None,
         &KPT_ALLOCATOR,
@@ -90,7 +90,7 @@ fn busy_loop_ret() {
 }
 
 unsafe extern "C" {
-    pub static __KBASE: usize;
+    static __KBASE: usize;
 }
 
 const STACK_SIZE: usize = 32 * 1024;
@@ -100,7 +100,7 @@ const STACK_SIZE: usize = 32 * 1024;
 struct KStack([u8; STACK_SIZE]);
 
 impl KStack {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self([0u8; STACK_SIZE])
     }
 }
@@ -125,10 +125,6 @@ pub unsafe extern "C" fn _start(_boot_info_ref: *mut BootInfo) {
     );
 }
 
-// fn kaddr_to_paddr(kernel_load_paddr: usize, kaddr: usize) -> usize {
-//     (kaddr - unsafe { &__KBASE as *const _ as usize }) + kernel_load_paddr
-// }
-
 fn kentry(boot_info_ref: *mut BootInfo) -> ! {
     unsafe {
         asm!(
@@ -151,7 +147,7 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
         }
     }
 
-    debug!("weldington");
+    debug!("dead end");
 
     busy_loop();
 }

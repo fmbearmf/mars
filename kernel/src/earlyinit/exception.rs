@@ -15,21 +15,25 @@ use crate::{GLOBAL_SCHEDULER, busy_loop_ret, interrupt::get_interrupt_controller
 
 use super::super::earlycon_writeln;
 
-#[inline(always)]
-fn daif_save() -> u64 {
-    let daif = DAIF.get();
-    daif
+/// preserve the previous state of preemption and restore it on drop.
+pub struct PreemptionGuard(u64);
+
+impl PreemptionGuard {
+    fn save() -> Self {
+        Self(DAIF.get())
+    }
 }
 
-#[inline(always)]
-fn daif_restore(daif: u64) {
-    DAIF.set(daif);
+impl Drop for PreemptionGuard {
+    fn drop(&mut self) {
+        DAIF.set(self.0);
+    }
 }
 
 pub struct Exceptions;
 impl ExceptionHandler for Exceptions {
     extern "C" fn sync_lower(register_file: RegisterFileRef) -> RegisterFileRef {
-        let daif = daif_save();
+        let _guard = PreemptionGuard::save();
 
         let current = this_cpu!();
 
@@ -43,8 +47,6 @@ impl ExceptionHandler for Exceptions {
 
         busy_loop_ret();
 
-        daif_restore(daif);
-
         register_file
     }
 
@@ -53,7 +55,7 @@ impl ExceptionHandler for Exceptions {
     }
 
     extern "C" fn fiq_current(register_file: RegisterFileRef) -> RegisterFileRef {
-        let daif = daif_save();
+        let _guard = PreemptionGuard::save();
 
         trace!("fiq: before scheduling: {:?}", register_file);
         let regs: RegisterFileRef = {
@@ -83,14 +85,13 @@ impl ExceptionHandler for Exceptions {
 
         trace!("fiq: after scheduling: {:?}", regs);
 
-        daif_restore(daif);
         timer_schedule();
 
         regs
     }
 
     extern "C" fn irq_current(register_file: RegisterFileRef) -> RegisterFileRef {
-        let daif = daif_save();
+        let _guard = PreemptionGuard::save();
 
         trace!(
             "irq (CPU {}): before scheduling: {:?}",
@@ -128,7 +129,6 @@ impl ExceptionHandler for Exceptions {
             regs
         );
 
-        daif_restore(daif);
         timer_schedule();
 
         regs

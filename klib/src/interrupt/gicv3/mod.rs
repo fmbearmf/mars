@@ -11,6 +11,7 @@ use aarch64_cpu::{
     },
     registers::ReadWriteable as TRW,
 };
+use alloc::vec::Vec;
 use mars_models::memory::registers::volatile::{PureReadable, PureWriteable, Writeable};
 
 use crate::{interrupt::GicrRegisters, this_cpu};
@@ -28,7 +29,7 @@ static INIT_STATE: AtomicU8 = AtomicU8::new(0);
 
 pub struct GicV3<'a, I: InterruptInterface + Send + Sync> {
     pub distributor: &'a GicdRegisters,
-    pub redistributors: &'a [AtomicPtr<GicrRegisters>],
+    pub redistributors: Vec<AtomicPtr<GicrRegisters>>,
     pub iface: I,
 }
 
@@ -41,7 +42,7 @@ impl<I: InterruptInterface + Send + Sync> Debug for GicV3<'_, I> {
 impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
     pub fn new(
         distributor: &'a mut GicdRegisters,
-        redists: &'a [AtomicPtr<GicrRegisters>],
+        redists: Vec<AtomicPtr<GicrRegisters>>,
         iface: I,
     ) -> Self {
         Self {

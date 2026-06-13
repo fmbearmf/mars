@@ -1,4 +1,4 @@
-use core::{ptr::NonNull, sync::atomic::AtomicPtr};
+use core::{ops::Range, ptr::NonNull, sync::atomic::AtomicPtr};
 
 use aarch64_cpu::registers::{MPIDR_EL1, Readable};
 use alloc::{string::String, vec, vec::Vec};
@@ -135,6 +135,9 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
         }
     }
 
+    let mut gic_resources = Vec::new();
+    let mut redistributor_count = 0;
+
     let gicd_entry_slice = madt()
         .find(|(entry_type, _)| *entry_type == 0xC)
         .map(|(_, slice)| slice)
@@ -153,27 +156,14 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
         unimplemented!();
     }
 
-    let gicd_regs: &mut GicdRegisters = {
+    let gicd_range: Range<usize> = {
         let base = gicd.phys_base();
         assert_ne!(base, 0, "GICD physical base is null");
 
-        let virt_base = KernelAddressTranslator.phys_to_dmap(base as _);
-        let slice =
-            unsafe { core::slice::from_raw_parts_mut(virt_base, size_of::<GicdRegisters>()) };
-
-        GicdRegisters::mut_from_bytes(slice).expect("GICD Distributor mapping failed")
+        (base as usize)..(base as usize + size_of::<GicdRegisters>())
     };
 
-    dt.add_device(
-        None,
-        DeviceClass::InterruptDistributor,
-        Vec::new(),
-        vec![Resource::Mmio {
-            range: (gicd_regs as *const GicdRegisters as usize)..(unsafe {
-                (gicd_regs as *const GicdRegisters).add(1)
-            } as usize),
-        }],
-    );
+    gic_resources.push(Resource::Mmio { range: gicd_range });
 
     for (entry_type, slice) in madt() {
         match entry_type {
@@ -184,8 +174,7 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
 
                 trace!("    GIC cpu interface: {:#x?}", gicc);
 
-                let cpu_id = gicc.mpidr();
-                let cpu_id = CpuTopologyId::from_mpidr(cpu_id);
+                let cpu_id = CpuTopologyId::from_mpidr(gicc.mpidr());
 
                 dt.add_device(
                     None,
@@ -197,11 +186,11 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
                     Vec::new(),
                 );
             }
-            0xC => continue, // GICD
+            0xC => {} // GICD
             0xE => {
                 // GICR
                 let gicr_handle: &GicRedistributor = GicRedistributor::ref_from_bytes(slice)
-                    .expect("MADT GIC Redistributor entry contained wrong bytes for a GICR block");
+                    .expect("MADT GIC Redistributor entry contained wrong bytes");
 
                 trace!("    gic redistributor block: {:#x?}", gicr_handle);
 
@@ -209,49 +198,38 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
                     .frames()
                     .expect("MADT GIC Redistributor entry contained invalid GICR block");
 
-                let mut redistributors: Vec<AtomicPtr<GicrRegisters>> = (0..cpu_topologies.len())
-                    .map(|_| AtomicPtr::new(core::ptr::null_mut()))
-                    .collect();
-
                 for i in 0..gicr_block.len() {
-                    let gicr = gicr_block.get(i);
+                    let gicr_frame = match gicr_block.get(i) {
+                        Some(f) => f,
+                        None => break,
+                    };
 
-                    if gicr.is_none() {
-                        break;
-                    }
+                    let gicr_regs = gicr_frame.reg;
 
-                    let gicr_frame = gicr.unwrap();
-                    let gicr = gicr_frame.reg;
-
-                    let last = gicr.type_.read_field_pure(GicrTyper::LastRedistributor);
-                    let id = gicr.type_.read_field_pure(GicrTyper::AffinityValue);
+                    let last = gicr_regs
+                        .type_
+                        .read_field_pure(GicrTyper::LastRedistributor);
+                    let id = gicr_regs.type_.read_field_pure(GicrTyper::AffinityValue);
 
                     trace!("    gic redistributor #{}: {:#x?}", i, gicr_frame);
 
                     let redist_topo = CpuTopologyId::new(id);
                     let virt_gicr = KernelAddressTranslator
-                        .phys_to_dmap(gicr as *const GicrRegisters as usize)
+                        .phys_to_dmap(gicr_regs as *const GicrRegisters as usize)
                         as *mut GicrRegisters;
 
                     if let Some(i) = cpu_topologies.iter().position(|&t| t == redist_topo) {
-                        redistributors[i] = AtomicPtr::new(virt_gicr);
+                        //redistributors[i] = AtomicPtr::new(virt_gicr);
                         trace!("initialized redistributor of cpu #{}", i);
                     }
 
-                    dt.add_device(
-                        None,
-                        DeviceClass::InterruptRedistributor {
-                            cpu_id: CpuTopologyId::new(id),
-                        },
-                        // no that is not a standard name.
-                        vec![String::from("arm,gic-v3-redistributor")],
-                        vec![Resource::Mmio {
-                            range: (gicr as *const GicrRegisters as usize)..(unsafe {
-                                (gicr as *const GicrRegisters).add(1)
-                            }
-                                as usize),
-                        }],
-                    );
+                    gic_resources.push(Resource::Mmio {
+                        range: (gicr_regs as *const GicrRegisters as usize)
+                            ..(gicr_regs as *const GicrRegisters as usize
+                                + size_of::<GicrRegisters>()),
+                    });
+
+                    redistributor_count += 1;
 
                     if last {
                         break;
@@ -261,4 +239,13 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
             _ => trace!("   unrecognized madt subtable type: {:x}", entry_type),
         }
     }
+
+    dt.add_device(
+        None,
+        DeviceClass::GicV3 {
+            redistributor_count,
+        },
+        vec![String::from("arm,gic-v3")],
+        gic_resources,
+    );
 }

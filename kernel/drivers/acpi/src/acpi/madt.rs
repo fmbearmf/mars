@@ -92,8 +92,8 @@ pub enum GicrSplitError {
 
 #[derive(Debug)]
 pub struct GicrFrameBlock<'a> {
-    data: &'a [u8],
-    count: usize,
+    pub data: &'a [u8],
+    pub count: usize,
 }
 
 #[derive(Copy, Clone)]
