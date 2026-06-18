@@ -144,6 +144,17 @@ declare_register!(
 
 declare_register!(
     #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    /// thin u8 wrapper
+    GicBitfield8, u8, {
+        field Field => (
+            offset: 0,
+            size: 8,
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
     /// thin u32 wrapper
     GicBitfield32, u32, {
         field Field => (

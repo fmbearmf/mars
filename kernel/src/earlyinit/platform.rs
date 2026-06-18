@@ -1,12 +1,14 @@
-use core::{ptr, range::Range};
+use core::{mem::MaybeUninit, ptr, range::Range};
 
+use aarch64_cpu::registers::TTBR0_EL1;
+use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
 use klib::{hardware::device::DeviceNode, vm::user::PAGE_DESCRIPTORS};
 use log::{LevelFilter, info, trace};
 use protocol::BootInfo;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
 use crate::{
-    BOOT_INFO, DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE,
+    DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE,
     earlyinit::{
         acpi::acpi_init,
         earlycon::{EARLYCON, EarlyCon},
@@ -21,16 +23,118 @@ use crate::{
     print_mem_usage,
 };
 
-pub fn uefi_arm64_bootstrap(boot_info_ref: *mut BootInfo) {
-    #[allow(static_mut_refs, reason = "singlethreaded access")]
-    {
-        unsafe {
-            ptr::copy_nonoverlapping(boot_info_ref, BOOT_INFO.as_mut_ptr(), 1);
-        };
+mod sealed {
+    use atomic_enum::atomic_enum;
+    use core::{marker::PhantomData, ptr, sync::atomic::Ordering};
+
+    use super::{BootInfo, MaybeUninit};
+
+    #[atomic_enum]
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    enum State {
+        Fresh = 0,
+        Uninit,
+        Init,
     }
 
-    #[allow(static_mut_refs, reason = "singlethreaded access")]
-    let boot_info = unsafe { BOOT_INFO.assume_init_mut() };
+    // storage for boot info struct
+    static mut BOOT_INFO: MaybeUninit<BootInfo> = MaybeUninit::uninit();
+    static STATE: AtomicState = AtomicState::new(State::Fresh);
+
+    pub struct BootInfoInitToken {
+        _private: (),
+    }
+
+    impl !Send for BootInfoInitToken {}
+    impl !Sync for BootInfoInitToken {}
+    impl !Clone for BootInfoInitToken {}
+    impl !Copy for BootInfoInitToken {}
+
+    pub struct BootInfoToken {
+        _private: (),
+        _phantom: PhantomData<BootInfo>,
+    }
+
+    impl !Send for BootInfoToken {}
+    impl !Sync for BootInfoToken {}
+    impl !Clone for BootInfoToken {}
+    impl !Copy for BootInfoToken {}
+
+    impl BootInfoInitToken {
+        /// Create a BootInfoToken.
+        /// `None` if new() has already been called.
+        pub fn new() -> Option<Self> {
+            if STATE
+                .compare_exchange(
+                    State::Fresh,
+                    State::Uninit,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                Some(Self { _private: () })
+            } else {
+                None
+            }
+        }
+
+        /// returns `None` if already initialized.
+        /// returns `Some(BootInfoToken)` when successful.
+        /// safety: pointer is initialized and safe to copy from (and obviously valid).
+        pub unsafe fn init(self, pointer: *mut BootInfo) -> Option<BootInfoToken> {
+            if STATE.load(Ordering::Acquire) == State::Uninit {
+                #[allow(
+                    static_mut_refs,
+                    reason = "BootInfoToken wraps the static mutable (which is inaccessible outside)"
+                )]
+                unsafe {
+                    ptr::copy_nonoverlapping(pointer, BOOT_INFO.as_mut_ptr(), 1)
+                };
+
+                STATE.store(State::Init, Ordering::Release);
+            } else {
+                return None;
+            }
+
+            Some(BootInfoToken {
+                _private: (),
+                _phantom: PhantomData,
+            })
+        }
+    }
+
+    impl BootInfoToken {
+        pub fn get<'a>(&'a self) -> &'a BootInfo {
+            debug_assert_eq!(STATE.load(Ordering::Acquire), State::Init);
+
+            #[allow(
+                static_mut_refs,
+                reason = "BootInfoToken wraps the static mutable (which is inaccessible outside)"
+            )]
+            unsafe {
+                BOOT_INFO.assume_init_ref()
+            }
+        }
+
+        pub fn get_mut<'a>(&'a mut self) -> &'a mut BootInfo {
+            debug_assert_eq!(STATE.load(Ordering::Acquire), State::Init);
+
+            #[allow(
+                static_mut_refs,
+                reason = "BootInfoToken wraps the static mutable (which is inaccessible outside)"
+            )]
+            unsafe {
+                BOOT_INFO.assume_init_mut()
+            }
+        }
+    }
+}
+
+pub use sealed::*;
+
+pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
+    let boot_info = boot_info_token.get_mut();
 
     {
         let mut lock = EARLYCON.lock();
@@ -43,7 +147,6 @@ pub fn uefi_arm64_bootstrap(boot_info_ref: *mut BootInfo) {
 
     info!("welcome to the jungle, we take it day by day");
 
-    trace!("address of passed bootinfo ptr: {:#p}", boot_info_ref);
     trace!("address of bootinfo: {:#p}", &boot_info);
 
     trace!("init_mmu addr: {:#p}", init_mmu as *const ());
@@ -77,7 +180,7 @@ pub fn uefi_arm64_bootstrap(boot_info_ref: *mut BootInfo) {
 
     populate_alloc_stage1(&uefi_mmap);
 
-    acpi_init();
+    acpi_init(&boot_info_token);
 
     for node in DEVICE_TREE.borrow_mut().nodes.iter_mut() {
         let mut handler_opt: Option<fn(&mut DeviceNode)> = None;

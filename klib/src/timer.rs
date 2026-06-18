@@ -79,11 +79,13 @@ impl Timer {
 
     #[inline]
     pub fn set_masked(&self, masked: bool) {
-        if masked {
-            CNTV_CTL_EL0.write(CNTV_CTL_EL0::IMASK::SET);
+        let value = if masked {
+            CNTV_CTL_EL0::IMASK::SET
         } else {
-            CNTV_CTL_EL0.write(CNTV_CTL_EL0::IMASK::CLEAR);
-        }
+            CNTV_CTL_EL0::IMASK::CLEAR
+        };
+
+        CNTV_CTL_EL0.write(value);
 
         isb(barrier::SY);
     }

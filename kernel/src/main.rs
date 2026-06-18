@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(negative_impls)]
 
 extern crate alloc;
 
@@ -29,7 +30,10 @@ use protocol::BootInfo;
 
 use crate::{
     allocator::KernelAddressTranslator,
-    earlyinit::{mmu::init_cpu, platform::uefi_arm64_bootstrap},
+    earlyinit::{
+        mmu::init_cpu,
+        platform::{BootInfoInitToken, uefi_arm64_bootstrap},
+    },
 };
 
 use self::{
@@ -43,10 +47,6 @@ static DEVICE_TREE: AtomicRefCell<DeviceTree> = AtomicRefCell::new(DeviceTree::n
 
 // use `KALLOCATOR`
 static KPAGE_ALLOCATOR: PageAllocator = PageAllocator::new(&KernelAddressTranslator);
-
-// storage for boot info struct
-// shouldn't be accessed outside of very early in kentry
-static mut BOOT_INFO: MaybeUninit<BootInfo> = MaybeUninit::uninit();
 
 #[global_allocator]
 static KALLOCATOR: SlabAllocator = SlabAllocator::new(&KPAGE_ALLOCATOR, &KernelAddressTranslator);
@@ -136,7 +136,13 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
     }
     init_cpu();
 
-    uefi_arm64_bootstrap(boot_info_ref);
+    let boot_info_init_token = BootInfoInitToken::new().unwrap();
+    let mut boot_info_token = unsafe { boot_info_init_token.init(boot_info_ref) }.unwrap();
+
+    let r = boot_info_token.get();
+    let m = boot_info_token.get_mut();
+
+    uefi_arm64_bootstrap(boot_info_token);
 
     {
         let mut lock = EARLYCON.lock();

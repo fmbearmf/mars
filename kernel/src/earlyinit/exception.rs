@@ -51,46 +51,6 @@ impl ExceptionHandler for Exceptions {
     }
 
     extern "C" fn irq_lower(register_file: RegisterFileRef) -> RegisterFileRef {
-        Self::irq_current(register_file)
-    }
-
-    extern "C" fn fiq_current(register_file: RegisterFileRef) -> RegisterFileRef {
-        let _guard = PreemptionGuard::save();
-
-        trace!("fiq: before scheduling: {:?}", register_file);
-        let regs: RegisterFileRef = {
-            let gic = get_interrupt_controller();
-
-            let ack = gic.acknowledge_interrupt().expect("ack failure");
-
-            let regs = match ack {
-                Some(int) => {
-                    timer_disarm();
-                    timer_rearm();
-
-                    let regs = if int == this_cpu!().timer_irq.load(Ordering::Relaxed) as u32 {
-                        GLOBAL_SCHEDULER.schedule(register_file)
-                    } else {
-                        register_file
-                    };
-
-                    gic.end_of_interrupt(int).expect("invalid int id");
-                    regs
-                }
-                None => register_file,
-            };
-
-            regs
-        };
-
-        trace!("fiq: after scheduling: {:?}", regs);
-
-        timer_schedule();
-
-        regs
-    }
-
-    extern "C" fn irq_current(register_file: RegisterFileRef) -> RegisterFileRef {
         let _guard = PreemptionGuard::save();
 
         trace!(
@@ -132,5 +92,46 @@ impl ExceptionHandler for Exceptions {
         timer_schedule();
 
         regs
+        //
+    }
+
+    extern "C" fn fiq_current(register_file: RegisterFileRef) -> RegisterFileRef {
+        let _guard = PreemptionGuard::save();
+
+        trace!("fiq: before scheduling: {:?}", register_file);
+        let regs: RegisterFileRef = {
+            let gic = get_interrupt_controller();
+
+            let ack = gic.acknowledge_interrupt().expect("ack failure");
+
+            let regs = match ack {
+                Some(int) => {
+                    timer_disarm();
+                    timer_rearm();
+
+                    let regs = if int == this_cpu!().timer_irq.load(Ordering::Relaxed) as u32 {
+                        GLOBAL_SCHEDULER.schedule(register_file)
+                    } else {
+                        register_file
+                    };
+
+                    gic.end_of_interrupt(int).expect("invalid int id");
+                    regs
+                }
+                None => register_file,
+            };
+
+            regs
+        };
+
+        trace!("fiq: after scheduling: {:?}", regs);
+
+        timer_schedule();
+
+        regs
+    }
+
+    extern "C" fn irq_current(register_file: RegisterFileRef) -> RegisterFileRef {
+        Self::irq_lower(register_file)
     }
 }

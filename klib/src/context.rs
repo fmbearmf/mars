@@ -5,8 +5,10 @@ use core::{borrow::Borrow, fmt, ops::Deref};
 pub struct RegisterFile {
     pub registers: [u64; 31],
     pub sp: u64,
-    pub elr: usize,
+    pub elr: u64,
     pub spsr: u64,
+    pub esr: u64,
+    pub far: u64,
 }
 
 impl fmt::Debug for RegisterFile {
@@ -35,7 +37,7 @@ impl fmt::Debug for RegisterFile {
 //const _: () = assert!(size_of::<RegisterFile>() == 8 * 24);
 
 #[derive(Eq, PartialEq)]
-#[repr(transparent)]
+#[repr(C, align(16))]
 pub struct RegisterFileRef<'a>(pub &'a mut RegisterFile);
 
 impl fmt::Debug for RegisterFileRef<'_> {

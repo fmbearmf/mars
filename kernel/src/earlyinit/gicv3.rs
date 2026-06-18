@@ -1,5 +1,6 @@
-use core::sync::atomic::AtomicPtr;
+use core::{range::Range, sync::atomic::AtomicPtr};
 
+use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{boxed::Box, vec::Vec};
 use klib::{
     cpu_interface::Arm64InterruptInterface,
@@ -9,12 +10,18 @@ use klib::{
     },
     interrupt::{GicdRegisters, GicrRegisters, gicv3::GicV3},
     pm::page::mapper::AddressTranslator,
+    vm::MAIR_DEVICE_INDEX,
 };
 use log::{debug, error, trace};
 use mars_acpi_driver::acpi::madt::{GicRedistributor, GicrFrame};
 use zerocopy::FromBytes;
 
-use crate::{allocator::KernelAddressTranslator, interrupt::set_interrupt_controller};
+use crate::{
+    KERNEL_ADDRESS_SPACE,
+    allocator::KernelAddressTranslator,
+    busy_loop_ret,
+    interrupt::{get_interrupt_controller, set_interrupt_controller},
+};
 
 pub fn gicv3_handler(node: &mut DeviceNode) {
     trace!("gicv3_handler: {:?}", node.compatible);
@@ -49,10 +56,23 @@ pub fn gicv3_handler(node: &mut DeviceNode) {
             }
         };
 
-        let slice = unsafe {
-            let virt_start = KernelAddressTranslator.phys_to_dmap(range.start) as *mut u8;
-            core::slice::from_raw_parts_mut(virt_start, range.end - range.start)
-        };
+        let virt_start = KernelAddressTranslator.phys_to_dmap(range.start) as *mut u8;
+
+        let size = range.end - range.start;
+
+        let mut cursor = KERNEL_ADDRESS_SPACE.lock(Range::from(
+            (virt_start as usize)..(virt_start as usize + size),
+        ));
+        cursor.map(
+            range.start as _,
+            AccessPermission::PrivilegedReadWrite,
+            Shareability::OuterShareable,
+            true,
+            true,
+            MAIR_DEVICE_INDEX,
+        );
+
+        let slice = unsafe { core::slice::from_raw_parts_mut(virt_start, size) };
 
         GicdRegisters::mut_from_bytes(slice).unwrap()
     };
@@ -66,9 +86,22 @@ pub fn gicv3_handler(node: &mut DeviceNode) {
         .take(redistributor_count as usize)
         .filter_map(|redist| match redist {
             Resource::Mmio { range } => unsafe {
-                let virt_start = KernelAddressTranslator.phys_to_dmap(range.start) as *mut u8;
+                let size = range.end - range.start;
 
-                let slice = core::slice::from_raw_parts_mut(virt_start, range.end - range.start);
+                let virt_start = KernelAddressTranslator.phys_to_dmap(range.start) as *mut u8;
+                let mut cursor = KERNEL_ADDRESS_SPACE.lock(Range::from(
+                    (virt_start as usize)..(virt_start as usize + size),
+                ));
+                cursor.map(
+                    range.start as _,
+                    AccessPermission::PrivilegedReadWrite,
+                    Shareability::OuterShareable,
+                    true,
+                    true,
+                    MAIR_DEVICE_INDEX,
+                );
+
+                let slice = core::slice::from_raw_parts_mut(virt_start, size);
 
                 let redist = GicrRegisters::mut_from_bytes(slice).unwrap();
 
@@ -93,4 +126,6 @@ pub fn gicv3_handler(node: &mut DeviceNode) {
     debug!("set interrupt controller to GicV3");
 
     set_interrupt_controller(gicv3);
+
+    get_interrupt_controller().init().unwrap();
 }

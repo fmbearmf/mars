@@ -11,13 +11,15 @@ use aarch64_cpu::{
     },
     registers::ReadWriteable as TRW,
 };
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec, vec::Vec};
+use atomic_refcell::AtomicRefCell;
+use log::debug;
 use mars_models::memory::registers::volatile::{PureReadable, PureWriteable, Writeable};
 
-use crate::{interrupt::GicrRegisters, this_cpu};
+use crate::{interrupt::GicrRegisters, strange::NicheKernelPtr, this_cpu};
 
 use super::{
-    GicdRegisters, InterruptController, InterruptError, InterruptInterface,
+    GicdRegisters, InterruptController, InterruptError, InterruptInterface, Result,
     gicv3::registers::gic::{GicdCtlr, GicrCtlr, GicrWaker},
 };
 
@@ -26,11 +28,26 @@ use self::registers::icc_sre_el1::ICC_SRE_EL1;
 pub mod registers;
 
 static INIT_STATE: AtomicU8 = AtomicU8::new(0);
+type IrqHandlerFnPtr = NicheKernelPtr<fn(u32) -> Result<()>>;
+
+#[derive(Debug, Copy, Clone)]
+pub enum IrqTarget {
+    Distributor,
+    Redistributor,
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(align(8))]
+pub struct IrqHandler {
+    target: IrqTarget,
+    dispatch_fn: IrqHandlerFnPtr,
+}
 
 pub struct GicV3<'a, I: InterruptInterface + Send + Sync> {
     pub distributor: &'a GicdRegisters,
     pub redistributors: Vec<AtomicPtr<GicrRegisters>>,
     pub iface: I,
+    interrupt_handlers: AtomicRefCell<Box<[Option<IrqHandler>; 1020]>>,
 }
 
 impl<I: InterruptInterface + Send + Sync> Debug for GicV3<'_, I> {
@@ -45,10 +62,13 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
         redists: Vec<AtomicPtr<GicrRegisters>>,
         iface: I,
     ) -> Self {
+        let handlers: Box<[Option<IrqHandler>]> = vec![None; 1020].into_boxed_slice();
+
         Self {
             distributor,
             redistributors: redists,
             iface,
+            interrupt_handlers: AtomicRefCell::new(handlers.try_into().unwrap()),
         }
     }
 
@@ -86,7 +106,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
 }
 
 impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, I> {
-    fn init(&self) -> Result<(), InterruptError> {
+    fn init(&self) -> Result<()> {
         ICC_SRE_EL1.modify(ICC_SRE_EL1::SRE::Enabled);
         {
             let value = 0;
@@ -165,7 +185,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
         Ok(())
     }
 
-    fn enable_interrupt(&self, int_id: u32) -> Result<(), InterruptError> {
+    fn enable_interrupt(&self, int_id: u32) -> Result<()> {
         if int_id < 32 {
             let redist = self.redistributor_mut();
 
@@ -182,7 +202,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
         Ok(())
     }
 
-    fn disable_interrupt(&self, int_id: u32) -> Result<(), InterruptError> {
+    fn disable_interrupt(&self, int_id: u32) -> Result<()> {
         if int_id < 32 {
             let redist = self.redistributor_mut();
 
@@ -199,7 +219,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
         Ok(())
     }
 
-    fn acknowledge_interrupt(&self) -> Result<Option<u32>, InterruptError> {
+    fn acknowledge_interrupt(&self) -> Result<Option<u32>> {
         let int_id = self.iface.read_iar();
 
         // id 1023 is defined as spurious
@@ -210,7 +230,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
         }
     }
 
-    fn end_of_interrupt(&self, int_id: u32) -> Result<(), InterruptError> {
+    fn end_of_interrupt(&self, int_id: u32) -> Result<()> {
         if int_id < 1020 {
             self.iface.write_eoir(int_id);
             Ok(())
@@ -219,20 +239,20 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
         }
     }
 
-    fn set_priority(&self, int_id: u32, priority: u8) -> Result<(), InterruptError> {
+    fn set_priority(&self, int_id: u32, priority: u8) -> Result<()> {
         if int_id < 32 {
             let redist = self.redistributor_mut();
 
-            redist.ipriority[int_id as usize].write(priority as u32);
+            redist.ipriority[int_id as usize].write(priority);
         } else if int_id < 1020 {
-            self.distributor.ipriority[int_id as usize].write_pure(priority as u32);
+            self.distributor.ipriority[int_id as usize].write_pure(priority);
         } else {
             return Err(InterruptError::InvalidInterruptId);
         }
         Ok(())
     }
 
-    fn set_affinity(&self, int_id: u32, affinity: u64) -> Result<(), InterruptError> {
+    fn set_affinity(&self, int_id: u32, affinity: u64) -> Result<()> {
         if int_id < 32 {
             // SGIs and PPIs are private to a core
             return Err(InterruptError::NotSupported);
@@ -242,5 +262,30 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
 
         self.distributor.irouter[int_id as usize].write_pure(affinity);
         Ok(())
+    }
+
+    fn register_handler(&self, int_id: u32, handler: IrqHandler) -> Result<()> {
+        if int_id > 1019 {
+            return Err(InterruptError::InvalidInterruptId);
+        }
+        let mut handle = self
+            .interrupt_handlers
+            .try_borrow_mut()
+            .map_err(|_| InterruptError::NotSupported)?;
+
+        handle[int_id as usize] = Some(handler);
+
+        Ok(())
+    }
+
+    fn on_interrupt(&self, int_id: u32) -> Result<()> {
+        // if the handle is already being borrowed mutably, that's a bigger problem. panic.
+        let handle = self.interrupt_handlers.borrow();
+
+        let handler_fn = handle[int_id as usize]
+            .map_or(Err(InterruptError::HandlerNotFound), |h| Ok(h.dispatch_fn))?
+            .to_fn();
+
+        handler_fn(int_id)
     }
 }

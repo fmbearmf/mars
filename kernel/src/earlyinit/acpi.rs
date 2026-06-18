@@ -24,7 +24,7 @@ use uefi::table::cfg::ConfigTableEntry;
 use uefi_raw::table::{configuration::ConfigurationTable, system::SystemTable};
 use zerocopy::{FromBytes, IntoBytes};
 
-use crate::{BOOT_INFO, DEVICE_TREE, allocator::KernelAddressTranslator};
+use crate::{DEVICE_TREE, allocator::KernelAddressTranslator, earlyinit::platform::BootInfoToken};
 
 fn config_table(st: NonNull<SystemTable>) -> &'static [ConfigTableEntry] {
     let st = KernelAddressTranslator.phys_to_dmap(st.as_ptr() as _) as *const SystemTable;
@@ -44,8 +44,8 @@ fn config_table(st: NonNull<SystemTable>) -> &'static [ConfigTableEntry] {
 }
 
 #[allow(static_mut_refs, reason = "singlethreaded")]
-pub fn acpi_init() {
-    let bi = unsafe { BOOT_INFO.assume_init_ref() };
+pub fn acpi_init(token: &BootInfoToken) {
+    let bi = token.get();
 
     let st = bi.system_table_raw;
 
@@ -146,8 +146,6 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
     let gicd: &GicDistributor = GicDistributor::ref_from_bytes(gicd_entry_slice)
         .expect("MADT GIC Distributor entry contained wrong bytes");
 
-    trace!("    GIC distributor: {:#x?}", gicd);
-
     if gicd.gic_version() != 3 {
         error!(
             "    GIC version isn't 3 (unsupported): {}",
@@ -172,8 +170,6 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
                 let gicc: &GicCpuInterface = GicCpuInterface::ref_from_bytes(slice)
                     .expect("MADT GIC CPU Interface entry contained wrong bytes for a GICC");
 
-                trace!("    GIC cpu interface: {:#x?}", gicc);
-
                 let cpu_id = CpuTopologyId::from_mpidr(gicc.mpidr());
 
                 dt.add_device(
@@ -192,8 +188,6 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
                 let gicr_handle: &GicRedistributor = GicRedistributor::ref_from_bytes(slice)
                     .expect("MADT GIC Redistributor entry contained wrong bytes");
 
-                trace!("    gic redistributor block: {:#x?}", gicr_handle);
-
                 let gicr_block = gicr_handle
                     .frames()
                     .expect("MADT GIC Redistributor entry contained invalid GICR block");
@@ -210,18 +204,6 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
                         .type_
                         .read_field_pure(GicrTyper::LastRedistributor);
                     let id = gicr_regs.type_.read_field_pure(GicrTyper::AffinityValue);
-
-                    trace!("    gic redistributor #{}: {:#x?}", i, gicr_frame);
-
-                    let redist_topo = CpuTopologyId::new(id);
-                    let virt_gicr = KernelAddressTranslator
-                        .phys_to_dmap(gicr_regs as *const GicrRegisters as usize)
-                        as *mut GicrRegisters;
-
-                    if let Some(i) = cpu_topologies.iter().position(|&t| t == redist_topo) {
-                        //redistributors[i] = AtomicPtr::new(virt_gicr);
-                        trace!("initialized redistributor of cpu #{}", i);
-                    }
 
                     gic_resources.push(Resource::Mmio {
                         range: (gicr_regs as *const GicrRegisters as usize)

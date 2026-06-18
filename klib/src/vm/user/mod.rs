@@ -63,7 +63,7 @@ pub enum Status {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StatusCategory {
     /// Page has been virtually allocated but backing memory hasn't been created.
-    Reserved,
+    Allocated,
     /// Page is currently mapped to backing memory.
     Mapped,
     /// Page was mapped, but has been unmapped (swap, etc.)
@@ -74,7 +74,7 @@ impl Status {
     pub fn category(&self) -> Option<StatusCategory> {
         match self {
             Self::Mapped { .. } => Some(StatusCategory::Mapped),
-            Self::PrivateAnonymous(..) => Some(StatusCategory::Reserved),
+            Self::PrivateAnonymous(..) => Some(StatusCategory::Allocated),
             Self::Invalid => None,
         }
     }

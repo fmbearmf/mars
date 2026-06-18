@@ -29,7 +29,7 @@ struct ThreadInner<'a> {
     thread_id: ThreadId,
     state: ThreadState,
     priority: u8,
-    ctx: RegisterFile,
+    kernel_sp: u64,
     stack: Option<Box<[u8]>>,
     process: Weak<Process<'a>>, // avoids a ref count
 
@@ -62,18 +62,22 @@ impl<'a> Thread<'a> {
         let stack_top_va = stack_range.end;
         // let stack_top_pa = translator.dmap_to_phys(stack_top_va as *mut u8) as _;
 
+        let ctx_ptr = stack_top_va as usize - size_of::<RegisterFile>();
+        debug_assert_eq!(ctx_ptr, ctx_ptr & !0xF, "ctx_ptr not 16 aligned");
+        let ctx = unsafe { &mut *(ctx_ptr as *mut RegisterFile) };
+
+        ctx.registers = [0; 31];
+        ctx.elr = pc as u64;
+        ctx.spsr = SPSR_EL1::M::EL0t.value;
+        ctx.sp = stack_top_va as u64;
+
         const SPSR: FieldValue<u64, SPSR_EL1::Register> = SPSR_EL1::M::EL0t;
 
         let inner = ThreadInner {
             thread_id,
             state: ThreadState::Ready,
             priority,
-            ctx: RegisterFile {
-                registers: [0; 31],
-                sp: stack_top_va as u64,
-                spsr: SPSR.value,
-                elr: pc,
-            },
+            kernel_sp: ctx_ptr as u64,
             stack: Some(stack),
             process: Arc::downgrade(process),
             translator,
@@ -100,8 +104,16 @@ impl<'a> Thread<'a> {
     where
         F: FnOnce(&mut RegisterFile) -> R,
     {
-        let mut guard = self.inner.write();
-        f(&mut guard.ctx)
+        let guard = self.inner.write();
+
+        assert_ne!(
+            guard.state,
+            ThreadState::Running,
+            "can't access context of a running thread"
+        );
+
+        let ctx_ptr = guard.kernel_sp as *mut RegisterFile;
+        unsafe { f(&mut *ctx_ptr) }
     }
 
     pub fn with_ctx<F, R>(&self, f: F) -> R
@@ -109,7 +121,16 @@ impl<'a> Thread<'a> {
         F: FnOnce(&RegisterFile) -> R,
     {
         let guard = self.inner.read();
-        f(&guard.ctx)
+
+        assert_ne!(
+            guard.state,
+            ThreadState::Running,
+            "can't access context of a running thread"
+        );
+
+        let ctx_ptr = guard.kernel_sp as *const RegisterFile;
+
+        unsafe { f(&*ctx_ptr) }
     }
 
     pub fn process(&self) -> Option<Arc<Process<'a>>> {

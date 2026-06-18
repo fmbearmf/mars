@@ -110,7 +110,7 @@ impl<'a> Scheduler<'a> {
             }
 
             next.set_state(ThreadState::Running);
-            this_cpu!();
+            this_cpu!().current_thread;
 
             // TPIDR_EL1.set(Arc::as_ptr(&next) as u64);
 

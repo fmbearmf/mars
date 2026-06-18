@@ -63,8 +63,12 @@ macro_rules! exception_handlers {
         core::arch::global_asm!(
             r#"
 .macro save_regs el:req
-    sub sp, sp, #(8 * 34)
-    stp x0, x1, [sp]
+    .if \el == 0
+        stp x0, x1, [sp, #-(8 * 36)]!
+    .else
+        /* preserve redzone */
+        stp x0, x1, [sp, #-(128 + 8 * 36)]!
+    .endif
 
     stp x2, x3, [sp, #8 * 2]
     stp x4, x5, [sp, #8 * 4]
@@ -82,21 +86,32 @@ macro_rules! exception_handlers {
     stp x28, x29, [sp, #8 * 28]
     str x30,      [sp, #8 * 30]
 
-    mrs x16, sp_el0
+    .if \el == 0
+        mrs x16, sp_el0
+    .else
+        /* preserve redzone */
+        add x16, sp, #(128 + 8 * 36)
+    .endif
+
     str x16, [sp, #8 * 31]
 
-    mrs x0, elr_\el
-    mrs x1, spsr_\el
-    stp x0, x1, [sp, #8 * 32]
+    mrs x16, elr_el1
+    mrs x17, spsr_el1
+    stp x16, x17, [sp, #8 * 32]
+
+    mrs x16, esr_el1
+    mrs x17, far_el1
+    stp x16, x17, [sp, #8 * 34]
 .endm
 
 .macro restore_regs el:req
-    ldp x0, x1, [sp, #8 * 32]
-    msr elr_\el, x0
-    msr spsr_\el, x1
+    ldp x16, x17, [sp, #8 * 32]
+    msr elr_el1, x16
+    msr spsr_el1, x17
 
-    ldr x16,     [sp, #8 * 31]
-    msr sp_el0, x16
+    ldp x16, x17, [sp, #8 * 34]
+    msr esr_el1, x16
+    msr far_el1, x17
 
     ldp x2, x3, [sp, #8 * 2]
     ldp x4, x5, [sp, #8 * 4]
@@ -114,7 +129,18 @@ macro_rules! exception_handlers {
     ldp x28, x29, [sp, #8 * 28]
     ldr x30,      [sp, #8 * 30]
 
-    ldp x0, x1, [sp], #(8 * 34)
+    .if \el == 0
+        ldr x0, [sp, #8 * 31]
+        msr sp_el0, x0
+
+        ldp x0, x1, [sp], #(8 * 36)
+    .else
+        ldr x0, [sp, #8 * 31]
+        mov x1, sp
+        mov sp, x0
+
+        ldp x0, x1, [x1]
+    .endif
 .endm
 
 .macro current_exception handler:req el:req
@@ -127,7 +153,7 @@ macro_rules! exception_handlers {
 .endm
 
 .macro vector_table_entry label:req
-.balign 0x80
+    .balign 0x80
     b \label
 .endm
 
@@ -137,6 +163,7 @@ macro_rules! exception_handlers {
 .balign 0x800
 vector_table_\el:
 
+/* using SP0 at EL1 should never occur */
 vector_table_entry sync_cur_sp0_\el
 vector_table_entry irq_cur_sp0_\el
 vector_table_entry fiq_cur_sp0_\el
@@ -158,40 +185,40 @@ vector_table_entry fiq_lower_32_\el
 vector_table_entry serr_lower_32_\el
 
 sync_cur_sp0_\el:
-    current_exception {sync_current} \el
+    b sync_cur_sp0_\el
 irq_cur_sp0_\el:
-    current_exception {irq_current} \el
+    b irq_cur_sp0_\el
 fiq_cur_sp0_\el:
-    current_exception {fiq_current} \el
+    b fiq_cur_sp0_\el
 serr_cur_sp0_\el:
-    current_exception {serror_current} \el
+    b serr_cur_sp0_\el
 
 sync_cur_spx_\el:
-    current_exception {sync_current} \el
+    current_exception {sync_current} 1
 irq_cur_spx_\el:
-    current_exception {irq_current} \el
+    current_exception {irq_current} 1
 fiq_cur_spx_\el:
-    current_exception {fiq_current} \el
+    current_exception {fiq_current} 1
 serr_cur_spx_\el:
-    current_exception {serror_current} \el
+    current_exception {serror_current} 1
 
 sync_lower_64_\el:
-    current_exception {sync_lower} \el
+    current_exception {sync_lower} 0
 irq_lower_64_\el:
-    current_exception {irq_lower} \el
+    current_exception {irq_lower} 0
 fiq_lower_64_\el:
-    current_exception {fiq_lower} \el
+    current_exception {fiq_lower} 0
 serr_lower_64_\el:
-    current_exception {serror_lower} \el
+    current_exception {serror_lower} 0
 
 sync_lower_32_\el:
-    current_exception {sync_lower} \el
+    current_exception {sync_lower} 0
 irq_lower_32_\el:
-    current_exception {irq_lower} \el
+    current_exception {irq_lower} 0
 fiq_lower_32_\el:
-    current_exception {fiq_lower} \el
+    current_exception {fiq_lower} 0
 serr_lower_32_\el:
-    current_exception {serror_lower} \el
+    current_exception {serror_lower} 0
 
 .endm
 

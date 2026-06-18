@@ -16,34 +16,46 @@ use gicv3::registers::gic::{
     GicrWaker,
 };
 
+use crate::interrupt::gicv3::IrqHandler;
+use crate::interrupt::gicv3::registers::gic::GicBitfield8;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum InterruptError {
     InvalidInterruptId,
     NotSupported,
+    HandlerNotFound,
 }
+
+type Result<T> = core::result::Result<T, InterruptError>;
 
 pub trait InterruptController: Send + Sync {
     /// initializes the controller.
-    fn init(&self) -> Result<(), InterruptError>;
+    fn init(&self) -> Result<()>;
 
     /// enables a specific interrupt by id.
-    fn enable_interrupt(&self, int_id: u32) -> Result<(), InterruptError>;
+    fn enable_interrupt(&self, int_id: u32) -> Result<()>;
 
     /// disables a specific interrupt by id.
-    fn disable_interrupt(&self, int_id: u32) -> Result<(), InterruptError>;
+    fn disable_interrupt(&self, int_id: u32) -> Result<()>;
 
     /// acknowledges highest priority pending interrupt.
     /// `Some(id)` if the interrupt is pending; `None` if it's spurious.
-    fn acknowledge_interrupt(&self) -> Result<Option<u32>, InterruptError>;
+    fn acknowledge_interrupt(&self) -> Result<Option<u32>>;
 
     /// signals EOI for an interrupt id.
-    fn end_of_interrupt(&self, int_id: u32) -> Result<(), InterruptError>;
+    fn end_of_interrupt(&self, int_id: u32) -> Result<()>;
 
     /// sets priority of interrupt.
-    fn set_priority(&self, int_id: u32, priority: u8) -> Result<(), InterruptError>;
+    fn set_priority(&self, int_id: u32, priority: u8) -> Result<()>;
 
     /// routes interrupt to a specific CPU.
-    fn set_affinity(&self, int_id: u32, affinity: u64) -> Result<(), InterruptError>;
+    fn set_affinity(&self, int_id: u32, affinity: u64) -> Result<()>;
+
+    /// handles an interrupt, as the name suggests.
+    fn on_interrupt(&self, int_id: u32) -> Result<()>;
+
+    /// register an interrupt hander
+    fn register_handler(&self, int_id: u32, handler: IrqHandler) -> Result<()>;
 }
 
 /// abstract interface
@@ -76,7 +88,7 @@ declare_structs!(
         (0x0280 => pub iclear_pend: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
         (0x0300 => pub iset_active: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
         (0x0380 => pub iclear_active: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
-        (0x0400 => pub ipriority: [RPureReadPureWrite<u32, GicBitfield32>; 32]),
+        (0x0400 => pub ipriority: [RPureReadPureWrite<u8, GicBitfield8>; 1024]),
         (0x0C00 => pub icfg: [RPureReadPureWrite<u32, GicIcfgr>; 64]),
         (0x6100 => pub irouter: [RPureReadPureWrite<u64, GicBitfield64>; 992]),
         (0x10000 => @END)
@@ -105,7 +117,7 @@ declare_structs!(
         (0x10280 => iclear_pend0: RPureReadWrite<u32, GicBitfield32>),
         (0x10300 => iset_active0: RPureReadWrite<u32, GicBitfield32>),
         (0x10380 => iclear_active0: RPureReadWrite<u32, GicBitfield32>),
-        (0x10400 => ipriority: [RPureReadWrite<u32, GicBitfield32>; 8]),
+        (0x10400 => ipriority: [RPureReadWrite<u8, GicBitfield8>; 32]),
         (0x10C00 => icfg0: RPureReadWrite<u32, GicIcfgr>),
         (0x10C04 => icfg1: RPureReadWrite<u32, GicIcfgr>),
         (0x10D00 => igroup_mod: RPureReadWrite<u32, GicBitfield32>),

@@ -2,7 +2,7 @@
 #![feature(const_option_ops)]
 #![feature(const_trait_impl)]
 #![feature(generic_atomic)]
-#![feature(new_range_api)]
+#![feature(rustc_attrs)]
 
 extern crate alloc;
 
@@ -22,10 +22,12 @@ pub mod pm;
 pub mod process;
 pub mod scheduler;
 pub mod smccc;
+pub mod strange;
 pub mod sync;
 pub mod thread;
 pub mod timer;
 pub mod vcpu;
+pub mod vfs;
 pub mod vm;
 
 pub fn bytes_to_human_readable(mut bytes: u64, buf: &mut [u8]) -> &str {
