@@ -1,4 +1,7 @@
-use core::arch::asm;
+use core::{
+    arch::asm,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use super::cpu_interface::CpuTopologyId;
 
@@ -79,28 +82,28 @@ unsafe fn smccc_call_smc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
     res
 }
 
+pub static USE_HVC: AtomicBool = AtomicBool::new(false);
+
 /// power on a CPU by its MPIDR using PSCI.
 pub fn cpu_on(
-    use_hvc: bool,
     target_cpu: CpuTopologyId,
     entry_point_paddr: u64,
     context_id: u64,
 ) -> Result<(), PsciError> {
     let res = unsafe {
-        if use_hvc {
-            smccc_call_hvc(
+        match USE_HVC.load(Ordering::Relaxed) {
+            true => smccc_call_hvc(
                 PSCI_0_2_FN64_CPU_ON,
                 target_cpu.to_mpidr(),
                 entry_point_paddr,
                 context_id,
-            )
-        } else {
-            smccc_call_smc(
+            ),
+            false => smccc_call_smc(
                 PSCI_0_2_FN64_CPU_ON,
                 target_cpu.to_mpidr(),
                 entry_point_paddr,
                 context_id,
-            )
+            ),
         }
     };
 

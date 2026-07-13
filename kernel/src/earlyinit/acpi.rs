@@ -1,4 +1,8 @@
-use core::{ops::Range, ptr::NonNull, sync::atomic::AtomicPtr};
+use core::{
+    ops::Range,
+    ptr::NonNull,
+    sync::atomic::{AtomicPtr, Ordering},
+};
 
 use aarch64_cpu::registers::{MPIDR_EL1, Readable};
 use alloc::{string::String, vec, vec::Vec};
@@ -12,9 +16,11 @@ use klib::{
     interrupt::{GicdRegisters, GicrRegisters, gicv3::registers::gic::GicrTyper},
     per_cpu::PerCpu,
     pm::page::mapper::AddressTranslator,
+    smccc::USE_HVC,
 };
 use log::{debug, error, trace};
 use mars_acpi_driver::acpi::{
+    fadt::Fadt,
     header::SdtHeader,
     madt::{GicCpuInterface, GicDistributor, GicRedistributor, Madt, MadtIter},
     xsdp::{Xsdp, XsdtIter},
@@ -63,17 +69,11 @@ pub fn acpi_init(token: &BootInfoToken) {
 
     let xsdp = Xsdp::try_from_addr(xsdp as _).unwrap_or_else(|e| panic!("XSDP err: {}", e));
 
-    trace!("xsdp found at {:#p}", xsdp);
-
     let xsdt: &SdtHeader = xsdp.xsdt().unwrap_or_else(|e| panic!("XSDT err: {}", e));
-
-    trace!("xsdt found at {:#p}", xsdt);
 
     let xsdt: &SdtHeader = unsafe {
         &*(KernelAddressTranslator.phys_to_dmap(xsdt as *const _ as _) as *const SdtHeader)
     };
-
-    trace!("xsdt offset to virtual {:#p}", xsdt);
 
     trace!("xsdt: {:#?}", xsdt);
 
@@ -87,10 +87,6 @@ pub fn acpi_init(token: &BootInfoToken) {
             unsafe { core::slice::from_raw_parts(addr, size) }
         };
 
-        trace!(
-            "xsdt entry @ {:#p}",
-            table_bytes as *const [u8] as *const ()
-        );
         let (header, _): (&SdtHeader, _) =
             SdtHeader::ref_from_prefix(table_bytes).expect("table impossibly small");
 
@@ -100,7 +96,12 @@ pub fn acpi_init(token: &BootInfoToken) {
 
                 handle_madt(table_bytes);
             }
-            _ => trace!("unrecognized root ACPI table: {}", header.signature()),
+            b"FACP" => {
+                trace!("    fadt found");
+
+                handle_fadt(table_bytes);
+            }
+            _ => trace!("unrecognized ACPI table: {}", header.signature()),
         }
     }
 }
@@ -115,6 +116,17 @@ fn handle_madt(table: &[u8]) {
     if madt_iter().any(|(ty, _)| matches!(ty, 0xB | 0xC | 0xE)) {
         handle_gicv3(madt_iter, &mut dt);
     }
+}
+
+fn handle_fadt(table: &[u8]) {
+    let (fadt, _entries) = Fadt::ref_from_prefix(table).expect("invalid fadt size");
+
+    let arm_flags = fadt.arm_boot_arch();
+    let hvc = arm_flags.psci_use_hvc();
+
+    trace!("    use HVC for PSCI?: {}", hvc);
+
+    USE_HVC.store(hvc, Ordering::Relaxed);
 }
 
 fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTree>) {

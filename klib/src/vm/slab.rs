@@ -332,7 +332,6 @@ impl<'a> SlabAllocator<'a> {
             "`transition_dmap` called twice"
         );
 
-        trace!("transition_dmap");
         unsafe { self.page_alloc_mut().transition_dmap() };
 
         // null ptrs need to stay null
@@ -345,18 +344,14 @@ impl<'a> SlabAllocator<'a> {
         };
 
         let old_pa = self.page_alloc.load(Ordering::Acquire);
-        trace!("old_pa: {:#p}", old_pa);
         let new_pa = self.translator.phys_to_dmap(old_pa as _) as *mut PageAllocator<'static>;
         self.page_alloc.store(new_pa, Ordering::Release);
-        trace!("new_pa: {:#p}", new_pa);
 
         let caches = unsafe { &mut *self.caches.get() };
         for cache in caches.iter_mut() {
-            trace!("cache: {:?}", cache);
             cache.plist = ptr_to_dmap(cache.plist as _) as *mut Header;
 
             let mut current_hdr_ptr = cache.plist;
-            trace!("current_hdr_ptr: {:#p}", cache.plist);
 
             while !current_hdr_ptr.is_null() {
                 let header = unsafe { &mut *current_hdr_ptr };

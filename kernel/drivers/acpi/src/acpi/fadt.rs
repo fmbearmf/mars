@@ -3,10 +3,9 @@ use core::ptr;
 use crate::acpi::AcpiTableTrait;
 use crate::impl_table;
 
-use super::FromBytes;
+use super::{FromBytes, Immutable, IntoBytes};
 use super::{GenericAddress, header::SdtHeader};
-use hax_lib::{attributes, ensures, opaque, requires};
-use mars_getters::unaligned_getters;
+use hax_lib::{attributes, opaque};
 
 impl_table! {
     #[derive(Debug, Clone, Copy)]
@@ -56,7 +55,7 @@ impl_table! {
         //
         pub reset_reg: GenericAddress,
         pub reset_value: u8,
-        pub arm_boot_arch: u16,
+        pub arm_boot_arch: ArmBootArchFlags,
         pub minor_version: u8,
         // 64-bit
         pub x_fw_ctrl: u64,
@@ -85,5 +84,25 @@ impl AcpiTableTrait for Fadt {
     fn safe_table_cast(slice: &'static [u8]) -> Result<&'static Self, &'static str> {
         let (reference, _) = Self::ref_from_prefix(slice).map_err(|_| "alignment/size error")?;
         Ok(reference)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromBytes, IntoBytes, Immutable)]
+#[repr(transparent)]
+pub struct ArmBootArchFlags(u16);
+
+impl ArmBootArchFlags {
+    /// does the platform implement PSCI?
+    pub const PSCI_COMPLIANT: u16 = 1 << 0;
+
+    /// use HVC instead of SMC for PSCI?
+    pub const PSCI_USE_HVC: u16 = 1 << 1;
+
+    pub const fn is_psci_compliant(self) -> bool {
+        (self.0 & Self::PSCI_COMPLIANT) != 0
+    }
+
+    pub const fn psci_use_hvc(self) -> bool {
+        (self.0 & Self::PSCI_USE_HVC) != 0
     }
 }

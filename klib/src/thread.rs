@@ -1,6 +1,6 @@
 use core::{fmt::Debug, range::Range};
 
-use crate::pm::page::mapper::AddressTranslator;
+use crate::{pm::page::mapper::AddressTranslator, stack::Stack};
 
 use super::{context::RegisterFile, process::Process, sync::RwLock};
 
@@ -30,7 +30,7 @@ struct ThreadInner<'a> {
     state: ThreadState,
     priority: u8,
     kernel_sp: u64,
-    stack: Option<Box<[u8]>>,
+    stack: Option<Stack>,
     process: Weak<Process<'a>>, // avoids a ref count
 
     #[derivative(Debug = "ignore")]
@@ -53,7 +53,7 @@ impl<'a> Thread<'a> {
     pub fn new(
         thread_id: ThreadId,
         process: &Arc<Process<'a>>,
-        stack: Box<[u8]>,
+        stack: Stack,
         pc: usize,
         priority: u8,
         translator: &'a dyn AddressTranslator,

@@ -110,9 +110,7 @@ impl<'a> Scheduler<'a> {
             }
 
             next.set_state(ThreadState::Running);
-            this_cpu!().current_thread;
-
-            // TPIDR_EL1.set(Arc::as_ptr(&next) as u64);
+            this_cpu!().current_thread.lock().replace(next.thread_id());
 
             if let Some(process) = next.process() {
                 process.with_address_space(|addr_space| {

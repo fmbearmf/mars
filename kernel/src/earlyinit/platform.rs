@@ -2,13 +2,19 @@ use core::{mem::MaybeUninit, ptr, range::Range};
 
 use aarch64_cpu::registers::TTBR0_EL1;
 use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
-use klib::{hardware::device::DeviceNode, vm::user::PAGE_DESCRIPTORS};
+use alloc::boxed::Box;
+use klib::{
+    cpu_interface::{CpuTopologyId, init_cpu_maps},
+    hardware::device::{DeviceClass, DeviceNode},
+    stack::Stack,
+    vm::{PAGE_SIZE, user::PAGE_DESCRIPTORS},
+};
 use log::{LevelFilter, info, trace};
 use protocol::BootInfo;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
 use crate::{
-    DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE,
+    __KBASE, DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE,
     earlyinit::{
         acpi::acpi_init,
         earlycon::{EARLYCON, EarlyCon},
@@ -17,6 +23,7 @@ use crate::{
             populate_alloc_stage1, switch_to_new_page_tables,
         },
         mmu::init_mmu,
+        smp::boot_secondary,
     },
     log::LOGGER,
     lut::DEVICE_TABLE,
@@ -135,6 +142,7 @@ pub use sealed::*;
 
 pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     let boot_info = boot_info_token.get_mut();
+    let load_addr = boot_info.kernel_load_physical_address;
 
     {
         let mut lock = EARLYCON.lock();
@@ -182,18 +190,48 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
 
     acpi_init(&boot_info_token);
 
-    for node in DEVICE_TREE.borrow_mut().nodes.iter_mut() {
-        let mut handler_opt: Option<fn(&mut DeviceNode)> = None;
+    {
+        let mut dt = DEVICE_TREE.borrow_mut();
 
-        // the assumption is that the most specific string is first
-        for compatible_string in node.compatible.iter() {
-            if let Some(handler) = DEVICE_TABLE.get(compatible_string) {
-                handler_opt = Some(*handler);
+        for node in dt.nodes.iter_mut() {
+            let mut handler_opt: Option<fn(&mut DeviceNode)> = None;
+
+            // the assumption is that the most specific string is first
+            for compatible_string in node.compatible.iter() {
+                if let Some(handler) = DEVICE_TABLE.get(compatible_string) {
+                    handler_opt = Some(*handler);
+                }
+            }
+
+            if let Some(handler) = handler_opt {
+                handler(node);
             }
         }
 
-        if let Some(handler) = handler_opt {
-            handler(node);
+        let create_cpu_iter = || {
+            dt.nodes.iter().filter_map(|node| match &node.class {
+                DeviceClass::Cpu { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+        };
+
+        init_cpu_maps(create_cpu_iter());
+
+        for cpu in create_cpu_iter() {
+            if cpu == CpuTopologyId::current() {
+                continue;
+            }
+
+            let logical = cpu.to_logical().expect("invalid topology id");
+
+            let stack = Stack::new(PAGE_SIZE, 16).expect("unable to allocate stack");
+
+            unsafe {
+                boot_secondary(cpu, logical, stack, |addr| {
+                    (addr - &__KBASE as *const _ as usize) + load_addr
+                })
+                .expect("error booting secondary core")
+            };
         }
     }
 }

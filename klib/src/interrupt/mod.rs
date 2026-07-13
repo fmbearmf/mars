@@ -29,7 +29,7 @@ pub enum InterruptError {
 type Result<T> = core::result::Result<T, InterruptError>;
 
 pub trait InterruptController: Send + Sync {
-    /// initializes the controller.
+    /// initializes the controller. call on every core once.
     fn init(&self) -> Result<()>;
 
     /// enables a specific interrupt by id.

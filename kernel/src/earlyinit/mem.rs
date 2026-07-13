@@ -224,11 +224,6 @@ pub fn create_page_descriptors() -> (Box<[PageDescriptor]>, Range<usize>) {
     let size = max - min;
     let pages = size / PAGE_SIZE;
 
-    trace!(
-        "page descriptor size: {:#x}",
-        pages * size_of::<PageDescriptor>()
-    );
-
     let mut uninit = Box::<[PageDescriptor]>::new_uninit_slice(pages);
 
     for slot in uninit.iter_mut() {
@@ -338,11 +333,6 @@ fn add_subrange(page_alloc: &mut PageAllocator, start: usize, end: usize) {
         if size >= 4 * PAGE_SIZE {
             let range = Range { start, end };
 
-            trace!(
-                "page alloc push P: {:#x?} {:#x}",
-                range,
-                range.end - range.start
-            );
             page_alloc.add_range(&range);
         }
     }

@@ -11,6 +11,7 @@ use core::{
     str::from_utf8,
 };
 
+pub mod cache;
 pub mod context;
 pub mod cpu_interface;
 pub mod exception;
@@ -22,6 +23,7 @@ pub mod pm;
 pub mod process;
 pub mod scheduler;
 pub mod smccc;
+pub mod stack;
 pub mod strange;
 pub mod sync;
 pub mod thread;

@@ -19,7 +19,7 @@ use xsdp::XsdtIter;
 
 #[exclude]
 pub(self) use zerocopy;
-use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 #[macro_export]
 macro_rules! impl_table {

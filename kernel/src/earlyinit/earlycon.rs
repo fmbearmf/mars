@@ -1,8 +1,8 @@
 use arm_pl011_uart::{LineConfig, PL011Registers, Uart, UniqueMmioPointer};
 use core::{fmt::Write, ptr::NonNull};
-use klib::sync::UnfairSpinlock;
+use klib::sync::FairSpinlock;
 
-pub static EARLYCON: UnfairSpinlock<Option<EarlyCon>> = UnfairSpinlock::new(None);
+pub static EARLYCON: FairSpinlock<Option<EarlyCon>> = FairSpinlock::new(None);
 
 #[macro_export]
 macro_rules! earlycon_write {

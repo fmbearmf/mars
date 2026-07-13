@@ -1,14 +1,9 @@
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize};
 
 use aarch64_cpu::registers::{Readable, TPIDR_EL1, Writeable};
-use alloc::{sync::Arc, vec::Vec};
-use atomic_refcell::AtomicRefCell;
+use alloc::vec::Vec;
 
-use crate::{
-    cpu_interface::CpuIdLogical,
-    interrupt::GicrRegisters,
-    thread::{Thread, ThreadId},
-};
+use crate::{cpu_interface::CpuIdLogical, sync::FairSpinlock, thread::ThreadId};
 
 static REGISTRY_PTR: AtomicPtr<PerCpuData> = AtomicPtr::new(core::ptr::null_mut());
 static REGISTRY_LEN: AtomicUsize = AtomicUsize::new(0);
@@ -16,8 +11,10 @@ static REGISTRY_LEN: AtomicUsize = AtomicUsize::new(0);
 #[repr(C, align(64))]
 pub struct PerCpuData {
     pub id: CpuIdLogical,
-    pub current_thread: Option<ThreadId>,
+    pub current_thread: FairSpinlock<Option<ThreadId>>,
     pub timer_irq: AtomicU8,
+    /// for bootstrap only. owning core must set to true before BSP can continue.
+    pub ready: AtomicBool,
 }
 
 #[macro_export]
@@ -40,8 +37,9 @@ impl PerCpu {
         for i in 0..cores {
             cpus.push(PerCpuData {
                 id: CpuIdLogical::new(i as _),
-                current_thread: None,
+                current_thread: FairSpinlock::new(None),
                 timer_irq: AtomicU8::new(0),
+                ready: AtomicBool::new(false),
             });
         }
 

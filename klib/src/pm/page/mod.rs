@@ -268,7 +268,6 @@ impl PageAllocator<'_> {
         }
 
         self.is_dmap = true;
-        trace!("is dmap");
 
         self.lock.unlock();
     }

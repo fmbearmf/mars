@@ -4,6 +4,7 @@ use aarch64_cpu::registers::{MPIDR_EL1, Readable, TPIDR_EL1};
 use alloc::vec::Vec;
 use atomic_refcell::AtomicRefCell;
 use hashbrown::HashMap;
+use log::trace;
 use rustc_hash::FxHasher;
 
 use crate::{pm::page::mapper::id_map, this_cpu};
@@ -136,14 +137,15 @@ static CPU_ID_MAP: AtomicRefCell<Map<CpuTopologyId, CpuIdLogical>> =
     AtomicRefCell::new(Map::with_hasher(BuildHasherDefault::new()));
 static CPU_TOPOLOGIES: AtomicRefCell<Vec<CpuTopologyId>> = AtomicRefCell::new(Vec::new());
 
-pub fn init_cpu_maps(topologies: &[CpuTopologyId]) {
+pub fn init_cpu_maps(topologies: impl IntoIterator<Item = CpuTopologyId>) {
+    trace!("init cpu maps");
     let mut id_map = CPU_ID_MAP.borrow_mut();
     let mut topology_map = CPU_TOPOLOGIES.borrow_mut();
 
     id_map.clear();
     topology_map.clear();
 
-    for (i, &topology) in topologies.iter().enumerate() {
+    for (i, topology) in topologies.into_iter().enumerate() {
         let logical = CpuIdLogical::new(i as u32);
         topology_map.push(topology);
         id_map.insert(topology, logical);
@@ -184,17 +186,6 @@ impl CpuIdLogical {
             this_cpu!().id
         }
     }
-}
-
-#[derive(Debug)]
-pub struct SecondaryBootArgs {
-    pub ttbr0: u64,
-    pub ttbr1: u64,
-    pub tcr: u64,
-    pub mair: u64,
-    pub stack_top_virt: u64,
-    pub entry_virt: u64,
-    pub sctlr: u64,
 }
 
 pub const fn mpidr_affinities(mpidr: u32) -> (u8, u8, u8, u8) {

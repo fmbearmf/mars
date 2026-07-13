@@ -111,6 +111,69 @@ impl<'a, T> Drop for UnfairSpinlockGuard<'a, T> {
     }
 }
 
+#[derive(Debug)]
+pub struct FairSpinlock<T: ?Sized> {
+    lock: TicketLock,
+    data: UnsafeCell<T>,
+}
+
+// SAFETY: only 1 core can access `data` at a time
+unsafe impl<T: ?Sized + Sync> Sync for FairSpinlock<T> {}
+unsafe impl<T: ?Sized + Send> Send for FairSpinlock<T> {}
+
+pub struct FairSpinlockGuard<'a, T> {
+    mutex: &'a FairSpinlock<T>,
+}
+
+impl<T> FairSpinlock<T> {
+    pub const fn new(data: T) -> Self {
+        Self {
+            lock: TicketLock::new(),
+            data: UnsafeCell::new(data),
+        }
+    }
+
+    #[inline]
+    pub fn lock(&self) -> FairSpinlockGuard<'_, T> {
+        self.lock.lock();
+
+        FairSpinlockGuard { mutex: self }
+    }
+
+    #[inline]
+    pub unsafe fn steal(&self) -> FairSpinlockGuard<'_, T> {
+        let ticket = self.lock.ticket.fetch_add(1, Ordering::AcqRel);
+        self.lock.users.store(ticket, Ordering::Release);
+
+        FairSpinlockGuard { mutex: self }
+    }
+
+    #[inline]
+    fn unlock(&self) {
+        self.lock.unlock();
+    }
+}
+
+impl<'a, T> Deref for FairSpinlockGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.mutex.data.get() }
+    }
+}
+
+impl<'a, T> DerefMut for FairSpinlockGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.mutex.data.get() }
+    }
+}
+
+impl<'a, T> Drop for FairSpinlockGuard<'a, T> {
+    fn drop(&mut self) {
+        self.mutex.unlock();
+    }
+}
+
 type LockState = i32;
 
 const WRITER: LockState = LockState::MIN;
