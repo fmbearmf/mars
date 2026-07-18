@@ -1,0 +1,15 @@
+[package]
+name = "mars-generic-timer-driver"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+name = "mars_generic_timer_driver"
+plugin = false
+
+[dependencies]
+aarch64-cpu.workspace = true
+klib.workspace = true
+log.workspace = true
+mars_getters.workspace = true
+tock-registers.workspace = true

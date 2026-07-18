@@ -223,6 +223,13 @@ serr_lower_32_\el:
 .endm
 
 vector_table el1
+
+.section .text
+.global el1_load_register_file
+el1_load_register_file:
+    mov sp, x0
+    restore_regs 1
+    eret
             "#,
             sync_current = sym <$handlers as $crate::exception::ExceptionHandler>::sync_current,
             irq_current = sym <$handlers as $crate::exception::ExceptionHandler>::irq_current,

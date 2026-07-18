@@ -469,6 +469,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mars-generic-timer-driver"
+version = "0.0.1"
+dependencies = [
+ "aarch64-cpu 11.2.0",
+ "klib",
+ "log",
+ "mars_getters",
+ "tock-registers 0.10.1",
+]
+
+[[package]]
 name = "mars-models"
 version = "0.0.1"
 dependencies = [

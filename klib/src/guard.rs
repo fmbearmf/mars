@@ -11,6 +11,16 @@ impl InterruptGuard {
 
         InterruptGuard { daif: old }
     }
+
+    /// enable interrupts
+    pub fn enable() {
+        DAIF.modify(DAIF::I::Unmasked + DAIF::F::Unmasked);
+    }
+
+    /// disable interrupts
+    pub fn disable() {
+        DAIF.modify(DAIF::I::Masked + DAIF::F::Masked);
+    }
 }
 
 impl Drop for InterruptGuard {

@@ -1,9 +1,10 @@
 use core::{alloc::Layout, fmt::Debug, ptr::NonNull};
 
 use alloc::alloc::{alloc, dealloc};
-use log::trace;
 
-use crate::vm::align_up;
+use crate::vm::PAGE_SIZE;
+
+pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE;
 
 pub struct Stack {
     ptr: NonNull<u8>,
@@ -12,9 +13,10 @@ pub struct Stack {
 
 impl Debug for Stack {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("AllocatedStack")
-            .field("pointer", &self.ptr)
-            .field("layout", &self.layout)
+        f.debug_tuple("AllocatedStack")
+            .field(&self.as_ptr_range())
+            .field(&self.layout.size())
+            .field(&self.layout.align())
             .finish()
     }
 }
@@ -61,9 +63,16 @@ impl Stack {
     }
 }
 
+impl Default for Stack {
+    fn default() -> Self {
+        Self::new(KERNEL_STACK_SIZE, 64).unwrap()
+    }
+}
+
 impl Drop for Stack {
     fn drop(&mut self) {
-        trace!("dropping stack: {:?}", self);
+        // use log::trace;
+        // trace!("dropping stack: {:?}", self);
         unsafe { dealloc(self.ptr.as_ptr(), self.layout) }
     }
 }

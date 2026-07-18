@@ -1,6 +1,6 @@
-use core::{fmt::Debug, range::Range};
+use core::{fmt::Debug, range::Range, sync::atomic::Atomic};
 
-use crate::{pm::page::mapper::AddressTranslator, stack::Stack};
+use crate::{pm::page::mapper::AddressTranslator, stack::Stack, sync::FairSpinlock};
 
 use super::{context::RegisterFile, process::Process, sync::RwLock};
 
@@ -8,11 +8,36 @@ use aarch64_cpu::registers::SPSR_EL1;
 use alloc::{
     boxed::Box,
     sync::{Arc, Weak},
+    vec::Vec,
 };
 use derivative::Derivative;
 use tock_registers::fields::FieldValue;
 
 pub type ThreadId = u32;
+
+struct ThreadIdPool {
+    next_id: ThreadId,
+}
+
+struct ThreadIdAllocator(FairSpinlock<ThreadIdPool>);
+impl ThreadIdAllocator {
+    const fn new() -> Self {
+        Self(FairSpinlock::new(ThreadIdPool { next_id: 0 }))
+    }
+
+    pub fn alloc(&self) -> ThreadId {
+        let mut pool = self.0.lock();
+        let id = pool.next_id;
+        pool.next_id += 1;
+        id
+    }
+
+    pub fn free(&self, id: ThreadId) {
+        _ = id;
+    }
+}
+
+static THREAD_ID_ALLOC: ThreadIdAllocator = ThreadIdAllocator::new();
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -32,9 +57,9 @@ struct ThreadInner<'a> {
     kernel_sp: u64,
     stack: Option<Stack>,
     process: Weak<Process<'a>>, // avoids a ref count
-
-    #[derivative(Debug = "ignore")]
-    translator: &'a dyn AddressTranslator,
+    is_kernel: bool,
+    // #[derivative(Debug = "ignore")]
+    // translator: &'a dyn AddressTranslator,
 }
 
 #[derive(Clone)]
@@ -50,13 +75,14 @@ impl Debug for Thread<'_> {
 }
 
 impl<'a> Thread<'a> {
-    pub fn new(
-        thread_id: ThreadId,
-        process: &Arc<Process<'a>>,
+    fn new_inner(
+        process: Weak<Process<'a>>,
+        is_kernel: bool,
         stack: Stack,
         pc: usize,
         priority: u8,
-        translator: &'a dyn AddressTranslator,
+        spsr_value: u64,
+        // translator: &'a dyn AddressTranslator,
     ) -> Self {
         let stack_range = stack.as_ptr_range();
         let stack_top_va = stack_range.end;
@@ -68,10 +94,10 @@ impl<'a> Thread<'a> {
 
         ctx.registers = [0; 31];
         ctx.elr = pc as u64;
-        ctx.spsr = SPSR_EL1::M::EL0t.value;
+        ctx.spsr = spsr_value;
         ctx.sp = stack_top_va as u64;
 
-        const SPSR: FieldValue<u64, SPSR_EL1::Register> = SPSR_EL1::M::EL0t;
+        let thread_id = THREAD_ID_ALLOC.alloc();
 
         let inner = ThreadInner {
             thread_id,
@@ -79,13 +105,53 @@ impl<'a> Thread<'a> {
             priority,
             kernel_sp: ctx_ptr as u64,
             stack: Some(stack),
-            process: Arc::downgrade(process),
-            translator,
+            process,
+            is_kernel,
+            // translator,
         };
 
         Self {
             inner: Arc::new(RwLock::new(inner)),
         }
+    }
+
+    pub fn new(
+        process: &Arc<Process<'a>>,
+        stack: Stack,
+        pc: usize,
+        priority: u8,
+        // translator: &'a dyn AddressTranslator,
+    ) -> Self {
+        Self::new_inner(
+            Arc::downgrade(process),
+            false,
+            stack,
+            pc,
+            priority,
+            SPSR_EL1::M::EL0t.value,
+            // translator,
+        )
+    }
+
+    pub fn new_kernel(
+        stack: Stack,
+        entry: *const (),
+        priority: u8,
+        // translator: &'a dyn AddressTranslator,
+    ) -> Self {
+        Self::new_inner(
+            Weak::new(),
+            true,
+            stack,
+            entry as _,
+            priority,
+            SPSR_EL1::M::EL1h.value,
+            // translator,
+        )
+    }
+
+    pub fn is_kernel(&self) -> bool {
+        self.inner.read().is_kernel
     }
 
     pub fn set_state(&self, state: ThreadState) {

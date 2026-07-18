@@ -4,7 +4,7 @@ use aarch64_cpu::registers::TTBR0_EL1;
 use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
 use alloc::boxed::Box;
 use klib::{
-    cpu_interface::{CpuTopologyId, init_cpu_maps},
+    cpu_interface::{CpuIdLogical, CpuTopologyId, init_cpu_maps},
     hardware::device::{DeviceClass, DeviceNode},
     stack::Stack,
     vm::{PAGE_SIZE, user::PAGE_DESCRIPTORS},
@@ -14,7 +14,7 @@ use protocol::BootInfo;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
 use crate::{
-    __KBASE, DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE,
+    __KBASE, DEVICE_TREE, GLOBAL_SCHEDULER, KALLOCATOR, KERNEL_ADDRESS_SPACE,
     earlyinit::{
         acpi::acpi_init,
         earlycon::{EARLYCON, EarlyCon},

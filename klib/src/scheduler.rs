@@ -3,26 +3,19 @@ use core::{
     usize,
 };
 
-use crate::{cpu_interface::CpuIdLogical, pm::page::mapper::AddressTranslator, this_cpu};
+use crate::{cpu_interface::CpuIdLogical, this_cpu};
 
 use super::{
     context::RegisterFileRef,
-    cpu_interface::CpuTopologyId,
-    pm::page::mapper::TableAllocator,
     sync::{RwLock, UnfairSpinlock},
     thread::{Thread, ThreadState},
-    vm::page_allocator::PhysicalPageAllocator,
 };
 
 use aarch64_cpu::{
     asm::barrier::{self, isb},
-    registers::{TPIDR_EL1, TTBR0_EL1, Writeable},
+    registers::TTBR0_EL1,
 };
-use alloc::{
-    collections::{BTreeMap, VecDeque},
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 #[derive(Debug)]
 pub struct LocalScheduler<'a> {
@@ -56,8 +49,11 @@ impl<'a> Scheduler<'a> {
         }
     }
 
+    /// can be called any number of times.
+    /// must be called with at least the highest numbered `CpuIdLogical`.
     pub fn register_cpu(&self, cpu_id: CpuIdLogical) {
         let mut queues = self.queues.write();
+
         if cpu_id.to_usize() >= queues.len() {
             queues.resize_with(cpu_id.to_usize() + 1, || {
                 UnfairSpinlock::new(LocalScheduler::new())

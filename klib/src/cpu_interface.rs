@@ -99,6 +99,8 @@ impl InterruptInterface for Arm64InterruptInterface {
     }
 }
 
+/// packed integer of CPU core topology information. sparse.
+/// when a contiguous ID is needed (i.e. the highest ID is the total core count - 1), use `CpuIdLogical`
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct CpuTopologyId(u32);
@@ -152,6 +154,8 @@ pub fn init_cpu_maps(topologies: impl IntoIterator<Item = CpuTopologyId>) {
     }
 }
 
+/// a CPU core ID. contiguous; the highest ID is the total core count - 1.
+/// does not carry any topology information.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct CpuIdLogical(u32);

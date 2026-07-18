@@ -2,6 +2,7 @@ pub mod acpi;
 pub mod earlycon;
 pub mod exception;
 pub mod gicv3;
+pub mod idle;
 pub mod mem;
 pub mod mmu;
 pub mod platform;

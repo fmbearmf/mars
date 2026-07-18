@@ -21,6 +21,7 @@ use klib::{
 use log::{debug, error, trace};
 use mars_acpi_driver::acpi::{
     fadt::Fadt,
+    gtdt::Gtdt,
     header::SdtHeader,
     madt::{GicCpuInterface, GicDistributor, GicRedistributor, Madt, MadtIter},
     xsdp::{Xsdp, XsdtIter},
@@ -91,6 +92,11 @@ pub fn acpi_init(token: &BootInfoToken) {
             SdtHeader::ref_from_prefix(table_bytes).expect("table impossibly small");
 
         match &header.sig() {
+            b"GTDT" => {
+                trace!("    gtdt found");
+
+                handle_gtdt(table_bytes);
+            }
             b"APIC" => {
                 trace!("    madt found");
 
@@ -106,8 +112,22 @@ pub fn acpi_init(token: &BootInfoToken) {
     }
 }
 
+fn handle_gtdt(table: &[u8]) {
+    let (gtdt, _) = Gtdt::ref_from_prefix(table).expect("invalid madt size");
+
+    let platform_timer_count = gtdt.platform_timer_count();
+
+    if platform_timer_count > 0 {
+        use log::warn;
+        warn!(
+            "found {} platform timers. platform timer support is unimplemented.",
+            platform_timer_count
+        );
+    }
+}
+
 fn handle_madt(table: &[u8]) {
-    let (madt, _entries): (&Madt, &[u8]) = Madt::ref_from_prefix(table).expect("invalid madt size");
+    let (madt, _): (&Madt, &[u8]) = Madt::ref_from_prefix(table).expect("invalid madt size");
 
     let madt_iter = move || madt.entries();
 
@@ -119,7 +139,7 @@ fn handle_madt(table: &[u8]) {
 }
 
 fn handle_fadt(table: &[u8]) {
-    let (fadt, _entries) = Fadt::ref_from_prefix(table).expect("invalid fadt size");
+    let (fadt, _) = Fadt::ref_from_prefix(table).expect("invalid fadt size");
 
     let arm_flags = fadt.arm_boot_arch();
     let hvc = arm_flags.psci_use_hvc();

@@ -34,7 +34,7 @@ use uefi_raw::table::system::SystemTable;
 use crate::{
     allocator::UefiTableAlloc,
     elf::load_kernel,
-    page::{UefiAddressTranslator, cpu_init, mmu_init},
+    page::{UefiAddressTranslator, cpu_init, drop_to_el1, mmu_init, mmu_init_post_exit},
 };
 
 #[global_allocator]
@@ -159,6 +159,7 @@ fn main() -> Status {
     let base_phys_align = align_down(base_phys as _, PAGE_SIZE);
     let load_size_align = align_up(load_size as _, PAGE_SIZE);
     let entry_vaddr = base_virt_align + entry_offset as usize;
+    let entry_paddr = base_phys_align + entry_offset as usize;
 
     debug!(
         "map {:#x}..{:#x} to {:#x}..{:#x}",
@@ -206,6 +207,8 @@ fn main() -> Status {
 
     let mem_map_final = unsafe { boot::exit_boot_services(None) };
 
+    unsafe { mmu_init_post_exit() };
+
     let st = uefi::table::system_table_raw().expect("no system table?");
 
     boot_info.write(BootInfo {
@@ -217,5 +220,5 @@ fn main() -> Status {
         system_table_raw: st,
     });
 
-    entry_fn(boot_info.as_mut_ptr());
+    unsafe { drop_to_el1(entry_vaddr, boot_info.as_mut_ptr() as usize) }
 }
