@@ -4,7 +4,7 @@ use core::ops::Range;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resource {
     Mmio { range: Range<usize> },
-    Irq { number: u32, polarity: IrqPolarity },
+    Irq(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

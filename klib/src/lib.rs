@@ -27,7 +27,6 @@ pub mod stack;
 pub mod strange;
 pub mod sync;
 pub mod thread;
-pub mod timer;
 pub mod vcpu;
 pub mod vfs;
 pub mod vm;

@@ -32,12 +32,11 @@ pub fn idle_init() -> ! {
 }
 
 fn idle_entry() -> ! {
-    use log::trace;
-    trace!("core {} idle entry.", this_cpu!().id);
+    use log::*;
 
     this_cpu!().ready.store(true, Ordering::Release);
 
-    trace!("core {} post-ready", this_cpu!().id);
+    debug!("Core {} online & going idle.", this_cpu!().id);
     InterruptGuard::enable();
 
     busy_loop()

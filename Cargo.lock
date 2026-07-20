@@ -402,6 +402,7 @@ dependencies = [
  "klib",
  "log",
  "mars-acpi-driver",
+ "mars-generic-timer-driver",
  "mars-models",
  "mars-models-zerocopy",
  "phf",
@@ -473,6 +474,7 @@ name = "mars-generic-timer-driver"
 version = "0.0.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "atomic_refcell",
  "klib",
  "log",
  "mars_getters",

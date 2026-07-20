@@ -4,14 +4,16 @@ use aarch64_cpu::{
     asm::barrier::{self, isb},
     registers::{CNTFRQ_EL0, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0, Readable, Writeable},
 };
+use atomic_refcell::AtomicRefCell;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum TimerError {
     DurationTooLarge,
+    CouldntBorrow,
 }
 
 pub static TIMER: Timer = Timer::new();
-const TIMER_DURATION: Duration = Duration::from_millis(1500);
+const TIMER_DURATION: Duration = Duration::from_millis(100);
 
 pub fn init_timer() {
     TIMER.disarm();
@@ -31,12 +33,36 @@ pub fn timer_schedule() {
     _ = TIMER.arm_after(TIMER_DURATION);
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct Timer {}
+#[derive(Debug)]
+pub struct Timer {
+    timer_irq: AtomicRefCell<Option<u8>>,
+}
 
 impl Timer {
     pub const fn new() -> Self {
-        Self {}
+        Self {
+            timer_irq: AtomicRefCell::new(None),
+        }
+    }
+
+    pub fn set_irq(&self, irq: u8) -> Result<(), TimerError> {
+        let mut timer_irq = self
+            .timer_irq
+            .try_borrow_mut()
+            .map_err(|_| TimerError::CouldntBorrow)?;
+
+        timer_irq.replace(irq);
+
+        Ok(())
+    }
+
+    pub fn get_irq(&self) -> Result<Option<u8>, TimerError> {
+        let timer_irq = self
+            .timer_irq
+            .try_borrow()
+            .map_err(|_| TimerError::CouldntBorrow)?;
+
+        Ok(*timer_irq)
     }
 
     #[inline]

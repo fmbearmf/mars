@@ -13,10 +13,9 @@ use aarch64_cpu::{
 };
 use alloc::{boxed::Box, vec, vec::Vec};
 use atomic_refcell::AtomicRefCell;
-use log::debug;
 use mars_models::memory::registers::volatile::{PureReadable, PureWriteable, Writeable};
 
-use crate::{interrupt::GicrRegisters, strange::NicheKernelPtr, this_cpu};
+use crate::{interrupt::GicrRegisters, strange::KernelPtr48, this_cpu};
 
 use super::{
     GicdRegisters, InterruptController, InterruptError, InterruptInterface, Result,
@@ -28,7 +27,7 @@ use self::registers::icc_sre_el1::ICC_SRE_EL1;
 pub mod registers;
 
 static INIT_STATE: AtomicU8 = AtomicU8::new(0);
-type IrqHandlerFnPtr = NicheKernelPtr<fn(u32) -> Result<()>>;
+type IrqHandlerFnPtr = KernelPtr48<fn(u32) -> Result<()>>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum IrqTarget {

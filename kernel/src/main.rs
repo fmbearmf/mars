@@ -31,6 +31,7 @@ use protocol::BootInfo;
 use crate::{
     allocator::KernelAddressTranslator,
     earlyinit::{
+        idle::idle_init,
         mmu::init_cpu,
         platform::{BootInfoInitToken, uefi_arm64_bootstrap},
     },
@@ -70,7 +71,7 @@ fn panic(info: &PanicInfo) -> ! {
         EARLYCON.steal();
         earlycon_writeln!("{}", info);
     }
-    busy_loop();
+    busy_loop()
 }
 
 register_drivers!([]);
@@ -137,34 +138,20 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
     init_cpu();
 
     let boot_info_init_token = BootInfoInitToken::new().unwrap();
-    let mut boot_info_token = unsafe { boot_info_init_token.init(boot_info_ref) }.unwrap();
-
-    let r = boot_info_token.get();
-    let m = boot_info_token.get_mut();
+    let boot_info_token = unsafe { boot_info_init_token.init(boot_info_ref) }.unwrap();
 
     uefi_arm64_bootstrap(boot_info_token);
 
-    {
-        let mut lock = EARLYCON.lock();
-        if let Some(uart) = &mut *lock {
-            _ = uart;
-            // TODO: correctly map the rest of MMIO into DMAP
-            //uart.switch(KernelAddressTranslator.phys_to_dmap(boot_info.serial_uart_address) as _);
-        }
-    }
-
-    debug!("dead end");
-
-    busy_loop();
+    idle_init()
 }
 
-fn print_mem_usage() {
-    let mut bufs = [[0u8; 16]; 2];
-    let bufs_tuple = bufs.split_at_mut(1);
-
-    trace!(
-        "page usage: {} / {}",
-        bytes_to_human_readable(KALLOCATOR.page_usage() as u64, &mut bufs_tuple.0[0]),
-        bytes_to_human_readable(KALLOCATOR.capacity() as u64, &mut bufs_tuple.1[0]),
-    );
-}
+// fn print_mem_usage() {
+//     let mut bufs = [[0u8; 16]; 2];
+//     let bufs_tuple = bufs.split_at_mut(1);
+//
+//     trace!(
+//         "page usage: {} / {}",
+//         bytes_to_human_readable(KALLOCATOR.page_usage() as u64, &mut bufs_tuple.0[0]),
+//         bytes_to_human_readable(KALLOCATOR.capacity() as u64, &mut bufs_tuple.1[0]),
+//     );
+// }

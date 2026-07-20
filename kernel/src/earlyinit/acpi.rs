@@ -1,8 +1,4 @@
-use core::{
-    ops::Range,
-    ptr::NonNull,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+use core::{ops::Range, ptr::NonNull, sync::atomic::Ordering};
 
 use aarch64_cpu::registers::{MPIDR_EL1, Readable};
 use alloc::{string::String, vec, vec::Vec};
@@ -10,7 +6,7 @@ use atomic_refcell::AtomicRefMut;
 use klib::{
     cpu_interface::CpuTopologyId,
     hardware::{
-        device::{DeviceClass, DeviceTree},
+        device::{DeviceClass, DeviceInitPriority, DeviceTree},
         resource::Resource,
     },
     interrupt::{GicdRegisters, GicrRegisters, gicv3::registers::gic::GicrTyper},
@@ -18,7 +14,6 @@ use klib::{
     pm::page::mapper::AddressTranslator,
     smccc::USE_HVC,
 };
-use log::{debug, error, trace};
 use mars_acpi_driver::acpi::{
     fadt::Fadt,
     gtdt::Gtdt,
@@ -29,7 +24,7 @@ use mars_acpi_driver::acpi::{
 use mars_models::memory::registers::volatile::PureReadable;
 use uefi::table::cfg::ConfigTableEntry;
 use uefi_raw::table::{configuration::ConfigurationTable, system::SystemTable};
-use zerocopy::{FromBytes, IntoBytes};
+use zerocopy::FromBytes;
 
 use crate::{DEVICE_TREE, allocator::KernelAddressTranslator, earlyinit::platform::BootInfoToken};
 
@@ -52,11 +47,13 @@ fn config_table(st: NonNull<SystemTable>) -> &'static [ConfigTableEntry] {
 
 #[allow(static_mut_refs, reason = "singlethreaded")]
 pub fn acpi_init(token: &BootInfoToken) {
+    use log::*;
+
     let bi = token.get();
 
     let st = bi.system_table_raw;
 
-    trace!("st: {:p}", st);
+    info!("UEFI: System Table at {:p}", st);
 
     let cfg_table = config_table(st);
 
@@ -76,7 +73,7 @@ pub fn acpi_init(token: &BootInfoToken) {
         &*(KernelAddressTranslator.phys_to_dmap(xsdt as *const _ as _) as *const SdtHeader)
     };
 
-    trace!("xsdt: {:#?}", xsdt);
+    trace!("sdt: {:?}", xsdt);
 
     let xsdt_iter = XsdtIter::new(xsdt);
     for phys_table_bytes in xsdt_iter {
@@ -113,7 +110,11 @@ pub fn acpi_init(token: &BootInfoToken) {
 }
 
 fn handle_gtdt(table: &[u8]) {
+    use log::*;
+
     let (gtdt, _) = Gtdt::ref_from_prefix(table).expect("invalid madt size");
+
+    trace!("{:?}", gtdt);
 
     let platform_timer_count = gtdt.platform_timer_count();
 
@@ -124,6 +125,15 @@ fn handle_gtdt(table: &[u8]) {
             platform_timer_count
         );
     }
+
+    let mut dt = DEVICE_TREE.borrow_mut();
+    dt.add_device(
+        None,
+        DeviceClass::Timer,
+        vec![String::from("arm,armv8-timer")],
+        vec![Resource::Irq(gtdt.virt_el1_gsiv())],
+        Default::default(),
+    );
 }
 
 fn handle_madt(table: &[u8]) {
@@ -139,6 +149,8 @@ fn handle_madt(table: &[u8]) {
 }
 
 fn handle_fadt(table: &[u8]) {
+    use log::*;
+
     let (fadt, _) = Fadt::ref_from_prefix(table).expect("invalid fadt size");
 
     let arm_flags = fadt.arm_boot_arch();
@@ -150,6 +162,8 @@ fn handle_fadt(table: &[u8]) {
 }
 
 fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTree>) {
+    use log::*;
+
     let mut cpu_topologies = Vec::new();
     for (_, slice) in madt().filter(|&(ty, _)| ty == 0xB) {
         let gicc: &GicCpuInterface = GicCpuInterface::ref_from_bytes(slice)
@@ -212,6 +226,7 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
                     },
                     Vec::new(),
                     Vec::new(),
+                    DeviceInitPriority::Fundamental,
                 );
             }
             0xC => {} // GICD
@@ -235,7 +250,6 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
                     let last = gicr_regs
                         .type_
                         .read_field_pure(GicrTyper::LastRedistributor);
-                    let id = gicr_regs.type_.read_field_pure(GicrTyper::AffinityValue);
 
                     gic_resources.push(Resource::Mmio {
                         range: (gicr_regs as *const GicrRegisters as usize)
@@ -261,5 +275,6 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
         },
         vec![String::from("arm,gic-v3")],
         gic_resources,
+        DeviceInitPriority::Fundamental,
     );
 }

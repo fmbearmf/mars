@@ -3,24 +3,26 @@ use core::{arch::global_asm, sync::atomic::Ordering};
 use aarch64_cpu::registers::{
     CPACR_EL1, MAIR_EL1, Readable, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1, VBAR_EL1,
 };
-use alloc::{boxed::Box, sync::Arc};
+use alloc::boxed::Box;
 use klib::{
     cache::clean_dcache_range,
-    context::RegisterFileRef,
     cpu_interface::{CpuIdLogical, CpuTopologyId},
     guard::InterruptGuard,
+    hardware::device::DeviceNode,
     per_cpu::PerCpu,
     pm::page::mapper::AddressTranslator,
     smccc::{PsciError, cpu_on},
     stack::Stack,
-    this_cpu,
-    thread::Thread,
 };
-use log::{info, trace};
 
 use crate::{
-    GLOBAL_SCHEDULER, allocator::KernelAddressTranslator, busy_loop, earlyinit::idle::idle_init,
-    interrupt::get_interrupt_controller,
+    DEVICE_TREE, GLOBAL_SCHEDULER,
+    allocator::KernelAddressTranslator,
+    earlyinit::{
+        idle::idle_init,
+        platform::{DISABLE_IRQ, ENABLE_IRQ, filter_fundamental, filter_others},
+    },
+    lut::{DEVICE_TABLE, DeviceCallback},
 };
 
 #[repr(C)]
@@ -117,6 +119,8 @@ pub unsafe fn boot_secondary(
     stack: Stack,
     addr_translator: impl Fn(usize) -> usize,
 ) -> Result<(), PsciError> {
+    use log::*;
+
     let stack_top = stack.as_ptr_range().end as usize;
 
     let mut args = Box::new(SecondaryBootArgs {
@@ -143,9 +147,11 @@ pub unsafe fn boot_secondary(
     let trampoline_phys = addr_translator(smp_trampoline as *const () as usize) as u64;
     let args_phys = KernelAddressTranslator.dmap_to_phys(args_ptr as _) as u64;
 
-    trace!(
-        "call cpu_on for {:?}, start at {:#x}",
-        core.to_logical(),
+    info!(
+        "Woke up CPU {} at {:#x}",
+        core.to_logical()
+            .map(|c| c.to_u32())
+            .map_or(-1, |c| c as i32),
         args_phys
     );
 
@@ -157,17 +163,13 @@ pub unsafe fn boot_secondary(
         core::hint::spin_loop();
     }
 
-    trace!("core {:?} woke up, moving on.", core.to_logical());
-
     Ok(())
 }
 
 #[allow(dead_code, reason = "called indirectly")]
 pub unsafe extern "C" fn secondary_init(cpu_id: CpuIdLogical) -> ! {
     PerCpu::register_local(cpu_id.to_usize()).expect("invalid cpu_id passed to secondary core!");
-    let _guard = InterruptGuard::new();
-
-    info!("greetings from {}", cpu_id.to_u32());
+    InterruptGuard::disable();
 
     GLOBAL_SCHEDULER.register_cpu(cpu_id);
 
@@ -177,5 +179,24 @@ pub unsafe extern "C" fn secondary_init(cpu_id: CpuIdLogical) -> ! {
 }
 
 fn secondary_main() {
-    get_interrupt_controller().init().unwrap();
+    let dt = DEVICE_TREE.borrow();
+
+    fn init_devices<'a>(i: impl Iterator<Item = &'a DeviceNode>) {
+        for (func, node) in i.filter_map(|node| {
+            node.compatible
+                .iter()
+                .find_map(|tag| DEVICE_TABLE.get(tag))
+                .filter(|func| matches!(func, DeviceCallback::EveryCore(_)))
+                .map(|func| (func, node))
+        }) {
+            let f = match func {
+                DeviceCallback::EveryCore((_, f)) => f,
+                _ => unimplemented!(),
+            };
+            f(node, ENABLE_IRQ, DISABLE_IRQ);
+        }
+    }
+
+    init_devices(dt.nodes.iter().filter(filter_fundamental));
+    init_devices(dt.nodes.iter().filter(filter_others));
 }

@@ -1,9 +1,13 @@
 use core::mem::discriminant;
 
+use super::irq::CallbackError;
 use super::resource::Resource;
 use crate::cpu_interface::CpuTopologyId;
 use alloc::string::String;
 use alloc::vec::Vec;
+
+pub type IrqFn = fn(&Resource) -> Result<(), CallbackError>;
+pub type DeviceHandler = fn(&DeviceNode, IrqFn, IrqFn);
 
 pub trait Device: Send + Sync {
     fn shutdown(&self);
@@ -31,12 +35,14 @@ impl DeviceTree {
         class: DeviceClass,
         compatible: Vec<String>,
         resources: Vec<Resource>,
+        priority: DeviceInitPriority,
     ) -> DeviceId {
         let id = DeviceId(self.nodes.len());
 
         let node = DeviceNode {
             id,
             parent,
+            priority,
             class,
             compatible,
             resources,
@@ -65,9 +71,17 @@ impl DeviceTree {
     }
 }
 
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DeviceInitPriority {
+    #[default]
+    Regular,
+    Fundamental,
+}
+
 #[derive(Debug)]
 pub struct DeviceNode {
     pub id: DeviceId,
+    pub priority: DeviceInitPriority,
     pub parent: Option<DeviceId>,
     pub class: DeviceClass,
 
@@ -83,8 +97,6 @@ pub enum DeviceClass {
     Cpu { id: CpuTopologyId, acpi_uid: u32 },
     Uart,
     Timer,
-    InterruptRedistributor { cpu_id: CpuTopologyId },
-    InterruptDistributor,
     // hopefully you have less than 4 billion redistributors
     GicV3 { redistributor_count: u32 },
     PciHostBridge,

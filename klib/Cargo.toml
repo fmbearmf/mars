@@ -2,6 +2,7 @@
 name = "klib"
 version = "0.0.1"
 edition = "2024"
+license = "BSD-2-Clause"
 
 [lib]
 name = "klib"

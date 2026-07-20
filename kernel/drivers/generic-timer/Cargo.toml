@@ -9,6 +9,7 @@ plugin = false
 
 [dependencies]
 aarch64-cpu.workspace = true
+atomic_refcell.workspace = true
 klib.workspace = true
 log.workspace = true
 mars_getters.workspace = true

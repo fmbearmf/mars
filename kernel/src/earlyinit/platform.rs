@@ -1,15 +1,16 @@
-use core::{mem::MaybeUninit, ptr, range::Range};
+use core::{borrow::Borrow, mem::MaybeUninit};
 
-use aarch64_cpu::registers::TTBR0_EL1;
-use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
-use alloc::boxed::Box;
 use klib::{
-    cpu_interface::{CpuIdLogical, CpuTopologyId, init_cpu_maps},
-    hardware::device::{DeviceClass, DeviceNode},
+    cpu_interface::{CpuTopologyId, init_cpu_maps},
+    hardware::{
+        device::{DeviceClass, DeviceInitPriority, DeviceNode, IrqFn},
+        irq::CallbackError,
+        resource::Resource,
+    },
     stack::Stack,
+    this_cpu,
     vm::{PAGE_SIZE, user::PAGE_DESCRIPTORS},
 };
-use log::{LevelFilter, info, trace};
 use protocol::BootInfo;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
@@ -25,9 +26,9 @@ use crate::{
         mmu::init_mmu,
         smp::boot_secondary,
     },
+    interrupt::get_interrupt_controller,
     log::LOGGER,
-    lut::DEVICE_TABLE,
-    print_mem_usage,
+    lut::{DEVICE_TABLE, DeviceCallback},
 };
 
 mod sealed {
@@ -141,6 +142,8 @@ mod sealed {
 pub use sealed::*;
 
 pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
+    use log::*;
+
     let boot_info = boot_info_token.get_mut();
     let load_addr = boot_info.kernel_load_physical_address;
 
@@ -153,7 +156,11 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
         .init(LevelFilter::Trace)
         .expect("failed to init logger");
 
-    info!("welcome to the jungle, we take it day by day");
+    info!(
+        "Mars {}, provided under the {} license.",
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_LICENSE")
+    );
 
     trace!("address of bootinfo: {:#p}", &boot_info);
 
@@ -191,32 +198,39 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     acpi_init(&boot_info_token);
 
     {
-        let mut dt = DEVICE_TREE.borrow_mut();
+        let dt = DEVICE_TREE.borrow();
 
-        for node in dt.nodes.iter_mut() {
-            let mut handler_opt: Option<fn(&mut DeviceNode)> = None;
-
-            // the assumption is that the most specific string is first
-            for compatible_string in node.compatible.iter() {
-                if let Some(handler) = DEVICE_TABLE.get(compatible_string) {
-                    handler_opt = Some(*handler);
-                }
-            }
-
-            if let Some(handler) = handler_opt {
-                handler(node);
+        fn init_devices<'a>(i: impl Iterator<Item = &'a DeviceNode>) {
+            for (func, node) in i.filter_map(|node| {
+                node.compatible
+                    .iter()
+                    .find_map(|tag| DEVICE_TABLE.get(tag))
+                    .map(|func| (func, node))
+            }) {
+                let f = match func {
+                    DeviceCallback::Once(f) => f,
+                    DeviceCallback::EveryCore((f, _)) => f,
+                };
+                f(node, ENABLE_IRQ, DISABLE_IRQ);
             }
         }
 
+        init_devices(dt.nodes.iter().filter(filter_fundamental));
+        init_devices(dt.nodes.iter().filter(filter_others));
+
         let create_cpu_iter = || {
-            dt.nodes.iter().filter_map(|node| match &node.class {
-                DeviceClass::Cpu { id, .. } => Some(id.clone()),
-                _ => None,
-            })
+            dt.nodes
+                .iter()
+                .filter(filter_fundamental)
+                .filter_map(|node| match &node.class {
+                    DeviceClass::Cpu { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
         };
 
         init_cpu_maps(create_cpu_iter());
 
+        info!("Waking up secondary CPUs.");
         for cpu in create_cpu_iter() {
             if cpu == CpuTopologyId::current() {
                 continue;
@@ -234,4 +248,64 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
             };
         }
     }
+
+    GLOBAL_SCHEDULER.register_cpu(this_cpu!().id);
 }
+
+pub fn filter_fundamental<T>(n: &T) -> bool
+where
+    T: Borrow<DeviceNode>,
+{
+    n.borrow().priority >= DeviceInitPriority::Fundamental
+}
+
+pub fn filter_others<T>(n: &T) -> bool
+where
+    T: Borrow<DeviceNode>,
+{
+    n.borrow().priority != DeviceInitPriority::Fundamental
+}
+
+pub const ENABLE_IRQ: IrqFn = |resource| {
+    use log::*;
+
+    let ic = get_interrupt_controller();
+
+    let result = match resource {
+        Resource::Irq(irq) => {
+            ic.enable_interrupt(*irq)
+                .map_err(|_| CallbackError::FailedToEnable)?;
+            trace!("device driver enabled IRQ {}", irq);
+
+            Ok(())
+        }
+        _ => {
+            error!("device driver tried to enable an IRQ with an invalid Resource.");
+            Err(CallbackError::FailedToEnable)
+        }
+    };
+
+    result
+};
+
+pub const DISABLE_IRQ: IrqFn = |resource| {
+    use log::*;
+
+    let ic = get_interrupt_controller();
+
+    let result = match resource {
+        Resource::Irq(irq) => {
+            ic.disable_interrupt(*irq)
+                .map_err(|_| CallbackError::FailedToDisable)?;
+            trace!("device driver disabled IRQ {}", irq);
+
+            Ok(())
+        }
+        _ => {
+            error!("device driver tried to disable an IRQ with an invalid Resource.");
+            Err(CallbackError::FailedToDisable)
+        }
+    };
+
+    result
+};

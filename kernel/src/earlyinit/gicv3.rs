@@ -5,25 +5,34 @@ use alloc::{boxed::Box, vec::Vec};
 use klib::{
     cpu_interface::Arm64InterruptInterface,
     hardware::{
-        device::{DeviceClass, DeviceNode},
+        device::{DeviceClass, DeviceNode, IrqFn},
         resource::Resource,
     },
     interrupt::{GicdRegisters, GicrRegisters, gicv3::GicV3},
     pm::page::mapper::AddressTranslator,
+    this_cpu,
     vm::MAIR_DEVICE_INDEX,
 };
-use log::{debug, error, trace};
-use mars_acpi_driver::acpi::madt::{GicRedistributor, GicrFrame};
 use zerocopy::FromBytes;
 
 use crate::{
     KERNEL_ADDRESS_SPACE,
     allocator::KernelAddressTranslator,
-    busy_loop_ret,
     interrupt::{get_interrupt_controller, set_interrupt_controller},
 };
 
-pub fn gicv3_handler(node: &mut DeviceNode) {
+pub fn secondary_handle(_node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
+    use log::*;
+
+    let core_id = this_cpu!().id;
+
+    info!("GICv3: Enabled on core {}.", core_id);
+    get_interrupt_controller().init().unwrap();
+}
+
+pub fn handle(node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
+    use log::*;
+
     trace!("gicv3_handler: {:?}", node.compatible);
 
     let redistributor_count = match node.class {
@@ -123,9 +132,10 @@ pub fn gicv3_handler(node: &mut DeviceNode) {
         Arm64InterruptInterface,
     ));
 
-    debug!("set interrupt controller to GicV3");
+    trace!("set interrupt controller to GicV3");
 
     set_interrupt_controller(gicv3);
 
-    get_interrupt_controller().init().unwrap();
+    // init the controller
+    secondary_handle(node, _enable_irq, _disable_irq);
 }

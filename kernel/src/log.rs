@@ -21,7 +21,7 @@ impl Logger {
 
 impl log::Log for Logger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= Level::Trace
+        metadata.level() <= Level::Debug
     }
 
     fn log(&self, record: &log::Record) {
