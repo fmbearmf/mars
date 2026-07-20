@@ -1,6 +1,8 @@
 use core::{fmt::Debug, marker::PhantomData};
 
 /// 48-bit pointer.
+/// this struct requires passed pointers to have the 2 highest bytes be 0xFFFF.
+/// it also requires 48-bit canonical addresses.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct KernelPtr48<F> {
@@ -47,6 +49,9 @@ impl<A, R> KernelPtr48<fn(A) -> R> {
     }
 
     pub fn to_fn(self) -> fn(A) -> R {
+        // safety: new() enforces the requirements (pointer with 0xFFFF in top bytes).
+        // because we can guarantee that get() always returns the original memory address,
+        // this transmute is safe.
         unsafe { core::mem::transmute(self.get()) }
     }
 }

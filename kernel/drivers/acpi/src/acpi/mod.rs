@@ -111,38 +111,3 @@ fn get_memory_slice(addr: usize, len: usize) -> &'static [u8] {
 fn get_ref_addr<T>(r: &T) -> usize {
     r as *const T as usize
 }
-
-#[attributes]
-#[opaque]
-#[ensures(|result| result.header == *input)]
-fn fadt_transmute(input: &'static SdtHeader) -> &'static Fadt {
-    unsafe { core::mem::transmute(input) }
-}
-
-#[attributes]
-#[opaque]
-#[ensures(|result| result.header == *input)]
-fn madt_transmute(input: &'static SdtHeader) -> &'static Madt {
-    unsafe { core::mem::transmute(input) }
-}
-
-#[attributes]
-#[opaque]
-#[ensures(|result| result.header == *input)]
-fn gtdt_transmute(input: &'static SdtHeader) -> &'static Gtdt {
-    unsafe { core::mem::transmute(input) }
-}
-
-#[attributes]
-#[opaque]
-#[ensures(|result| result.header == *input)]
-fn spcr_transmute(input: &'static SdtHeader) -> &'static Spcr {
-    unsafe { core::mem::transmute(input) }
-}
-
-#[attributes]
-#[opaque]
-#[ensures(|result| result.header == *input)]
-fn mcfg_transmute(input: &'static SdtHeader) -> &'static Mcfg {
-    unsafe { core::mem::transmute(input) }
-}

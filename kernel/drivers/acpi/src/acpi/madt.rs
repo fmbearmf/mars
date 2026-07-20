@@ -7,7 +7,6 @@ use tock_registers::interfaces::Debuggable;
 use crate::{acpi::AcpiTableTrait, impl_table};
 
 use super::header::SdtHeader;
-use mars_getters::{unaligned_getters, unaligned_getters_hax};
 
 use super::FromBytes;
 
