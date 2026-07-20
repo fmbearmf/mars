@@ -46,6 +46,7 @@ syn = "2.0.117"
 quote = "1.0.45"
 proc-macro2 = "1.0.106"
 paste = "1.0.15"
+pastey = "0.2.3"
 
 [profile.release]
 panic = "abort"
