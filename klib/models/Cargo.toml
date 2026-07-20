@@ -8,7 +8,7 @@ name = "mars_models"
 
 [dependencies]
 hax-lib.workspace = true
-paste.workspace = true
+pastey.workspace = true
 mars-models-zerocopy = { workspace = true, features = ["derive"] }
 
 [lints.rust]
