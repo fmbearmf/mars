@@ -11,6 +11,7 @@ use core::{
     str::from_utf8,
 };
 
+pub mod block;
 pub mod cache;
 pub mod context;
 pub mod cpu_interface;

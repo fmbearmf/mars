@@ -94,7 +94,7 @@ pub fn handle(node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
         .skip(1)
         .take(redistributor_count as usize)
         .filter_map(|redist| match redist {
-            Resource::Mmio { range } => unsafe {
+            Resource::Mmio { range } => {
                 let size = range.end - range.start;
 
                 let virt_start = KernelAddressTranslator.phys_to_dmap(range.start) as *mut u8;
@@ -110,12 +110,12 @@ pub fn handle(node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
                     MAIR_DEVICE_INDEX,
                 );
 
-                let slice = core::slice::from_raw_parts_mut(virt_start, size);
+                let slice = unsafe { core::slice::from_raw_parts_mut(virt_start, size) };
 
                 let redist = GicrRegisters::mut_from_bytes(slice).unwrap();
 
                 Some(AtomicPtr::new(redist as *mut _))
-            },
+            }
             _ => {
                 error!(
                     "gicv3_handler: unexpected resource on `GicV3` redistributor: {:?}",

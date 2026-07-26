@@ -2,6 +2,7 @@
 members = [ "bootloader",
             "kernel",
             "kernel/drivers/acpi",
+            "kernel/drivers/acpi-aml",
             "kernel/drivers/generic-timer",
             "klib",
             "klib/models",
@@ -39,6 +40,7 @@ mars-models-zerocopy-derive = { path = "./klib/models/zerocopy-derive" }
 klib = { path = "./klib" }
 protocol = { path = "./protocol" }
 mars-acpi-driver = { path = "./kernel/drivers/acpi" }
+mars-acpi-aml-driver = { path = "./kernel/drivers/acpi-aml" }
 mars-generic-timer-driver = { path = "./kernel/drivers/generic-timer" }
 
 # procedural

@@ -1,7 +1,7 @@
 use core::{ops::Range, ptr::NonNull, sync::atomic::Ordering};
 
 use aarch64_cpu::registers::{MPIDR_EL1, Readable};
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{format, string::String, vec, vec::Vec};
 use atomic_refcell::AtomicRefMut;
 use klib::{
     cpu_interface::CpuTopologyId,
@@ -13,6 +13,10 @@ use klib::{
     per_cpu::PerCpu,
     pm::page::mapper::AddressTranslator,
     smccc::USE_HVC,
+};
+use mars_acpi_aml_driver::{
+    ast::{AmlTerm, AmlValue},
+    parser::AmlParser,
 };
 use mars_acpi_driver::acpi::{
     fadt::Fadt,
@@ -151,7 +155,9 @@ fn handle_madt(table: &[u8]) {
 fn handle_fadt(table: &[u8]) {
     use log::*;
 
-    let (fadt, _) = Fadt::ref_from_prefix(table).expect("invalid fadt size");
+    let (fadt, _) = Fadt::ref_from_prefix(table)
+        .map_err(|_| "invalid fadt size")
+        .unwrap();
 
     let arm_flags = fadt.arm_boot_arch();
     let hvc = arm_flags.psci_use_hvc();
@@ -159,6 +165,133 @@ fn handle_fadt(table: &[u8]) {
     trace!("    use HVC for PSCI?: {}", hvc);
 
     USE_HVC.store(hvc, Ordering::Relaxed);
+
+    let dsdt_phys_addr = if fadt.x_dsdt() != 0 {
+        fadt.x_dsdt() as usize
+    } else {
+        fadt.dsdt() as usize
+    };
+
+    let dsdt_addr = KernelAddressTranslator.phys_to_dmap(dsdt_phys_addr) as *const u8;
+
+    let dsdt_bytes = unsafe {
+        let header_ptr = dsdt_addr as *const SdtHeader;
+        let len = (*header_ptr).len() as usize;
+
+        core::slice::from_raw_parts(dsdt_addr, len)
+    };
+
+    handle_dsdt(dsdt_bytes);
+}
+
+fn handle_dsdt(table: &[u8]) {
+    use log::*;
+
+    let (header, aml_bytes) = match SdtHeader::ref_from_prefix(table) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("DSDT header too small: {}", e);
+            return;
+        }
+    };
+
+    if &header.sig() != b"DSDT" {
+        error!(
+            "ACPI: Invalid DSDT table signature: \"{}\"",
+            core::str::from_utf8(&header.sig()).unwrap()
+        );
+        return;
+    }
+
+    let mut root_parser = AmlParser::new(aml_bytes);
+
+    debug!("ACPI: DSDT AML length = {}", aml_bytes.len());
+
+    let mut output = String::new();
+    format_aml_stream(&mut root_parser, 0, &mut output).unwrap();
+    debug!("{}", output);
+}
+
+fn aml_stream(parser: &mut AmlParser, depth: usize) -> Result<(), &'static str> {
+    while let Some(term) = parser.parse_next()? {
+        match term {
+            AmlTerm::Scope { name, mut contents } => {
+                aml_stream(&mut contents, depth + 1)?;
+            }
+            AmlTerm::Device { name, mut contents } => {
+                aml_stream(&mut contents, depth + 1)?;
+            }
+            AmlTerm::Name { name, value } => {}
+            AmlTerm::Method { name, flags, code } => {}
+            AmlTerm::OpRegion { name } => {}
+            AmlTerm::Field => {}
+            AmlTerm::UnsupportedOpcode(_op) => {}
+        }
+    }
+    Ok(())
+}
+
+fn format_aml_stream(
+    parser: &mut AmlParser,
+    depth: usize,
+    out: &mut String,
+) -> Result<(), &'static str> {
+    let indent = "  ".repeat(depth);
+
+    while let Some(term) = parser.parse_next()? {
+        match term {
+            AmlTerm::Scope { name, mut contents } => {
+                out.push_str(&format!("{indent}Scope ({name}) {{\n"));
+                format_aml_stream(&mut contents, depth + 1, out)?;
+                out.push_str(&format!("{indent}}}\n"));
+            }
+            AmlTerm::Device { name, mut contents } => {
+                out.push_str(&format!("{indent}Device ({name}) {{\n"));
+                format_aml_stream(&mut contents, depth + 1, out)?;
+                out.push_str(&format!("{indent}}}\n"));
+            }
+            AmlTerm::Name { name, value } => match value {
+                AmlValue::Zero => out.push_str(&format!("{indent}Name ({name}, Zero)\n")),
+                AmlValue::One => out.push_str(&format!("{indent}Name ({name}, One)\n")),
+                AmlValue::Ones => out.push_str(&format!("{indent}Name ({name}, Ones)\n")),
+                AmlValue::Integer(val) => {
+                    out.push_str(&format!("{indent}Name ({name}, {val:#X})\n"))
+                }
+                AmlValue::String(s) => out.push_str(&format!("{indent}Name ({name}, \"{s}\")\n")),
+                AmlValue::NamePath(path) => {
+                    out.push_str(&format!("{indent}Name ({name}, {path})\n"))
+                }
+                AmlValue::Buffer(buf) => out.push_str(&format!(
+                    "{indent}Name ({name}, Buffer ({}) {{ ... }})\n",
+                    buf.len()
+                )),
+            },
+            AmlTerm::Method { name, flags, code } => {
+                let arg_count = flags & 0x07;
+                let serialized = if (flags & 0x08) != 0 {
+                    "Serialized"
+                } else {
+                    "NotSerialized"
+                };
+
+                out.push_str(&format!(
+                    "{indent}Method ({name}, {arg_count}, {serialized}) [Bytecode: {} bytes]\n",
+                    code.len()
+                ));
+            }
+            AmlTerm::OpRegion { name } => {
+                out.push_str(&format!("{indent}OperationRegion ({name})\n"));
+            }
+            AmlTerm::Field => {
+                out.push_str(&format!("{indent}Field (...)\n"));
+            }
+            AmlTerm::UnsupportedOpcode(op) => {
+                out.push_str(&format!("{indent}// Unknown Opcode: {op:#04X}\n"));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTree>) {
@@ -190,7 +323,8 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
         .expect("MADT didn't contain a GIC Distributor entry");
 
     let gicd: &GicDistributor = GicDistributor::ref_from_bytes(gicd_entry_slice)
-        .expect("MADT GIC Distributor entry contained wrong bytes");
+        .map_err(|_| "MADT GIC Distributor entry contained wrong bytes")
+        .unwrap();
 
     if gicd.gic_version() != 3 {
         error!(

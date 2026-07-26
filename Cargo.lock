@@ -360,6 +360,7 @@ dependencies = [
  "atomic_refcell",
  "klib",
  "log",
+ "mars-acpi-aml-driver",
  "mars-acpi-driver",
  "mars-generic-timer-driver",
  "mars-models",
@@ -408,6 +409,17 @@ name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+
+[[package]]
+name = "mars-acpi-aml-driver"
+version = "0.0.1"
+dependencies = [
+ "aarch64-cpu 11.2.0",
+ "klib",
+ "log",
+ "mars-models-zerocopy",
+ "mars_getters",
+]
 
 [[package]]
 name = "mars-acpi-driver"
