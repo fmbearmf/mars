@@ -415,6 +415,7 @@ name = "mars-acpi-aml-driver"
 version = "0.0.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "hashbrown",
  "klib",
  "log",
  "mars-models-zerocopy",

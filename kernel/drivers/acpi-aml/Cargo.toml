@@ -13,3 +13,4 @@ klib.workspace = true
 log.workspace = true
 mars_getters.workspace = true
 mars-models-zerocopy = { workspace = true, features = ["derive"] }
+hashbrown.workspace = true

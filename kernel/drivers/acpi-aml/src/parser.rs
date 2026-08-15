@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::ast::{AmlNamePath, AmlTerm, AmlValue};
 
 #[derive(Debug, Copy, Clone)]
@@ -27,7 +29,7 @@ impl<'a> AmlParser<'a> {
             0x10 => {
                 let pkg_start = self.cursor;
                 let pkg_len = self.read_pkg_length()?;
-                let pkg_header_bytes = self.cursor - pkg_start;
+                let _pkg_header_bytes = self.cursor - pkg_start;
 
                 let name = self.read_name_path()?;
 
@@ -169,7 +171,11 @@ impl<'a> AmlParser<'a> {
                 let pkg_start = self.cursor;
                 let pkg_len = self.read_pkg_length()?;
 
-                let _num_elems = self.read_u8()?;
+                if op == 0x12 {
+                    let _num_elems = self.read_u8()?;
+                } else {
+                    let _num_elems = self.parse_data_object()?;
+                }
 
                 let consumed_bytes = self.cursor - pkg_start;
                 let body_len = pkg_len
@@ -177,6 +183,18 @@ impl<'a> AmlParser<'a> {
                     .ok_or("PackageOp PkgLength underflowed")?;
 
                 let pkg_bytes = self.take_bytes(body_len)?;
+
+                let mut elements = Vec::new();
+                let mut pkg_parser = AmlParser::new(pkg_bytes);
+
+                while !pkg_parser.is_empty() {
+                    if let Ok(val) = pkg_parser.parse_data_object() {
+                        elements.push(val);
+                    } else {
+                        break;
+                    }
+                }
+
                 Ok(AmlValue::Buffer(pkg_bytes))
             }
 
@@ -192,8 +210,10 @@ impl<'a> AmlParser<'a> {
                 // extended opcode
                 if any_other == 0x5B {
                     let _ext = self.read_u8()?;
+                    Ok(AmlValue::Integer(0x5B))
+                } else {
+                    Ok(AmlValue::Integer(any_other as u64))
                 }
-                Ok(AmlValue::Integer(any_other as u64))
             }
         }
     }

@@ -231,6 +231,36 @@ fn aml_stream(parser: &mut AmlParser, depth: usize) -> Result<(), &'static str> 
     Ok(())
 }
 
+fn format_aml_value(val: &AmlValue, depth: usize, out: &mut String) {
+    let indent = "  ".repeat(depth);
+    match val {
+        AmlValue::Zero => out.push_str("Zero"),
+        AmlValue::One => out.push_str("One"),
+        AmlValue::Ones => out.push_str("Ones"),
+        AmlValue::Integer(val) => out.push_str(&format!("{val:#X}")),
+        AmlValue::String(s) => out.push_str(&format!("\"{s}\"")),
+        AmlValue::NamePath(path) => out.push_str(&format!("{path}")),
+        AmlValue::Buffer(buf) => out.push_str(&format!("Buffer ({}) {{ ... }}", buf.len())),
+        AmlValue::Package(elems) => {
+            if elems.is_empty() {
+                out.push_str("Package (0x00) {}");
+            } else {
+                out.push_str(&format!("Package ({:#04X}) {{\n", elems.len()));
+                let inner_indent = "  ".repeat(depth + 1);
+                for (i, elem) in elems.iter().enumerate() {
+                    out.push_str(&inner_indent);
+                    format_aml_value(elem, depth + 1, out);
+                    if i + 1 < elems.len() {
+                        out.push(',');
+                    }
+                    out.push('\n');
+                }
+                out.push_str(&format!("{indent}}}"));
+            }
+        }
+    }
+}
+
 fn format_aml_stream(
     parser: &mut AmlParser,
     depth: usize,
@@ -250,22 +280,11 @@ fn format_aml_stream(
                 format_aml_stream(&mut contents, depth + 1, out)?;
                 out.push_str(&format!("{indent}}}\n"));
             }
-            AmlTerm::Name { name, value } => match value {
-                AmlValue::Zero => out.push_str(&format!("{indent}Name ({name}, Zero)\n")),
-                AmlValue::One => out.push_str(&format!("{indent}Name ({name}, One)\n")),
-                AmlValue::Ones => out.push_str(&format!("{indent}Name ({name}, Ones)\n")),
-                AmlValue::Integer(val) => {
-                    out.push_str(&format!("{indent}Name ({name}, {val:#X})\n"))
-                }
-                AmlValue::String(s) => out.push_str(&format!("{indent}Name ({name}, \"{s}\")\n")),
-                AmlValue::NamePath(path) => {
-                    out.push_str(&format!("{indent}Name ({name}, {path})\n"))
-                }
-                AmlValue::Buffer(buf) => out.push_str(&format!(
-                    "{indent}Name ({name}, Buffer ({}) {{ ... }})\n",
-                    buf.len()
-                )),
-            },
+            AmlTerm::Name { name, value } => {
+                out.push_str(&format!("{indent}Name ({name}, "));
+                format_aml_value(&value, depth, out);
+                out.push_str(")\n");
+            }
             AmlTerm::Method { name, flags, code } => {
                 let arg_count = flags & 0x07;
                 let serialized = if (flags & 0x08) != 0 {

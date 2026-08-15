@@ -1,6 +1,8 @@
 #![no_std]
 
-pub mod ast;
-pub mod parser;
+extern crate alloc;
 
-use zerocopy::FromBytes;
+pub mod ast;
+pub mod crs;
+pub mod device;
+pub mod parser;
