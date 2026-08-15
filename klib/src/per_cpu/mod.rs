@@ -11,7 +11,6 @@ static REGISTRY_LEN: AtomicUsize = AtomicUsize::new(0);
 #[repr(C, align(64))]
 pub struct PerCpuData {
     pub id: CpuIdLogical,
-    pub current_thread: FairSpinlock<Option<ThreadId>>,
     /// for bootstrap only. owning core must set to true before BSP can continue.
     pub ready: AtomicBool,
 }
@@ -36,7 +35,6 @@ impl PerCpu {
         for i in 0..cores {
             cpus.push(PerCpuData {
                 id: CpuIdLogical::new(i as _),
-                current_thread: FairSpinlock::new(None),
                 ready: AtomicBool::new(false),
             });
         }

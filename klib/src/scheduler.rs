@@ -49,6 +49,25 @@ impl<'a> Scheduler<'a> {
         }
     }
 
+    /// wakes up a blocked thread and puts it in the ready queue
+    pub fn unblock(&self, thread: Arc<Thread<'a>>) {
+        self.spawn(thread);
+    }
+
+    #[inline(always)]
+    pub fn yield_now() {
+        unsafe {
+            core::arch::asm!("svc #0");
+        }
+    }
+
+    pub fn current_thread(&self) -> Option<Arc<Thread<'a>>> {
+        let cpu_id = CpuIdLogical::current();
+        let queues = self.queues.read();
+        let local = queues[cpu_id.to_usize()].lock();
+        local.current_thread.clone()
+    }
+
     /// can be called any number of times.
     /// must be called with at least the highest numbered `CpuIdLogical`.
     pub fn register_cpu(&self, cpu_id: CpuIdLogical) {
@@ -106,7 +125,6 @@ impl<'a> Scheduler<'a> {
             }
 
             next.set_state(ThreadState::Running);
-            this_cpu!().current_thread.lock().replace(next.thread_id());
 
             if let Some(process) = next.process() {
                 process.with_address_space(|addr_space| {

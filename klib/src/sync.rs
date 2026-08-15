@@ -5,11 +5,107 @@ use core::{
     sync::atomic::{Atomic, AtomicBool, AtomicUsize, Ordering},
 };
 
-use aarch64_cpu::{
-    asm::{sev, wfe},
-    registers::DAIF,
-};
-use tock_registers::fields::FieldValue;
+use aarch64_cpu::asm::{sev, wfe};
+use alloc::{collections::vec_deque::VecDeque, sync::Arc};
+
+use crate::{scheduler::Scheduler, thread::Thread};
+
+pub struct SleepingMutex<'a, T: ?Sized> {
+    locked: AtomicBool,
+    wait_queue: UnfairSpinlock<VecDeque<Arc<Thread<'a>>>>,
+    data: UnsafeCell<T>,
+}
+
+unsafe impl<'a, T: ?Sized + Send> Sync for SleepingMutex<'a, T> {}
+unsafe impl<'a, T: ?Sized + Send> Send for SleepingMutex<'a, T> {}
+
+pub struct SleepingMutexGuard<'m, 'a, T: ?Sized> {
+    mutex: &'m SleepingMutex<'a, T>,
+    scheduler: &'m Scheduler<'a>,
+}
+
+impl<'a, T> SleepingMutex<'a, T> {
+    pub const fn new(data: T) -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            wait_queue: UnfairSpinlock::new(VecDeque::new()),
+            data: UnsafeCell::new(data),
+        }
+    }
+}
+
+impl<'a, T: ?Sized> SleepingMutex<'a, T> {
+    /// if locked, marks `current` as blocked and enqueues it.
+    pub fn lock<'m>(&'m self, scheduler: &'m Scheduler<'a>) -> SleepingMutexGuard<'m, 'a, T> {
+        loop {
+            if self
+                .locked
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                return SleepingMutexGuard {
+                    mutex: self,
+                    scheduler,
+                };
+            }
+
+            let current = scheduler
+                .current_thread()
+                .expect("can't sleep mutex without a running thread!!");
+
+            {
+                let mut queue = self.wait_queue.lock();
+
+                if self
+                    .locked
+                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    return SleepingMutexGuard {
+                        mutex: self,
+                        scheduler,
+                    };
+                }
+
+                current.set_state(crate::thread::ThreadState::Blocked);
+                queue.push_back(current);
+            }
+
+            Scheduler::yield_now();
+        }
+    }
+
+    fn unlock(&self, scheduler: &Scheduler<'a>) {
+        let mut queue = self.wait_queue.lock();
+        self.locked.store(false, Ordering::Release);
+
+        if let Some(next) = queue.pop_front() {
+            scheduler.unblock(next);
+        }
+    }
+}
+
+impl<'m, 'a, T: ?Sized> Deref for SleepingMutexGuard<'m, 'a, T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.mutex.data.get() }
+    }
+}
+
+impl<'m, 'a, T: ?Sized> DerefMut for SleepingMutexGuard<'m, 'a, T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.mutex.data.get() }
+    }
+}
+
+impl<'m, 'a, T: ?Sized> Drop for SleepingMutexGuard<'m, 'a, T> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        self.mutex.unlock(self.scheduler);
+    }
+}
 
 #[repr(C, align(64))]
 #[derive(Debug)]
