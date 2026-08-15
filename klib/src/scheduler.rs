@@ -54,6 +54,26 @@ impl<'a> Scheduler<'a> {
         self.spawn(thread);
     }
 
+    /// puts current thread into `wait_queue` as blocked and switches out.
+    pub fn block_current(&self, wait_queue: &UnfairSpinlock<VecDeque<Arc<Thread<'a>>>>) {
+        let cpu_id = CpuIdLogical::current();
+        let queues = self.queues.read();
+        let mut local_queue = queues[cpu_id.to_usize()].lock();
+
+        let mut wait_qu = wait_queue.lock();
+
+        if let Some(current) = local_queue.current_thread.as_ref() {
+            current.set_state(ThreadState::Blocked);
+            wait_qu.push_back(current.clone());
+        }
+
+        drop(wait_qu);
+        drop(local_queue);
+        drop(queues);
+
+        Self::yield_now();
+    }
+
     #[inline(always)]
     pub fn yield_now() {
         unsafe {

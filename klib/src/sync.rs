@@ -67,8 +67,7 @@ impl<'a, T: ?Sized> SleepingMutex<'a, T> {
                     };
                 }
 
-                current.set_state(crate::thread::ThreadState::Blocked);
-                queue.push_back(current);
+                scheduler.block_current(&self.wait_queue);
             }
 
             Scheduler::yield_now();
