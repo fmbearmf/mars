@@ -48,7 +48,7 @@ pub struct UnfairSpinlock<T: ?Sized> {
 }
 
 // SAFETY: only 1 core can access `data` at a time
-unsafe impl<T: ?Sized + Sync> Sync for UnfairSpinlock<T> {}
+unsafe impl<T: ?Sized + Send> Sync for UnfairSpinlock<T> {}
 unsafe impl<T: ?Sized + Send> Send for UnfairSpinlock<T> {}
 
 pub struct UnfairSpinlockGuard<'a, T: ?Sized> {
@@ -120,7 +120,7 @@ pub struct FairSpinlock<T: ?Sized> {
 }
 
 // SAFETY: only 1 core can access `data` at a time
-unsafe impl<T: ?Sized + Sync> Sync for FairSpinlock<T> {}
+unsafe impl<T: ?Sized + Send> Sync for FairSpinlock<T> {}
 unsafe impl<T: ?Sized + Send> Send for FairSpinlock<T> {}
 
 pub struct FairSpinlockGuard<'a, T: ?Sized> {
