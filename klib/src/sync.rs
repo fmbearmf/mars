@@ -51,7 +51,7 @@ pub struct UnfairSpinlock<T: ?Sized> {
 unsafe impl<T: ?Sized + Sync> Sync for UnfairSpinlock<T> {}
 unsafe impl<T: ?Sized + Send> Send for UnfairSpinlock<T> {}
 
-pub struct UnfairSpinlockGuard<'a, T> {
+pub struct UnfairSpinlockGuard<'a, T: ?Sized> {
     mutex: &'a UnfairSpinlock<T>,
 }
 
@@ -62,7 +62,9 @@ impl<T> UnfairSpinlock<T> {
             data: UnsafeCell::new(data),
         }
     }
+}
 
+impl<T: ?Sized> UnfairSpinlock<T> {
     #[inline]
     pub fn lock(&self) -> UnfairSpinlockGuard<'_, T> {
         while self
@@ -90,7 +92,7 @@ impl<T> UnfairSpinlock<T> {
     }
 }
 
-impl<'a, T> Deref for UnfairSpinlockGuard<'a, T> {
+impl<'a, T: ?Sized> Deref for UnfairSpinlockGuard<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -98,13 +100,13 @@ impl<'a, T> Deref for UnfairSpinlockGuard<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for UnfairSpinlockGuard<'a, T> {
+impl<'a, T: ?Sized> DerefMut for UnfairSpinlockGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.mutex.data.get() }
     }
 }
 
-impl<'a, T> Drop for UnfairSpinlockGuard<'a, T> {
+impl<'a, T: ?Sized> Drop for UnfairSpinlockGuard<'a, T> {
     fn drop(&mut self) {
         self.mutex.unlock();
         sev();
@@ -121,7 +123,7 @@ pub struct FairSpinlock<T: ?Sized> {
 unsafe impl<T: ?Sized + Sync> Sync for FairSpinlock<T> {}
 unsafe impl<T: ?Sized + Send> Send for FairSpinlock<T> {}
 
-pub struct FairSpinlockGuard<'a, T> {
+pub struct FairSpinlockGuard<'a, T: ?Sized> {
     mutex: &'a FairSpinlock<T>,
 }
 
@@ -132,7 +134,9 @@ impl<T> FairSpinlock<T> {
             data: UnsafeCell::new(data),
         }
     }
+}
 
+impl<T: ?Sized> FairSpinlock<T> {
     #[inline]
     pub fn lock(&self) -> FairSpinlockGuard<'_, T> {
         self.lock.lock();
@@ -154,7 +158,7 @@ impl<T> FairSpinlock<T> {
     }
 }
 
-impl<'a, T> Deref for FairSpinlockGuard<'a, T> {
+impl<'a, T: ?Sized> Deref for FairSpinlockGuard<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -162,13 +166,13 @@ impl<'a, T> Deref for FairSpinlockGuard<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for FairSpinlockGuard<'a, T> {
+impl<'a, T: ?Sized> DerefMut for FairSpinlockGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.mutex.data.get() }
     }
 }
 
-impl<'a, T> Drop for FairSpinlockGuard<'a, T> {
+impl<'a, T: ?Sized> Drop for FairSpinlockGuard<'a, T> {
     fn drop(&mut self) {
         self.mutex.unlock();
     }
