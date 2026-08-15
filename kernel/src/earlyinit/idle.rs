@@ -2,10 +2,11 @@ use core::sync::atomic::Ordering;
 
 use alloc::sync::Arc;
 use klib::{
-    context::RegisterFileRef, guard::InterruptGuard, stack::Stack, this_cpu, thread::Thread,
+    context::RegisterFileRef, guard::InterruptGuard, scheduler::GLOBAL_SCHEDULER, stack::Stack,
+    this_cpu, thread::Thread,
 };
 
-use crate::{GLOBAL_SCHEDULER, busy_loop};
+use crate::busy_loop;
 
 unsafe extern "C" {
     fn el1_load_register_file(regs: RegisterFileRef<'_>) -> !;

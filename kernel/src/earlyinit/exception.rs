@@ -3,14 +3,14 @@ use core::sync::atomic::Ordering;
 use aarch64_cpu::registers::{DAIF, ESR_EL1, ReadWriteable, Readable, TTBR0_EL1, Writeable};
 use klib::{
     context::RegisterFileRef, cpu_interface::CpuTopologyId, exception::ExceptionHandler,
-    interrupt::InterruptController, this_cpu,
+    interrupt::InterruptController, scheduler::GLOBAL_SCHEDULER, this_cpu,
 };
 use log::{error, trace};
 use mars_generic_timer_driver::timer::{
     TIMER, TimerError, timer_disarm, timer_rearm, timer_schedule,
 };
 
-use crate::{GLOBAL_SCHEDULER, busy_loop_ret, interrupt::get_interrupt_controller};
+use crate::{busy_loop_ret, interrupt::get_interrupt_controller};
 
 use super::super::earlycon_writeln;
 

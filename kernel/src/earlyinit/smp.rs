@@ -11,12 +11,13 @@ use klib::{
     hardware::device::DeviceNode,
     per_cpu::PerCpu,
     pm::page::mapper::AddressTranslator,
+    scheduler::GLOBAL_SCHEDULER,
     smccc::{PsciError, cpu_on},
     stack::Stack,
 };
 
 use crate::{
-    DEVICE_TREE, GLOBAL_SCHEDULER,
+    DEVICE_TREE,
     allocator::KernelAddressTranslator,
     earlyinit::{
         idle::idle_init,

@@ -7,6 +7,7 @@ use klib::{
         irq::CallbackError,
         resource::Resource,
     },
+    scheduler::GLOBAL_SCHEDULER,
     stack::Stack,
     this_cpu,
     vm::{PAGE_SIZE, user::PAGE_DESCRIPTORS},
@@ -15,7 +16,7 @@ use protocol::BootInfo;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
 use crate::{
-    __KBASE, DEVICE_TREE, GLOBAL_SCHEDULER, KALLOCATOR, KERNEL_ADDRESS_SPACE,
+    __KBASE, DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE,
     earlyinit::{
         acpi::acpi_init,
         earlycon::{EARLYCON, EarlyCon},

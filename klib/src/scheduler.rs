@@ -32,6 +32,8 @@ impl LocalScheduler<'_> {
     }
 }
 
+pub static GLOBAL_SCHEDULER: Scheduler = Scheduler::new();
+
 #[derive(Debug)]
 pub struct Scheduler<'a> {
     queues: RwLock<Vec<UnfairSpinlock<LocalScheduler<'a>>>>,
@@ -58,7 +60,7 @@ impl<'a> Scheduler<'a> {
     pub fn block_current(&self, wait_queue: &UnfairSpinlock<VecDeque<Arc<Thread<'a>>>>) {
         let cpu_id = CpuIdLogical::current();
         let queues = self.queues.read();
-        let mut local_queue = queues[cpu_id.to_usize()].lock();
+        let local_queue = queues[cpu_id.to_usize()].lock();
 
         let mut wait_qu = wait_queue.lock();
 

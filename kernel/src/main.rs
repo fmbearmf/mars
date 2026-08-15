@@ -54,8 +54,6 @@ static KALLOCATOR: SlabAllocator = SlabAllocator::new(&KPAGE_ALLOCATOR, &KernelA
 
 static KPT_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
 
-static GLOBAL_SCHEDULER: Scheduler = Scheduler::new();
-
 static KERNEL_ADDRESS_SPACE: AddressSpace = unsafe {
     AddressSpace::new_dangling(
         None,
