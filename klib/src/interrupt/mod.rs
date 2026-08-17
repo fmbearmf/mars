@@ -19,10 +19,26 @@ use crate::interrupt::gicv3::registers::gic::GicBitfield8;
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum InterruptError {
     InvalidInterruptId,
+    /// requested operation is not supported
     NotSupported,
     /// specifically for an interrupt controller without MSI support
     MsiNotSupported,
+    /// no handler was registed for the dispatched interrupt
     HandlerNotFound,
+    /// memory allocation failed for ITT/table/command buffer
+    OutOfMemory,
+    /// no free LPI numbers remain
+    NoAvailableLpi,
+    /// requested LPI ID is in use
+    LpiAlreadyUsed,
+    /// ITS command ring buffer full
+    CommandQueueFull,
+    /// ITS command queue stalled and retries failed
+    HardwareStalled,
+    /// timed out waiting for hardware state to advance
+    CommandTimeout,
+    /// Device has not been registered with the MSI controller
+    DeviceNotFound,
 }
 
 type Result<T> = core::result::Result<T, InterruptError>;

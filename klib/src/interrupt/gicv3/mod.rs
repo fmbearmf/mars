@@ -244,7 +244,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
                 "GICv3: ITS command queue full (CREADR={}, CWRITER={})",
                 current_creadr, queue.write_offset
             );
-            return Err(InterruptError::NotSupported);
+            return Err(InterruptError::CommandQueueFull);
         }
 
         let offset = queue.write_offset;
@@ -288,7 +288,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
                 } else {
                     error!("GICv3: ITS permanently stalled; aborting command");
 
-                    return Err(InterruptError::NotSupported);
+                    return Err(InterruptError::HardwareStalled);
                 }
             }
 
@@ -299,7 +299,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
             "GICv3: ITS timeout waiting for CREADR to advance to offset {}",
             next_write_offset
         );
-        Err(InterruptError::NotSupported)
+        Err(InterruptError::CommandTimeout)
     }
 
     fn push_mapd(
@@ -772,7 +772,8 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
 
         let itt_size = (num_events * itt_entry_size).next_multiple_of(256);
         let layout = core::alloc::Layout::from_size_align(itt_size, 256)
-            .map_err(|_| InterruptError::NotSupported)?;
+            .map_err(|_| InterruptError::OutOfMemory)?;
+
         let itt_ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
         let itt_non_null = NonNull::new(itt_ptr).ok_or(InterruptError::NotSupported)?;
         let itt_phys = KernelAddressTranslator.dmap_to_phys(itt_ptr as _) as u64;
@@ -816,11 +817,11 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
         let lpi = match lpi_id {
             Some(id) => {
                 if alloc.reserve(id).is_err() {
-                    return Err(InterruptError::InvalidInterruptId); // taken
+                    return Err(InterruptError::LpiAlreadyUsed);
                 }
                 id
             }
-            None => alloc.alloc().ok_or(InterruptError::InvalidInterruptId)?,
+            None => alloc.alloc().ok_or(InterruptError::NoAvailableLpi)?,
         };
 
         let icid = cpu.to_u32();
