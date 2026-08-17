@@ -397,18 +397,21 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
                 None => break,
             };
 
-            let gicr_regs = gicr_frame.reg;
-
-            let last = gicr_regs
-                .type_
-                .read_field_pure(GicrTyper::LastRedistributor);
+            let gicr_phys = gicr_frame.reg as *const GicrRegisters as usize;
 
             gic_resources.push(Resource::Mmio {
-                range: (gicr_regs as *const GicrRegisters as usize)
-                    ..(gicr_regs as *const GicrRegisters as usize + size_of::<GicrRegisters>()),
+                range: gicr_phys..(gicr_phys + size_of::<GicrRegisters>()),
             });
 
             redistributor_count += 1;
+
+            let gicr_dmap = KernelAddressTranslator.phys_to_dmap(gicr_phys) as *const GicrRegisters;
+
+            let last = unsafe {
+                (*gicr_dmap)
+                    .type_
+                    .read_field_pure(GicrTyper::LastRedistributor)
+            };
 
             if last {
                 break;

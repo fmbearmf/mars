@@ -260,6 +260,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
 
         build_cmd(cmd_words);
 
+        unsafe { clean_dcache_range(ptr as *const u8, 32) };
         dsb(barrier::ISHST);
 
         queue.write_offset = next_write_offset;
@@ -448,6 +449,9 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
                     assert!(!ptr.is_null());
                     let phys = KernelAddressTranslator.dmap_to_phys(ptr as _) as u64;
 
+                    unsafe { clean_dcache_range(ptr, pages * ITS_PAGE_SIZE) };
+                    dsb(barrier::ISH);
+
                     let builder = baser
                         .builder_pure()
                         .set(GitsBaser::PageSize, 0)
@@ -469,6 +473,9 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
             let cmd_ptr = unsafe { alloc::alloc::alloc_zeroed(cmd_layout) };
             assert!(!cmd_ptr.is_null());
             let cmd_phys = KernelAddressTranslator.dmap_to_phys(cmd_ptr as _) as u64;
+
+            unsafe { clean_dcache_range(cmd_ptr, cmd_pages * ITS_PAGE_SIZE) };
+            dsb(barrier::ISH);
 
             let builder = its
                 .cbaser
@@ -538,7 +545,11 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
                     let prop_phys = KernelAddressTranslator.dmap_to_phys(prop_ptr as _) as u64;
                     *self.lpi_prop_table.borrow_mut() = Some(prop_phys);
 
-                    unsafe { core::ptr::write_bytes(prop_ptr, 0xA0, prop_pages * ITS_PAGE_SIZE) };
+                    unsafe {
+                        core::ptr::write_bytes(prop_ptr, 0xA0, prop_pages * ITS_PAGE_SIZE);
+                        clean_dcache_range(prop_ptr, prop_pages * ITS_PAGE_SIZE);
+                    };
+                    dsb(barrier::ISH);
 
                     self.init_its();
                 }
@@ -584,6 +595,9 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
                     .expect("invalid size/align passed to `from_size_align`");
             let pend_ptr = unsafe { alloc::alloc::alloc_zeroed(pend_layout) };
             let pend_phys = KernelAddressTranslator.dmap_to_phys(pend_ptr as _) as u64;
+
+            unsafe { clean_dcache_range(pend_ptr, 16 * ITS_PAGE_SIZE) };
+            dsb(barrier::ISH);
 
             let prop_phys = self.lpi_prop_table.borrow().unwrap();
 
@@ -777,6 +791,9 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
         let itt_ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
         let itt_non_null = NonNull::new(itt_ptr).ok_or(InterruptError::NotSupported)?;
         let itt_phys = KernelAddressTranslator.dmap_to_phys(itt_ptr as _) as u64;
+
+        unsafe { clean_dcache_range(itt_ptr, itt_size) };
+        dsb(barrier::ISH);
 
         self.push_mapd(device_id, itt_phys, num_events_log2, true)?;
 
