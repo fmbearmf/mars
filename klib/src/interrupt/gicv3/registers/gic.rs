@@ -746,3 +746,14 @@ declare_register!(
         );
     }
 );
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    ItsInvWord1, u64, {
+        field EventId => (
+            offset: 0,
+            size: 32,
+            type: u32
+        );
+    }
+);

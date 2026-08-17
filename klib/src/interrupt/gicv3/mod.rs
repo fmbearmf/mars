@@ -34,8 +34,9 @@ use crate::{
             lpi_alloc::LpiAllocator,
             registers::gic::{
                 GicBitfield64, GicrPropBar, GicrTyper, GitsBaser, GitsCbasER, GitsCreadr, GitsCtlr,
-                GitsCwriter, GitsTyper, ItsCmdWord0, ItsDiscardWord1, ItsInvallWord2, ItsMapcWord2,
-                ItsMapdWord1, ItsMapdWord2, ItsMaptiWord1, ItsMaptiWord2, ItsSyncWord2, LpiProp,
+                GitsCwriter, GitsTyper, ItsCmdWord0, ItsDiscardWord1, ItsInvWord1, ItsInvallWord2,
+                ItsMapcWord2, ItsMapdWord1, ItsMapdWord2, ItsMaptiWord1, ItsMaptiWord2,
+                ItsSyncWord2, LpiProp,
             },
         },
     },
@@ -105,6 +106,7 @@ pub struct GicV3<'a, I: InterruptInterface + Send + Sync> {
     lpi_prop_table: AtomicRefCell<Option<u64>>,
 
     lpi_alloc: FairSpinlock<LpiAllocator>,
+    lpi_to_event: FairSpinlock<BTreeMap<u32, (u32, u32, u32)>>,
     event_mappings: FairSpinlock<BTreeMap<(u32, u32), u32>>,
 }
 
@@ -135,6 +137,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
             lpi_prop_table: AtomicRefCell::new(None),
 
             lpi_alloc: FairSpinlock::new(LpiAllocator::new(LPI_START, MAX_LPI_ID)),
+            lpi_to_event: FairSpinlock::new(BTreeMap::new()),
             event_mappings: FairSpinlock::new(BTreeMap::new()),
         }
     }
@@ -206,10 +209,12 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
             dsb(barrier::ISH);
 
             if self.its.is_some() {
-                for (i, _) in self.redistributors.iter().enumerate() {
-                    self.push_invall(i as u32)?;
-                    if let Some(rdbase) = self.rdbase_for_redist(i) {
-                        self.push_sync(rdbase)?
+                let mapping = self.lpi_to_event.lock().get(&int_id).copied();
+                if let Some((device_id, event_id, icid)) = mapping {
+                    self.push_inv(device_id, event_id)?;
+
+                    if let Some(rdbase) = self.rdbase_for_redist(icid as usize) {
+                        self.push_sync(rdbase)?;
                     }
                 }
             }
@@ -405,6 +410,22 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
             w0.modify_field(ItsCmdWord0::Cmd, 0x0F);
             w0.modify_field(ItsCmdWord0::DeviceId, device_id);
             w1.modify_field(ItsDiscardWord1::EventId, event_id);
+        })
+    }
+
+    fn push_inv(&self, device_id: u32, event_id: u32) -> Result<()> {
+        self.push_cmd(|words| {
+            let w0 = unsafe {
+                &mut *(words.as_mut_ptr().add(0) as *mut RPureReadWrite<u64, ItsCmdWord0>)
+            };
+
+            let w1 = unsafe {
+                &mut *(words.as_mut_ptr().add(1) as *mut RPureReadWrite<u64, ItsInvWord1>)
+            };
+
+            w0.modify_field(ItsCmdWord0::Cmd, 0x0C);
+            w0.modify_field(ItsCmdWord0::DeviceId, device_id);
+            w1.modify_field(ItsInvWord1::EventId, event_id);
         })
     }
 
@@ -809,6 +830,10 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
             self.event_mappings
                 .lock()
                 .insert((device_id, event_id), lpi);
+
+            self.lpi_to_event
+                .lock()
+                .insert(lpi, (device_id, event_id, icid));
         } else {
             alloc.free(lpi);
             return Err(InterruptError::MsiNotSupported);
@@ -832,6 +857,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
 
         let lpi = self.event_mappings.lock().remove(&(device_id, event_id));
         if let Some(lpi) = lpi {
+            self.lpi_to_event.lock().remove(&lpi);
             self.lpi_alloc.lock().free(lpi);
             self.lpi_handlers.write().remove(&lpi);
         }
@@ -850,5 +876,13 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
         }
 
         Ok(())
+    }
+
+    fn msi_get_doorbell(&self) -> Result<u64> {
+        let its = self.its_ref().ok_or(InterruptError::MsiNotSupported)?;
+
+        let ptr = &its.translator as *const _;
+
+        Ok(KernelAddressTranslator.dmap_to_phys(ptr as _) as u64)
     }
 }

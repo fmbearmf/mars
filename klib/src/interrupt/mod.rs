@@ -77,6 +77,9 @@ pub trait InterruptController: Send + Sync {
 
     /// invalidate all MSIs targetting a specific CPU.
     fn msi_invall(&self, cpu: CpuIdLogical) -> Result<()>;
+
+    /// physical address of the MSI doorbell
+    fn msi_get_doorbell(&self) -> Result<u64>;
 }
 
 /// abstract interface
