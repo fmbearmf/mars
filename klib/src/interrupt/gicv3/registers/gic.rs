@@ -337,7 +337,7 @@ declare_register!(
             type: u8,
         );
         /// address of LPI config table.
-        field Address => (
+        field PhysicalAddress => (
             offset: 12,
             size: 40,
             type: u64,
@@ -355,6 +355,394 @@ declare_register!(
             offset: 56,
             size: 3,
             type: u8,
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    /// ITS Control
+    GitsCtlr, u32, {
+        /// global enable for ITS
+        field Enabled => (
+            offset: 0,
+            size: 1,
+            type: bool,
+        );
+        /// whether the ITS is "quiescent" (no pending cmds)
+        /// RO
+        field Quiescent => (
+            offset: 31,
+            size: 1,
+            type: bool,
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    /// ITS type register
+    GitsTyper, u64, {
+        /// physical LPIs are supported
+        field PhysicalLpiCapable => (
+            offset: 0,
+            size: 1,
+            type: bool,
+        );
+        /// ITT entry size, minus 1
+        field ITTEntrySize => (
+            offset: 4,
+            size: 4,
+            type: u8,
+        );
+        /// number of EventID bits supported, minus 1
+        field IDbits => (
+            offset: 8,
+            size: 5,
+            type: u8,
+        );
+        /// number of DeviceId bits supported, minus 1
+        field Devbits => (
+            offset: 13,
+            size: 5,
+            type: u8,
+        );
+        /// physical target addr format.
+        /// 0 = GICR_TYPER processor number, 1 = target distributor physical address
+        field PTA => (
+            offset: 19,
+            size: 1,
+            type: bool,
+        );
+        /// number of interrupt collections supported by ITS without external memory
+        field HCC => (
+            offset: 24,
+            size: 8,
+            type: u8,
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    /// ITS cmd queue BAR and size
+    GitsCbasER, u64, {
+        /// size of the command queue in 4k pages, minus 1
+        field Size => (
+            offset: 0,
+            size: 8,
+            type: u8,
+        );
+        /// shareability attribute of the cmd queue memory
+        /// 0 = non-shareable, 1 = inner, 2 = outer, 3 = inner + outer
+        field Shareability => (
+            offset: 10,
+            size: 2,
+            type: u8,
+        );
+        /// physical addr of the command queue. must be 4k aligned
+        field PhysicalAddress => (
+            offset: 12,
+            size: 40,
+            type: u64,
+        );
+        field OuterCacheability => (
+            offset: 53,
+            size: 3,
+            type: u8
+        );
+        field InnerCacheability => (
+            offset: 59,
+            size: 3,
+            type: u8
+        );
+        /// the valid bit for the command queue
+        field Valid => (
+            offset: 63,
+            size: 1,
+            type: bool
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    /// ITS cmd queue write pointer
+    GitsCwriter, u64, {
+        /// offset from the command queue base to the next command to write.
+        field Offset => (
+            offset: 5,
+            size: 15,
+            type: u16,
+        );
+        /// retry flag (if STALLED set by hardware; otherwise no effect)
+        field Retry => (
+            offset: 0,
+            size: 1,
+            type: bool,
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    /// ITS cmd queue read pointer
+    GitsCreadr, u64, {
+        /// offset from the command queue base to the next command to be read by hardware
+        field Offset => (
+            offset: 5,
+            size: 15,
+            type: u16,
+        );
+        /// if the ITS is stalled (e.g. cmd sync failure)
+        field Stalled => (
+            offset: 0,
+            size: 1,
+            type: bool,
+        );
+    }
+);
+
+#[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GitsBaserType {
+    #[default]
+    Unallocated = 0b000,
+    Device = 0b001,
+    Vpe = 0b010,
+    Collection = 0b100,
+}
+
+pub struct GitsBaserTypeValue(pub GitsBaserType);
+
+impl<
+    T: RegisterValue
+        + Shr<usize, Output = T>
+        + Shl<usize, Output = T>
+        + BitAnd<Output = T>
+        + BitOrAssign
+        + PartialEq,
+> FieldType<T> for GitsBaserTypeValue
+{
+    fn from_bits(bits: T) -> Self {
+        let t = match bits {
+            x if x == T::from(0b001) => GitsBaserType::Device,
+            x if x == T::from(0b010) => GitsBaserType::Vpe,
+            x if x == T::from(0b100) => GitsBaserType::Collection,
+            _ => GitsBaserType::Unallocated,
+        };
+        GitsBaserTypeValue(t)
+    }
+
+    fn into_bits(self) -> T {
+        let val = match self.0 {
+            GitsBaserType::Device => 0b001,
+            GitsBaserType::Vpe => 0b010,
+            GitsBaserType::Collection => 0b100,
+            GitsBaserType::Unallocated => 0b000,
+        };
+        T::from(val)
+    }
+}
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    /// ITS table BAR (GITS_BASER<0..8>)
+    GitsBaser, u64, {
+        /// pages allocated to the table, minus 1
+        field Size => (
+            offset: 0,
+            size: 8,
+            type: u8
+        );
+        /// page size of the table.
+        /// 0 = 4k, 1 = 16k, 2 = 64k
+        field PageSize => (
+            offset: 8,
+            size: 2,
+            type: u8
+        );
+        /// 0 = non-shareable, 1 = inner, 2 = outer
+        field Shareability => (
+            offset: 10,
+            size: 2,
+            type: u8
+        );
+        /// physical address of the table, aligned to table page size
+        field PhysicalAddress => (
+            offset: 12,
+            size: 36,
+            type: u64
+        );
+        field OuterCacheability => (
+            offset: 53,
+            size: 3,
+            type: u8
+        );
+        /// 1 = devices, 2 = vPEs, 4 = collections
+        field Type => (
+            offset: 56,
+            size: 3,
+            type: u8
+        );
+        field InnerCacheability => (
+            offset: 59,
+            size: 3,
+            type: u8
+        );
+        /// whether a single flat table is used, or a 2-level table (where the 1st level has a list of descriptors)
+        /// 0 = single. `Size` = number of pages used by ITS to store data associated with each table entry.
+        /// 1 = 2-level. `Size` = number of pages which have an array of 64-bit descriptors to pages that are used to store the data associated with each table entry.
+        field Indirect => (
+            offset: 62,
+            size: 1,
+            type: bool
+        );
+        /// 0 = no memory is allocated for the table.
+        /// 1 = memory is allocated for the table.
+        field Valid => (
+            offset: 63,
+            size: 1,
+            type: bool
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    LpiProp, u8, {
+        field Enabled => (
+            offset: 0,
+            size: 1,
+            type: bool
+        );
+        field Priority => (
+            offset: 2,
+            size: 6,
+            type: u8
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    ItsCmdWord0, u64, {
+        field Cmd => (
+            offset: 0,
+            size: 8,
+            type: u8
+        );
+        field DeviceId => (
+            offset: 32,
+            size: 32,
+            type: u32
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    ItsMapdWord1, u64, {
+        field Size => (
+            offset: 0,
+            size: 5,
+            type: u8
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    ItsMapdWord2, u64, {
+        field IttAddr => (
+            offset: 8,
+            size: 44,
+            type: u64
+        );
+        field Valid => (
+            offset: 63,
+            size: 1,
+            type: bool
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    ItsMapcWord2, u64, {
+        field Icid => (
+            offset: 0,
+            size: 16,
+            type: u16
+        );
+        field RdBase => (
+            offset: 16,
+            size: 36,
+            type: u64
+        );
+        field Valid => (
+            offset: 63,
+            size: 1,
+            type: bool
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    ItsMaptiWord1, u64, {
+        field EventId => (
+            offset: 0,
+            size: 32,
+            type: u32
+        );
+        field pIntId => (
+            offset: 32,
+            size: 32,
+            type: u32
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    ItsMaptiWord2, u64, {
+        field Icid => (
+            offset: 0,
+            size: 16,
+            type: u16
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    ItsInvallWord2, u64, {
+        field Icid => (
+            offset: 0,
+            size: 16,
+            type: u16
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    ItsSyncWord2, u64, {
+        field RdBase => (
+            offset: 16,
+            size: 36,
+            type: u64
+        );
+    }
+);
+
+declare_register!(
+    #[derive(Immutable, FromBytes, IntoBytes, KnownLayout)]
+    ItsDiscardWord1, u64, {
+        field EventId => (
+            offset: 0,
+            size: 32,
+            type: u32
         );
     }
 );

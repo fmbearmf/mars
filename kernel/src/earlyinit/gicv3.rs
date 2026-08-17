@@ -3,12 +3,13 @@ use core::{range::Range, sync::atomic::AtomicPtr};
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{boxed::Box, vec::Vec};
 use klib::{
+    allocator_support::KernelAddressTranslator,
     cpu_interface::Arm64InterruptInterface,
     hardware::{
         device::{DeviceClass, DeviceNode, IrqFn},
         resource::Resource,
     },
-    interrupt::{GicdRegisters, GicrRegisters, gicv3::GicV3},
+    interrupt::{GicdRegisters, GicrRegisters, GitsRegisters, gicv3::GicV3},
     pm::page::mapper::AddressTranslator,
     this_cpu,
     vm::MAIR_DEVICE_INDEX,
@@ -17,7 +18,6 @@ use zerocopy::FromBytes;
 
 use crate::{
     KERNEL_ADDRESS_SPACE,
-    allocator::KernelAddressTranslator,
     interrupt::{get_interrupt_controller, set_interrupt_controller},
 };
 
@@ -126,9 +126,39 @@ pub fn handle(node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
         })
         .collect();
 
+    let mut itses: Vec<&mut GitsRegisters> = node
+        .resources
+        .iter()
+        .skip(1 + redistributor_count as usize)
+        .filter_map(|res| match res {
+            Resource::Mmio { range } => {
+                let size = range.end - range.start;
+                let virt_start = KernelAddressTranslator.phys_to_dmap(range.start) as *mut u8;
+                let mut cursor = KERNEL_ADDRESS_SPACE.lock(Range::from(
+                    (virt_start as usize)..(virt_start as usize + size),
+                ));
+                cursor.map(
+                    range.start as _,
+                    AccessPermission::PrivilegedReadWrite,
+                    Shareability::OuterShareable,
+                    true,
+                    true,
+                    MAIR_DEVICE_INDEX,
+                );
+
+                let slice = unsafe { core::slice::from_raw_parts_mut(virt_start, size) };
+                GitsRegisters::mut_from_bytes(slice).ok()
+            }
+            _ => None,
+        })
+        .collect();
+
+    let its = itses.into_iter().next();
+
     let gicv3: Box<GicV3<'_, Arm64InterruptInterface>> = Box::new(GicV3::new(
         distributor,
         redistributors,
+        its,
         Arm64InterruptInterface,
     ));
 

@@ -10,31 +10,26 @@ mod interrupt;
 mod log;
 mod lut;
 
-use ::log::{debug, trace};
 use aarch64_cpu::asm::wfe;
 use atomic_refcell::AtomicRefCell;
 use core::{
     arch::{asm, naked_asm},
-    mem::MaybeUninit,
     panic::PanicInfo,
 };
 use klib::{
-    bytes_to_human_readable,
+    allocator_support::KernelAddressTranslator,
+    cpu_interface::{CpuIdLogical, CpuTopologyId},
     hardware::device::DeviceTree,
     pm::page::PageAllocator,
     register_drivers,
-    scheduler::Scheduler,
     vm::{slab::SlabAllocator, user::address_space::AddressSpace},
 };
 use protocol::BootInfo;
 
-use crate::{
-    allocator::KernelAddressTranslator,
-    earlyinit::{
-        idle::idle_init,
-        mmu::init_cpu,
-        platform::{BootInfoInitToken, uefi_arm64_bootstrap},
-    },
+use crate::earlyinit::{
+    idle::idle_init,
+    mmu::init_cpu,
+    platform::{BootInfoInitToken, uefi_arm64_bootstrap},
 };
 
 use self::{
@@ -66,8 +61,9 @@ static KERNEL_ADDRESS_SPACE: AddressSpace = unsafe {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     unsafe {
+        let core = CpuTopologyId::current();
         EARLYCON.steal();
-        earlycon_writeln!("{}", info);
+        earlycon_writeln!("CPU MPIDR={} PANIC: {}", core, info);
     }
     busy_loop()
 }

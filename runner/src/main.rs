@@ -68,7 +68,7 @@ fn main() -> Result<()> {
     let qemu_status = Command::new("qemu-system-aarch64")
         .args([
             "-M",
-            "virt,gic-version=3",
+            "virt,gic-version=3,its=on",
             "-accel",
             "tcg",
             "-cpu",
@@ -101,6 +101,8 @@ fn main() -> Result<()> {
             //"timestamp=on",
             //"-S",
             "-s",
+            //"-trace",
+            //"events=trace-events.txt,file=gicv3_events.log",
         ])
         .status()
         .context("QEMU failed.")?;

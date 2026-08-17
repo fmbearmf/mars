@@ -1,21 +1,18 @@
 use mars_models::memory::registers::volatile::{
-    PureReadable, RPureReadOnly, RPureReadPureWrite, RPureReadWrite, RWriteOnly, Writeable,
+    RPureReadOnly, RPureReadPureWrite, RPureReadWrite, RWriteOnly,
 };
 
 use mars_models::declare_structs;
-use tock_registers::{
-    register_structs,
-    registers::{ReadOnly, ReadWrite},
-};
 use zerocopy::*;
 
 pub mod gicv3;
 
 use gicv3::registers::gic::{
     GicBitfield32, GicBitfield64, GicIcfgr, GicdCtlr, GicdTyper, GicrCtlr, GicrPropBar, GicrTyper,
-    GicrWaker,
+    GicrWaker, GitsBaser, GitsCbasER, GitsCreadr, GitsCtlr, GitsCwriter, GitsTyper,
 };
 
+use crate::cpu_interface::CpuIdLogical;
 use crate::interrupt::gicv3::IrqHandler;
 use crate::interrupt::gicv3::registers::gic::GicBitfield8;
 
@@ -23,6 +20,8 @@ use crate::interrupt::gicv3::registers::gic::GicBitfield8;
 pub enum InterruptError {
     InvalidInterruptId,
     NotSupported,
+    /// specifically for an interrupt controller without MSI support
+    MsiNotSupported,
     HandlerNotFound,
 }
 
@@ -56,6 +55,28 @@ pub trait InterruptController: Send + Sync {
 
     /// register an interrupt hander
     fn register_handler(&self, int_id: u32, handler: IrqHandler) -> Result<()>;
+
+    /// allocate a device entry
+    fn msi_register_device(&self, device_id: u32, num_events_log2: u32) -> Result<()>;
+
+    /// tears down a device entry
+    fn msi_unregister_device(&self, device_id: u32) -> Result<()>;
+
+    /// map a DeviceID + EventID to an MSI on a specific CPU
+    /// if `lpi_id` is None, one is allocated automatically.
+    fn msi_map_event(
+        &self,
+        device_id: u32,
+        event_id: u32,
+        lpi_id: Option<u32>,
+        cpu: CpuIdLogical,
+    ) -> Result<u32>;
+
+    /// unmap an EventID
+    fn msi_unmap_event(&self, device_id: u32, event_id: u32) -> Result<()>;
+
+    /// invalidate all MSIs targetting a specific CPU.
+    fn msi_invall(&self, cpu: CpuIdLogical) -> Result<()>;
 }
 
 /// abstract interface
@@ -122,5 +143,32 @@ declare_structs!(
         (0x10C04 => icfg1: RPureReadWrite<u32, GicIcfgr>),
         (0x10D00 => igroup_mod: RPureReadWrite<u32, GicBitfield32>),
         (0x20000 => @END)
+    }
+);
+
+declare_structs!(
+    #[derive(KnownLayout, FromBytes, IntoBytes)]
+    pub GitsRegisters {
+        /// control
+        (0x0_0000 => pub ctl: RPureReadPureWrite<u32, GitsCtlr>),
+        /// implementer ID
+        (0x0_0004 => pub iidr: RPureReadOnly<u32, GicBitfield32>),
+        /// type
+        (0x0_0008 => pub type_: RPureReadOnly<u64, GitsTyper>),
+
+        /// cmd queue BAR
+        (0x0_0080 => pub cbaser: RPureReadPureWrite<u64, GitsCbasER>),
+        /// cmd queue write ptr
+        (0x0_0088 => pub cwriter: RPureReadPureWrite<u64, GitsCwriter>),
+        /// cmd queue read ptr
+        (0x0_0090 => pub creadr: RPureReadOnly<u64, GitsCreadr>),
+
+        /// table base registers
+        (0x0_0100 => pub baser: [RPureReadPureWrite<u64, GitsBaser>; 8]),
+
+        (0x1_0040 => pub translator: RWriteOnly<u32, GicBitfield32>),
+
+        // end of the two 64k frames (ctrl + translation)
+        (0x2_0000 => @END)
     }
 );

@@ -5,6 +5,7 @@ use aarch64_cpu::registers::{
 };
 use alloc::boxed::Box;
 use klib::{
+    allocator_support::KernelAddressTranslator,
     cache::clean_dcache_range,
     cpu_interface::{CpuIdLogical, CpuTopologyId},
     guard::InterruptGuard,
@@ -18,7 +19,6 @@ use klib::{
 
 use crate::{
     DEVICE_TREE,
-    allocator::KernelAddressTranslator,
     earlyinit::{
         idle::idle_init,
         platform::{DISABLE_IRQ, ENABLE_IRQ, filter_fundamental, filter_others},

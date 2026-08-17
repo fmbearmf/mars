@@ -5,10 +5,7 @@ use core::{
     slice::{self, Iter},
 };
 
-use crate::{
-    KALLOCATOR, KSTACK, allocator::KernelAddressTranslator, busy_loop_ret, earlycon_writeln,
-    earlycon_writeln_debug,
-};
+use crate::{KALLOCATOR, KSTACK, busy_loop_ret, earlycon_writeln, earlycon_writeln_debug};
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
     registers::{TTBR1_EL1, Writeable},
@@ -19,6 +16,7 @@ use aarch64_cpu_ext::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use klib::{
+    allocator_support::KernelAddressTranslator,
     pm::page::{
         PageAllocator,
         mapper::{AddressTranslator, TableAllocator, clone_page_tables, map_page},

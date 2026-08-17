@@ -10,3 +10,5 @@ result-*
 *.fst
 **/.depend
 **/hax.fst.config.json
+*.patch
+trace-events.txt

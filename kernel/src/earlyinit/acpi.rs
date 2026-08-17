@@ -4,12 +4,13 @@ use aarch64_cpu::registers::{MPIDR_EL1, Readable};
 use alloc::{format, string::String, vec, vec::Vec};
 use atomic_refcell::AtomicRefMut;
 use klib::{
+    allocator_support::KernelAddressTranslator,
     cpu_interface::CpuTopologyId,
     hardware::{
         device::{DeviceClass, DeviceInitPriority, DeviceTree},
         resource::Resource,
     },
-    interrupt::{GicdRegisters, GicrRegisters, gicv3::registers::gic::GicrTyper},
+    interrupt::{GicdRegisters, GicrRegisters, GitsRegisters, gicv3::registers::gic::GicrTyper},
     per_cpu::PerCpu,
     pm::page::mapper::AddressTranslator,
     smccc::USE_HVC,
@@ -22,7 +23,7 @@ use mars_acpi_driver::acpi::{
     fadt::Fadt,
     gtdt::Gtdt,
     header::SdtHeader,
-    madt::{GicCpuInterface, GicDistributor, GicRedistributor, Madt, MadtIter},
+    madt::{GicCpuInterface, GicDistributor, GicIts, GicRedistributor, Madt, MadtIter},
     xsdp::{Xsdp, XsdtIter},
 };
 use mars_models::memory::registers::volatile::PureReadable;
@@ -30,7 +31,7 @@ use uefi::table::cfg::ConfigTableEntry;
 use uefi_raw::table::{configuration::ConfigurationTable, system::SystemTable};
 use zerocopy::FromBytes;
 
-use crate::{DEVICE_TREE, allocator::KernelAddressTranslator, earlyinit::platform::BootInfoToken};
+use crate::{DEVICE_TREE, earlyinit::platform::BootInfoToken};
 
 fn config_table(st: NonNull<SystemTable>) -> &'static [ConfigTableEntry] {
     let st = KernelAddressTranslator.phys_to_dmap(st.as_ptr() as _) as *const SystemTable;
@@ -362,62 +363,69 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
 
     gic_resources.push(Resource::Mmio { range: gicd_range });
 
-    for (entry_type, slice) in madt() {
-        match entry_type {
-            0xB => {
-                // GICC
-                let gicc: &GicCpuInterface = GicCpuInterface::ref_from_bytes(slice)
-                    .expect("MADT GIC CPU Interface entry contained wrong bytes for a GICC");
+    for (_, slice) in madt().filter(|(entry_type, _)| matches!(entry_type, 0xB)) {
+        // GICC
+        let gicc: &GicCpuInterface = GicCpuInterface::ref_from_bytes(slice)
+            .expect("MADT GIC CPU Interface entry contained wrong bytes for a GICC");
 
-                let cpu_id = CpuTopologyId::from_mpidr(gicc.mpidr());
+        let cpu_id = CpuTopologyId::from_mpidr(gicc.mpidr());
 
-                dt.add_device(
-                    None,
-                    DeviceClass::Cpu {
-                        id: cpu_id,
-                        acpi_uid: gicc.acpi_cpu_uid(),
-                    },
-                    Vec::new(),
-                    Vec::new(),
-                    DeviceInitPriority::Fundamental,
-                );
+        dt.add_device(
+            None,
+            DeviceClass::Cpu {
+                id: cpu_id,
+                acpi_uid: gicc.acpi_cpu_uid(),
+            },
+            Vec::new(),
+            Vec::new(),
+            DeviceInitPriority::Fundamental,
+        );
+    }
+
+    for (_, slice) in madt().filter(|(entry_type, _)| matches!(entry_type, 0xE)) {
+        // GICR
+        let gicr_handle: &GicRedistributor = GicRedistributor::ref_from_bytes(slice)
+            .expect("MADT GIC Redistributor entry contained wrong bytes");
+
+        let gicr_block = gicr_handle
+            .frames()
+            .expect("MADT GIC Redistributor entry contained invalid GICR block");
+
+        for i in 0..gicr_block.len() {
+            let gicr_frame = match gicr_block.get(i) {
+                Some(f) => f,
+                None => break,
+            };
+
+            let gicr_regs = gicr_frame.reg;
+
+            let last = gicr_regs
+                .type_
+                .read_field_pure(GicrTyper::LastRedistributor);
+
+            gic_resources.push(Resource::Mmio {
+                range: (gicr_regs as *const GicrRegisters as usize)
+                    ..(gicr_regs as *const GicrRegisters as usize + size_of::<GicrRegisters>()),
+            });
+
+            redistributor_count += 1;
+
+            if last {
+                break;
             }
-            0xC => {} // GICD
-            0xE => {
-                // GICR
-                let gicr_handle: &GicRedistributor = GicRedistributor::ref_from_bytes(slice)
-                    .expect("MADT GIC Redistributor entry contained wrong bytes");
+        }
+    }
 
-                let gicr_block = gicr_handle
-                    .frames()
-                    .expect("MADT GIC Redistributor entry contained invalid GICR block");
+    for (_, slice) in madt().filter(|(entry_type, _)| matches!(entry_type, 0xF)) {
+        // ITS
+        let gic_its =
+            GicIts::ref_from_bytes(slice).expect("MADT GIC ITS entry contained wrong bytes");
 
-                for i in 0..gicr_block.len() {
-                    let gicr_frame = match gicr_block.get(i) {
-                        Some(f) => f,
-                        None => break,
-                    };
-
-                    let gicr_regs = gicr_frame.reg;
-
-                    let last = gicr_regs
-                        .type_
-                        .read_field_pure(GicrTyper::LastRedistributor);
-
-                    gic_resources.push(Resource::Mmio {
-                        range: (gicr_regs as *const GicrRegisters as usize)
-                            ..(gicr_regs as *const GicrRegisters as usize
-                                + size_of::<GicrRegisters>()),
-                    });
-
-                    redistributor_count += 1;
-
-                    if last {
-                        break;
-                    }
-                }
-            }
-            _ => trace!("   unrecognized madt subtable type: {:x}", entry_type),
+        let base = gic_its.phys_base();
+        if base != 0 {
+            gic_resources.push(Resource::Mmio {
+                range: (base as usize)..(base as usize + size_of::<GitsRegisters>()),
+            })
         }
     }
 

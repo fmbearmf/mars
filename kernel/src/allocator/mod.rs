@@ -8,9 +8,6 @@ use super::KALLOCATOR;
 #[derive(Debug)]
 pub struct KernelPTAllocator;
 
-#[derive(Debug)]
-pub struct KernelAddressTranslator;
-
 impl TableAllocator for KernelPTAllocator {
     fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>> {
         unsafe {
@@ -26,14 +23,5 @@ impl TableAllocator for KernelPTAllocator {
     fn free_table(&self, table: NonNull<TTable<TABLE_ENTRIES>>) {
         let va = table.as_ptr() as usize;
         KALLOCATOR.free_page(va);
-    }
-}
-
-impl AT for KernelAddressTranslator {
-    fn dmap_to_phys(&self, virt: *mut u8) -> usize {
-        dmap_addr_to_phys(virt as _) as _
-    }
-    fn phys_to_dmap(&self, phys: usize) -> *mut u8 {
-        phys_addr_to_dmap(phys as _) as _
     }
 }

@@ -4,7 +4,6 @@ use core::{
     mem, ptr,
     sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
 };
-use log::trace;
 
 use derivative::Derivative;
 
@@ -234,14 +233,23 @@ impl<'a> SlabAllocator<'a> {
 
             let order = req_pages.next_power_of_two().trailing_zeros() as usize;
 
-            if layout.align() <= PAGE_SIZE {
+            let need_backing_ptr = layout.align() > PAGE_SIZE;
+
+            if !need_backing_ptr {
+                let req_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+                let order = req_pages.next_power_of_two().trailing_zeros() as usize;
+
                 page_alloc.alloc_pages(order)
             } else {
                 let align = layout.align();
-                let ptr = page_alloc.alloc_pages(order + 1);
+                let total_bytes = size + align + mem::size_of::<usize>();
+                let req_pages = (total_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+                let order = req_pages.next_power_of_two().trailing_zeros() as usize;
+
+                let ptr = page_alloc.alloc_pages(order);
                 if ptr.is_null() {
                     return ptr::null_mut();
-                };
+                }
 
                 let aligned = align_up(ptr as usize + mem::size_of::<usize>(), align);
                 unsafe { (aligned as *mut usize).sub(1).write(ptr as usize) };
@@ -266,7 +274,7 @@ impl<'a> SlabAllocator<'a> {
         let page_alloc = self.page_alloc();
         let size = layout.size().max(layout.align());
 
-        if size > 2048 {
+        if size_class_index(size).is_none() {
             if layout.align() <= PAGE_SIZE {
                 page_alloc.free_pages(ptr);
             } else {
@@ -332,6 +340,10 @@ impl<'a> SlabAllocator<'a> {
             "`transition_dmap` called twice"
         );
 
+        let old_pa = self.page_alloc.load(Ordering::Acquire);
+        let new_pa = self.translator.phys_to_dmap(old_pa as _) as *mut PageAllocator<'static>;
+        self.page_alloc.store(new_pa, Ordering::Release);
+
         unsafe { self.page_alloc_mut().transition_dmap() };
 
         // null ptrs need to stay null
@@ -343,28 +355,26 @@ impl<'a> SlabAllocator<'a> {
             }
         };
 
-        let old_pa = self.page_alloc.load(Ordering::Acquire);
-        let new_pa = self.translator.phys_to_dmap(old_pa as _) as *mut PageAllocator<'static>;
-        self.page_alloc.store(new_pa, Ordering::Release);
-
         let caches = unsafe { &mut *self.caches.get() };
         for cache in caches.iter_mut() {
+            let mut current_hdr_phys = cache.plist;
             cache.plist = ptr_to_dmap(cache.plist as _) as *mut Header;
 
-            let mut current_hdr_ptr = cache.plist;
+            while !current_hdr_phys.is_null() {
+                let header_dmap = ptr_to_dmap(current_hdr_phys as _) as *mut Header;
+                let header = unsafe { &mut *header_dmap };
 
-            while !current_hdr_ptr.is_null() {
-                let header = unsafe { &mut *current_hdr_ptr };
+                let next_hdr_phys = header.next;
 
                 header.next = ptr_to_dmap(header.next as _) as *mut Header;
                 header.prev = ptr_to_dmap(header.prev as _) as *mut Header;
 
-                let old_free_list = header.free_list;
-                header.free_list = ptr_to_dmap(old_free_list as _);
+                let mut current_obj_phys = header.free_list;
+                header.free_list = ptr_to_dmap(header.free_list as _);
 
-                let mut current_obj = header.free_list;
-                while !current_obj.is_null() {
-                    let next_ptr = current_obj as *mut *mut u8;
+                while !current_obj_phys.is_null() {
+                    let current_obj_dmap = ptr_to_dmap(current_obj_phys as _);
+                    let next_ptr = current_obj_dmap as *mut *mut u8;
 
                     // the physical address of the next object
                     let phys_next = unsafe { *next_ptr };
@@ -372,10 +382,10 @@ impl<'a> SlabAllocator<'a> {
 
                     unsafe { *next_ptr = dmap_next };
 
-                    current_obj = dmap_next;
+                    current_obj_phys = phys_next;
                 }
 
-                current_hdr_ptr = header.next;
+                current_hdr_phys = next_hdr_phys;
             }
         }
 
@@ -429,6 +439,6 @@ unsafe impl GlobalAlloc for SlabAllocator<'_> {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         //let ptr = self.translator.dmap_to_phys(ptr as _) as *mut u8;
-        unsafe { self.free_impl(ptr, layout) }
+        unsafe { self.free_impl(ptr, layout) };
     }
 }

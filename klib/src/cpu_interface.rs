@@ -1,4 +1,8 @@
-use core::{arch::asm, fmt::Display, hash::BuildHasherDefault};
+use core::{
+    arch::asm,
+    fmt::{self, Display},
+    hash::BuildHasherDefault,
+};
 
 use aarch64_cpu::registers::{MPIDR_EL1, Readable, TPIDR_EL1};
 use alloc::vec::Vec;
@@ -104,6 +108,13 @@ impl InterruptInterface for Arm64InterruptInterface {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct CpuTopologyId(u32);
+
+impl fmt::Display for CpuTopologyId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (aff3, aff2, aff1, aff0) = mpidr_affinities(self.0);
+        f.write_fmt(format_args!("{}.{}.{}.{}", aff3, aff2, aff1, aff0))
+    }
+}
 
 impl CpuTopologyId {
     pub const fn new(affinities: u32) -> Self {
