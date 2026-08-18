@@ -6,7 +6,6 @@ extern crate alloc;
 
 mod allocator;
 mod earlyinit;
-mod interrupt;
 mod log;
 mod lut;
 

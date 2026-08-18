@@ -365,6 +365,7 @@ dependencies = [
  "mars-generic-timer-driver",
  "mars-models",
  "mars-models-zerocopy",
+ "mars-pcie-driver",
  "phf",
  "protocol",
  "tock-registers 0.10.1",
@@ -471,6 +472,16 @@ name = "mars-models-zerocopy-derive"
 version = "0.0.1"
 dependencies = [
  "hax-lib",
+]
+
+[[package]]
+name = "mars-pcie-driver"
+version = "0.0.1"
+dependencies = [
+ "klib",
+ "log",
+ "mars-models",
+ "mars-models-zerocopy",
 ]
 
 [[package]]

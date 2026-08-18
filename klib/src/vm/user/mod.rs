@@ -34,10 +34,15 @@ impl PageDescriptors {
 
         let descs = guard.as_ref().expect("`PageDescriptors` uninitialized");
 
-        assert!(
-            descs.1.contains(&pa),
-            "no page descriptor exists for requested address"
-        );
+        if !descs.1.contains(&pa) {
+            log::error!(
+                "get_page_descriptor failed for PA: {:#018x} (valid range: {:#018x}..{:#018x}",
+                pa,
+                descs.1.start,
+                descs.1.end
+            );
+            panic!("no page descriptor exists for required address");
+        }
 
         let pa = pa - descs.1.start;
 

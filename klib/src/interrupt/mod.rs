@@ -1,11 +1,12 @@
+pub mod gicv3;
+pub mod singleton;
+
 use mars_models::memory::registers::volatile::{
     RPureReadOnly, RPureReadPureWrite, RPureReadWrite, RWriteOnly,
 };
 
 use mars_models::declare_structs;
 use zerocopy::*;
-
-pub mod gicv3;
 
 use gicv3::registers::gic::{
     GicBitfield32, GicBitfield64, GicIcfgr, GicdCtlr, GicdTyper, GicrCtlr, GicrPropBar, GicrTyper,

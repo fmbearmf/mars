@@ -4,6 +4,7 @@ members = [ "bootloader",
             "kernel/drivers/acpi",
             "kernel/drivers/acpi-aml",
             "kernel/drivers/generic-timer",
+            "kernel/drivers/pcie",
             "klib",
             "klib/models",
             "klib/models/zerocopy",
@@ -42,6 +43,7 @@ protocol = { path = "./protocol" }
 mars-acpi-driver = { path = "./kernel/drivers/acpi" }
 mars-acpi-aml-driver = { path = "./kernel/drivers/acpi-aml" }
 mars-generic-timer-driver = { path = "./kernel/drivers/generic-timer" }
+mars-pcie-driver = { path = "./kernel/drivers/pcie" }
 
 # procedural
 syn = "2.0.117"
@@ -64,8 +66,8 @@ debug = true
 panic = "abort"
 
 [profile.dev.package."*"]
+debug = true
 opt-level = 3
-debug = 0
 
 [profile.test]
 panic = "abort"

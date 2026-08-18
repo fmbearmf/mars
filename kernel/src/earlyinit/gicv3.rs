@@ -9,17 +9,18 @@ use klib::{
         device::{DeviceClass, DeviceNode, IrqFn},
         resource::Resource,
     },
-    interrupt::{GicdRegisters, GicrRegisters, GitsRegisters, gicv3::GicV3},
+    interrupt::{
+        GicdRegisters, GicrRegisters, GitsRegisters,
+        gicv3::GicV3,
+        singleton::{get_interrupt_controller, set_interrupt_controller},
+    },
     pm::page::mapper::AddressTranslator,
     this_cpu,
     vm::MAIR_DEVICE_INDEX,
 };
 use zerocopy::FromBytes;
 
-use crate::{
-    KERNEL_ADDRESS_SPACE,
-    interrupt::{get_interrupt_controller, set_interrupt_controller},
-};
+use crate::KERNEL_ADDRESS_SPACE;
 
 pub fn secondary_handle(_node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
     use log::*;
@@ -162,7 +163,7 @@ pub fn handle(node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
         Arm64InterruptInterface,
     ));
 
-    trace!("set interrupt controller to GicV3");
+    debug!("set interrupt controller to GicV3");
 
     set_interrupt_controller(gicv3);
 

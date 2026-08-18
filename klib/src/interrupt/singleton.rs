@@ -4,7 +4,8 @@ use core::{
 };
 
 use alloc::boxed::Box;
-use klib::interrupt::InterruptController;
+
+use crate::interrupt::InterruptController;
 
 static mut INTERRUPT_CONTROLLER: MaybeUninit<Box<dyn InterruptController>> = MaybeUninit::uninit();
 static CONTROLLER_STATUS: AtomicBool = AtomicBool::new(false);

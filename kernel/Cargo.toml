@@ -25,6 +25,7 @@ klib.workspace = true
 uefi = { workspace = true, default-features = false }
 uefi-raw.workspace = true
 log.workspace = true
+mars-pcie-driver.workspace = true
 mars-acpi-driver.workspace = true
 mars-acpi-aml-driver.workspace = true
 mars-generic-timer-driver.workspace = true

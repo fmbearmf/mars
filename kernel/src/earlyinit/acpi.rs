@@ -1,6 +1,7 @@
 use core::{ops::Range, ptr::NonNull, sync::atomic::Ordering};
 
 use aarch64_cpu::registers::{MPIDR_EL1, Readable};
+use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{format, string::String, vec, vec::Vec};
 use atomic_refcell::AtomicRefMut;
 use klib::{
@@ -12,8 +13,9 @@ use klib::{
     },
     interrupt::{GicdRegisters, GicrRegisters, GitsRegisters, gicv3::registers::gic::GicrTyper},
     per_cpu::PerCpu,
-    pm::page::mapper::AddressTranslator,
+    pm::page::mapper::{AddressTranslator, map_page},
     smccc::USE_HVC,
+    vm::{MAIR_DEVICE_INDEX, PAGE_SIZE},
 };
 use mars_acpi_aml_driver::{
     ast::{AmlTerm, AmlValue},
@@ -24,14 +26,16 @@ use mars_acpi_driver::acpi::{
     gtdt::Gtdt,
     header::SdtHeader,
     madt::{GicCpuInterface, GicDistributor, GicIts, GicRedistributor, Madt, MadtIter},
+    mcfg::Mcfg,
     xsdp::{Xsdp, XsdtIter},
 };
 use mars_models::memory::registers::volatile::PureReadable;
+use mars_pcie_driver::{ecam::Ecam, scan::enumerate_segment};
 use uefi::table::cfg::ConfigTableEntry;
 use uefi_raw::table::{configuration::ConfigurationTable, system::SystemTable};
 use zerocopy::FromBytes;
 
-use crate::{DEVICE_TREE, earlyinit::platform::BootInfoToken};
+use crate::{DEVICE_TREE, KERNEL_ADDRESS_SPACE, earlyinit::platform::BootInfoToken};
 
 fn config_table(st: NonNull<SystemTable>) -> &'static [ConfigTableEntry] {
     let st = KernelAddressTranslator.phys_to_dmap(st.as_ptr() as _) as *const SystemTable;
@@ -109,8 +113,77 @@ pub fn acpi_init(token: &BootInfoToken) {
 
                 handle_fadt(table_bytes);
             }
+            b"MCFG" => {
+                trace!("    mcfg found");
+                handle_mcfg(table_bytes);
+            }
             _ => trace!("unrecognized ACPI table: {}", header.signature()),
         }
+    }
+}
+
+fn handle_mcfg(table: &'static [u8]) {
+    use log::*;
+
+    let (mcfg, _) = Mcfg::ref_from_prefix(table).expect("invalid mcfg size");
+    let mut dt = DEVICE_TREE.borrow_mut();
+
+    for alloc in mcfg.allocations() {
+        let bus_count = (alloc.end_bus_num() as usize - alloc.start_bus_num() as usize) + 1;
+        let ecam_size = bus_count * (1024 * 1024); // 32 dev * 8 func * 4KiB
+        let phys_base = alloc.base_addr();
+        let va_start = KernelAddressTranslator.phys_to_dmap(phys_base as usize) as usize;
+        let va_end = va_start + ecam_size;
+
+        {
+            trace!(
+                "ACPI: Mapping PCIe ECAM Segment {} [Phys: {:#018x}..{:#018x}] -> [Vir: {:#018x}..{:#018x}] [{} MiB]",
+                alloc.pci_segment_group(),
+                phys_base,
+                phys_base + (ecam_size as u64),
+                va_start,
+                va_end,
+                ecam_size / (1024 * 1024)
+            );
+
+            // global AddressSpace unusable:
+            // this memory region most likely won't have been included in the firmware memory map.
+            // therefore they must be added via `map_page`
+            // maybe add PCIe regions to page descriptors in the future, if userspace needs them. currently unnecessary.
+            let root = unsafe { KERNEL_ADDRESS_SPACE.root_mut() };
+
+            for offset in (0..ecam_size).step_by(PAGE_SIZE) {
+                map_page(
+                    root,
+                    phys_base as usize + offset,
+                    va_start + offset,
+                    AccessPermission::PrivilegedReadWrite,
+                    Shareability::OuterShareable,
+                    true,
+                    true,
+                    MAIR_DEVICE_INDEX,
+                    &KERNEL_ADDRESS_SPACE.allocator,
+                    &KernelAddressTranslator,
+                );
+            }
+        }
+
+        debug!(
+            "ACPI: Found PCIe Segment {} Base {:#018X} Bus {}..={}",
+            alloc.pci_segment_group(),
+            alloc.base_addr(),
+            alloc.start_bus_num(),
+            alloc.end_bus_num()
+        );
+
+        let ecam = Ecam::new(
+            phys_base,
+            alloc.pci_segment_group(),
+            alloc.start_bus_num(),
+            alloc.end_bus_num(),
+        );
+
+        enumerate_segment(&ecam, &mut dt);
     }
 }
 

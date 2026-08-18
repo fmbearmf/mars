@@ -14,6 +14,7 @@ Mars is a WIP kernel for ARMv8 (aka AArch64).
 * Threading
 * Preemptive Scheduling
 * Block Devices
+* PCIe
 
 ## Planned Features (in order of priority)
 * Filesystem

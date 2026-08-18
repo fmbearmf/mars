@@ -1,0 +1,10 @@
+[package]
+name = "mars-pcie-driver"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+klib.workspace = true
+log.workspace = true
+mars-models.workspace = true
+mars-models-zerocopy = { workspace = true, features = ["derive"] }

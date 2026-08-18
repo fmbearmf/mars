@@ -7,6 +7,7 @@ use klib::{
         irq::CallbackError,
         resource::Resource,
     },
+    interrupt::singleton::get_interrupt_controller,
     scheduler::GLOBAL_SCHEDULER,
     stack::Stack,
     this_cpu,
@@ -16,7 +17,7 @@ use protocol::BootInfo;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
 use crate::{
-    __KBASE, DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE, busy_loop_ret,
+    __KBASE, DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE,
     earlyinit::{
         acpi::acpi_init,
         earlycon::{EARLYCON, EarlyCon},
@@ -27,7 +28,6 @@ use crate::{
         mmu::init_mmu,
         smp::boot_secondary,
     },
-    interrupt::get_interrupt_controller,
     log::LOGGER,
     lut::{DEVICE_TABLE, DeviceCallback},
 };
@@ -189,12 +189,12 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
 
     unsafe { KALLOCATOR.transition_dmap() };
 
+    populate_alloc_stage1(&uefi_mmap);
+
     let (page_descriptors, range) = create_page_descriptors();
     PAGE_DESCRIPTORS.init(page_descriptors, range);
 
     KERNEL_ADDRESS_SPACE.init_from_table(new_pt);
-
-    populate_alloc_stage1(&uefi_mmap);
 
     acpi_init(&boot_info_token);
 
