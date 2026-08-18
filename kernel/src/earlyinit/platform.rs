@@ -16,7 +16,7 @@ use protocol::BootInfo;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
 use crate::{
-    __KBASE, DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE,
+    __KBASE, DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE, busy_loop_ret,
     earlyinit::{
         acpi::acpi_init,
         earlycon::{EARLYCON, EarlyCon},

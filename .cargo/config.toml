@@ -10,6 +10,7 @@ rustflags = [
     "-C", "link-arg=-static",
     "-C", "relocation-model=static",
     "-Z", "unstable-options",
+    "-Z", "emit-stack-sizes"
 ]
 
 [target.aarch64-unknown-uefi]

@@ -2,17 +2,17 @@ use core::{
     arch::asm,
     ops::Range,
     ptr::{self, NonNull},
-    slice::{self, Iter},
+    slice::{self},
 };
 
-use crate::{KALLOCATOR, KSTACK, busy_loop_ret, earlycon_writeln, earlycon_writeln_debug};
+use crate::KALLOCATOR;
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
-    registers::{TTBR1_EL1, Writeable},
+    registers::TTBR1_EL1,
 };
 use aarch64_cpu_ext::{
     asm::tlb::{VMALLE1, tlbi},
-    structures::tte::{AccessPermission, Granule, OA, Shareability, TTE64},
+    structures::tte::{AccessPermission, Shareability},
 };
 use alloc::{boxed::Box, vec::Vec};
 use klib::{
@@ -23,7 +23,7 @@ use klib::{
     },
     sync::RwLock,
     vm::{
-        MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, PAGE_MASK, PAGE_SIZE, TABLE_ENTRIES, TTable, VmError,
+        MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, PAGE_SIZE, TABLE_ENTRIES, TTable, VmError,
         align_down, align_up,
         page_allocator::PhysicalPageAllocator,
         phys_addr_to_dmap,
@@ -31,11 +31,9 @@ use klib::{
     },
 };
 use log::{debug, trace};
-use protocol::BootInfo;
-use tock_registers::LocalRegisterCopy;
 use uefi::{
     boot::{MemoryAttribute, MemoryDescriptor, MemoryType, PAGE_SIZE as UEFI_PS},
-    mem::memory_map::{MemoryMap, MemoryMapIter, MemoryMapMeta, MemoryMapOwned, MemoryMapRefMut},
+    mem::memory_map::{MemoryMap, MemoryMapMeta, MemoryMapRefMut},
 };
 
 struct BootTempAllocator<'a>(pub &'a dyn PhysicalPageAllocator);
@@ -565,7 +563,8 @@ fn map_all_dmap<'a, F, FM, I>(
     I: Iterator<Item = &'a MemoryDescriptor>,
     F: FnMut(&MemoryDescriptor) -> (AccessPermission, Shareability, bool, bool, u64),
 {
-    let mut ranges = Vec::new();
+    let (lower, _) = memory_map().size_hint();
+    let mut ranges = Vec::with_capacity(lower.max(64));
 
     for desc in memory_map() {
         let start = desc.phys_start as usize;
@@ -579,7 +578,13 @@ fn map_all_dmap<'a, F, FM, I>(
         }
     }
 
-    ranges.sort_by_key(|r| r.0);
+    for i in 1..ranges.len() {
+        let mut j = i;
+        while j > 0 && ranges[j - 1].0 > ranges[j].0 {
+            ranges.swap(j - 1, j);
+            j -= 1;
+        }
+    }
     let mut merged: Vec<(usize, usize)> = Vec::new();
 
     for r in ranges {

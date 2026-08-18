@@ -150,7 +150,7 @@ impl<'a> Scheduler<'a> {
 
             if let Some(process) = next.process() {
                 process.with_address_space(|addr_space| {
-                    let root = addr_space.root.as_ptr();
+                    let root = addr_space.root();
                     let addr = root as *const _ as u64;
                     TTBR0_EL1.set_baddr(addr);
                     isb(barrier::SY);

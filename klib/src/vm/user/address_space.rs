@@ -1,3 +1,4 @@
+use core::cell::SyncUnsafeCell;
 use core::fmt::Debug;
 use core::ptr::NonNull;
 use core::range::Range;
@@ -9,7 +10,7 @@ use super::{PAGE_DESCRIPTORS, allocator::UserAllocator, cursor::Cursor, entry_co
 use crate::pm::page::mapper::{AddressTranslator, TableAllocator};
 
 pub struct AddressSpace<'a> {
-    pub root: NonNull<TTable<TABLE_ENTRIES>>,
+    root: SyncUnsafeCell<Option<NonNull<TTable<TABLE_ENTRIES>>>>,
     pub max_level: usize,
     pub allocator: UserAllocator<'a>,
     translator: &'a dyn AddressTranslator,
@@ -39,7 +40,7 @@ impl<'a> AddressSpace<'a> {
         let root = tracked_alloc.alloc_table();
 
         Self {
-            root,
+            root: SyncUnsafeCell::new(Some(root)),
             max_level: max_level.unwrap_or(3),
             allocator: tracked_alloc,
             translator,
@@ -52,18 +53,12 @@ impl<'a> AddressSpace<'a> {
         page_allocator: &'a dyn PhysicalPageAllocator,
         translator: &'a dyn AddressTranslator,
     ) -> Self {
-        Self::from_root_table(
-            max_level,
-            NonNull::dangling(),
-            table_allocator,
-            page_allocator,
-            translator,
-        )
+        Self::from_root_table(max_level, None, table_allocator, page_allocator, translator)
     }
 
     pub const fn from_root_table(
         max_level: Option<usize>,
-        root: NonNull<TTable<TABLE_ENTRIES>>,
+        root: Option<NonNull<TTable<TABLE_ENTRIES>>>,
         table_allocator: &'a dyn TableAllocator,
         page_allocator: &'a dyn PhysicalPageAllocator,
         translator: &'a dyn AddressTranslator,
@@ -71,7 +66,7 @@ impl<'a> AddressSpace<'a> {
         let tracked_alloc = UserAllocator(table_allocator, page_allocator, translator);
 
         Self {
-            root,
+            root: SyncUnsafeCell::new(root),
             max_level: max_level.unwrap_or(3),
             allocator: tracked_alloc,
             translator,
@@ -80,9 +75,26 @@ impl<'a> AddressSpace<'a> {
 }
 
 impl AddressSpace<'_> {
+    pub unsafe fn root_mut(&self) -> &mut TTable<TABLE_ENTRIES> {
+        unsafe {
+            (*self.root.get())
+                .expect("root_mut() called in invalid state")
+                .as_mut()
+        }
+    }
+
+    pub fn root(&self) -> &TTable<TABLE_ENTRIES> {
+        unsafe {
+            (*self.root.get())
+                .expect("root() called in invalid state")
+                .as_ref()
+        }
+    }
+
     /// initialize a dangling address space. this may only be called once, when there are no other references to self.
     pub fn init(&self) {
-        assert_eq!(self.root, NonNull::dangling(), "init called twice!");
+        let root_ptr = self.root.get();
+        assert_eq!(unsafe { *root_ptr }, None, "init called twice!");
         let table = self.allocator.alloc_table();
         let root_ref = (&self.root) as *const _ as *mut NonNull<TTable<TABLE_ENTRIES>>;
 
@@ -93,8 +105,18 @@ impl AddressSpace<'_> {
 
     /// initialize a dangling address space. this may only be called once, when there are no other references to self.
     pub fn init_from_table(&self, table: NonNull<TTable<TABLE_ENTRIES>>) {
-        assert_eq!(self.root, NonNull::dangling(), "init called twice!");
+        let root_ptr = self.root.get();
+        assert_eq!(unsafe { *root_ptr }, None, "init called twice!");
         let root_ref = (&self.root) as *const _ as *mut NonNull<TTable<TABLE_ENTRIES>>;
+
+        {
+            use log::*;
+            warn!(
+                "init_from_table: {:#p} <- {:#p}",
+                root_ref as *const (),
+                table.as_ptr() as *const ()
+            );
+        }
 
         unsafe {
             root_ref.write(table);
@@ -104,9 +126,10 @@ impl AddressSpace<'_> {
     unsafe fn drop_table(&mut self, table_ptr: NonNull<TTable<TABLE_ENTRIES>>, level: usize) {
         let table = unsafe { table_ptr.as_ref() };
 
+        let root_ptr = self.root.get();
         debug_assert_ne!(
-            self.root,
-            NonNull::dangling(),
+            unsafe { *root_ptr },
+            None,
             "drop_table called in invalid state"
         );
 
@@ -129,16 +152,12 @@ impl AddressSpace<'_> {
     }
 
     pub fn lock(&self, range: Range<usize>) -> Cursor<'_> {
-        let mut current_pa = self.translator.dmap_to_phys(self.root.as_ptr() as _) as usize;
+        let root = unsafe { *self.root.get() }.expect("lock called on uninitialized address space");
+
+        let mut current_pa = self.translator.dmap_to_phys(root.as_ptr() as _) as usize;
         let mut current_level = self.max_level;
         let mut current_base_va = 0;
         let mut read_guards = Vec::new();
-
-        debug_assert_ne!(
-            self.root,
-            NonNull::dangling(),
-            "lock called in invalid state"
-        );
 
         loop {
             if current_level == 0 {
@@ -191,7 +210,10 @@ impl AddressSpace<'_> {
 impl Drop for AddressSpace<'_> {
     fn drop(&mut self) {
         unsafe {
-            self.drop_table(self.root, self.max_level);
+            self.drop_table(
+                (*self.root.get()).expect("uninitialized address space dropped"),
+                self.max_level,
+            );
         }
     }
 }

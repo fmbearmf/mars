@@ -13,6 +13,7 @@ impl<'a> AmlParser<'a> {
         Self { bytes, cursor: 0 }
     }
 
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.cursor >= self.bytes.len()
     }
@@ -184,17 +185,6 @@ impl<'a> AmlParser<'a> {
 
                 let pkg_bytes = self.take_bytes(body_len)?;
 
-                let mut elements = Vec::new();
-                let mut pkg_parser = AmlParser::new(pkg_bytes);
-
-                while !pkg_parser.is_empty() {
-                    if let Ok(val) = pkg_parser.parse_data_object() {
-                        elements.push(val);
-                    } else {
-                        break;
-                    }
-                }
-
                 Ok(AmlValue::Buffer(pkg_bytes))
             }
 
@@ -271,6 +261,7 @@ impl<'a> AmlParser<'a> {
         }
     }
 
+    #[inline(always)]
     fn read_u8(&mut self) -> Result<u8, &'static str> {
         let b = self
             .bytes
@@ -281,27 +272,27 @@ impl<'a> AmlParser<'a> {
         Ok(b)
     }
 
+    #[inline(always)]
     fn peek_u8(&self) -> Option<u8> {
         self.bytes.get(self.cursor).copied()
     }
 
     fn read_u16_le(&mut self) -> Result<u16, &'static str> {
         let b = self.take_bytes(2)?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
+        Ok(u16::from_le_bytes(b.try_into().unwrap()))
     }
 
     fn read_u32_le(&mut self) -> Result<u32, &'static str> {
         let b = self.take_bytes(4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        Ok(u32::from_le_bytes(b.try_into().unwrap()))
     }
 
     fn read_u64_le(&mut self) -> Result<u64, &'static str> {
         let b = self.take_bytes(8)?;
-        Ok(u64::from_le_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]))
+        Ok(u64::from_le_bytes(b.try_into().unwrap()))
     }
 
+    #[inline(always)]
     fn take_bytes(&mut self, len: usize) -> Result<&'a [u8], &'static str> {
         if self.cursor + len <= self.bytes.len() {
             let slice = &self.bytes[self.cursor..self.cursor + len];

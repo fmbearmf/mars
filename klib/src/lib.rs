@@ -3,6 +3,7 @@
 #![feature(const_trait_impl)]
 #![feature(generic_atomic)]
 #![feature(rustc_attrs)]
+#![feature(sync_unsafe_cell)]
 
 extern crate alloc;
 

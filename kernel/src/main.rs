@@ -62,7 +62,10 @@ static KERNEL_ADDRESS_SPACE: AddressSpace = unsafe {
 fn panic(info: &PanicInfo) -> ! {
     unsafe {
         let core = CpuTopologyId::current();
-        EARLYCON.steal();
+        #[cfg(not(debug_assertions))]
+        {
+            EARLYCON.steal();
+        }
         earlycon_writeln!("CPU MPIDR={} PANIC: {}", core, info);
     }
     busy_loop()
@@ -88,7 +91,7 @@ unsafe extern "C" {
     static __KBASE: usize;
 }
 
-const STACK_SIZE: usize = 32 * 1024;
+const STACK_SIZE: usize = 16 * 1024;
 
 #[allow(dead_code)]
 #[repr(align(16))]

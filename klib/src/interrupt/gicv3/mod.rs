@@ -5,7 +5,6 @@ use core::{
     alloc::Layout,
     arch::asm,
     fmt::Debug,
-    ops::Add,
     ptr::NonNull,
     sync::atomic::{AtomicPtr, AtomicU8, Ordering},
 };
@@ -154,7 +153,9 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
     fn rdbase_for_redist(&self, index: usize) -> Option<u64> {
         let its = self.its_ref()?;
         let redist_ptr = self.redistributors.get(index)?.load(Ordering::Relaxed);
-        let phys_addr = KernelAddressTranslator.dmap_to_phys(redist_ptr as _) as u64;
+        let phys_addr = KernelAddressTranslator.phys_to_dmap(redist_ptr as _) as u64;
+        // log::warn!("rdbase_for_redist: {:#x}", phys_addr);
+
         let redist_ref = unsafe { &*redist_ptr };
 
         let proc_num = redist_ref.type_.read_field_pure(GicrTyper::ProcessorNumber) as u64;
@@ -201,7 +202,10 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
         if let Some(prop_phys) = *self.lpi_prop_table.borrow() {
             let prop_virt = KernelAddressTranslator.phys_to_dmap(prop_phys as _)
                 as *mut RPureReadWrite<u8, LpiProp>;
-            let target_ptr = unsafe { prop_virt.add(int_id as usize) };
+
+            let offset = (int_id - LPI_START) as usize;
+            let target_ptr = unsafe { prop_virt.add(offset) };
+
             unsafe {
                 update_fn(&mut *target_ptr);
                 clean_dcache_range(target_ptr as _, 1);
@@ -612,7 +616,9 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
 
             redist.property_bar.write(builder.finish());
 
-            let cas: u64 = ((ITS_SHAREABILITY as u64) << 10) | ((ITS_CACHEABILITY as u64) << 7);
+            let cas: u64 = ((ITS_SHAREABILITY as u64) << 10)
+                | ((ITS_CACHEABILITY as u64) << 7)
+                | ((ITS_CACHEABILITY as u64) << 56);
             redist.pending_bar.write(pend_phys | cas);
 
             redist.ctl.modify_field(GicrCtlr::EnableLPIs, true);

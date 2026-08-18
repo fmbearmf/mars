@@ -30,7 +30,7 @@ fn main() -> Result<()> {
             "--package",
             "kernel",
         ])
-        .env("RUSTFLAGS", "-Z unstable-options")
+        .env("RUSTFLAGS", "-Z unstable-options -Z emit-stack-sizes")
         .status()
         .context("Kernel build failed.")?;
 

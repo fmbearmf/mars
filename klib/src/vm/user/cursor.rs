@@ -8,7 +8,7 @@ use crate::{
     sync::{RwLockReadGuard, RwLockWriteGuard},
 };
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 use core::range::Range;
 
 pub struct Cursor<'a> {
@@ -37,20 +37,18 @@ impl Cursor<'_> {
         let mut current_pa = target_pa_start;
 
         for va in (self.range.start..self.range.end).step_by(PAGE_SIZE) {
-            unsafe {
-                map_page(
-                    &mut *self.addr_space.root.as_ptr(),
-                    current_pa as usize,
-                    va,
-                    perm,
-                    share,
-                    uxn,
-                    pxn,
-                    attr_index,
-                    &self.addr_space.allocator,
-                    self.translator,
-                );
-            }
+            map_page(
+                unsafe { self.addr_space.root_mut() },
+                current_pa as usize,
+                va,
+                perm,
+                share,
+                uxn,
+                pxn,
+                attr_index,
+                &self.addr_space.allocator,
+                self.translator,
+            );
 
             self.update_leaf_meta(
                 va,
@@ -67,7 +65,7 @@ impl Cursor<'_> {
         for va in (self.range.start..self.range.end).step_by(PAGE_SIZE) {
             unsafe {
                 unmap_page(
-                    &mut *self.addr_space.root.as_ptr(),
+                    self.addr_space.root_mut(),
                     va,
                     &self.addr_space.allocator,
                     self.translator,
@@ -165,7 +163,12 @@ impl Cursor<'_> {
         let mut state = desc.lock.write();
 
         if state.meta.is_none() {
-            state.meta = Some(Box::new([PteMeta::default(); TABLE_ENTRIES]));
+            let boxed_array: Box<[PteMeta; TABLE_ENTRIES]> =
+                vec![PteMeta::default(); TABLE_ENTRIES]
+                    .into_boxed_slice()
+                    .try_into()
+                    .unwrap();
+            state.meta = Some(boxed_array);
         }
 
         if let Some(meta) = &mut state.meta {

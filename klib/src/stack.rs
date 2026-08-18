@@ -71,8 +71,8 @@ impl Default for Stack {
 
 impl Drop for Stack {
     fn drop(&mut self) {
-        // use log::trace;
-        // trace!("dropping stack: {:?}", self);
+        // use log::*;
+        // warn!("dropping stack: {:?}", self);
         unsafe { dealloc(self.ptr.as_ptr(), self.layout) }
     }
 }

@@ -12,22 +12,6 @@ name = "kernel"
 path = "src/main.rs"
 test = false
 
-[profile.dev]
-opt-level = 1
-
-[profile.dev.package."*"]
-opt-level = "s"
-debug = false
-
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-strip = "symbols"
-debug = 0
-incremental = false
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_analyzer)'] }
 
