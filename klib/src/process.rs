@@ -1,12 +1,10 @@
 use core::fmt::Debug;
 
-use crate::pm::page::mapper::AddressTranslator;
 
 use super::{
-    pm::page::mapper::TableAllocator,
     sync::RwLock,
     thread::{Thread, ThreadId},
-    vm::{page_allocator::PhysicalPageAllocator, user::address_space::AddressSpace},
+    vm::user::address_space::AddressSpace,
 };
 
 use alloc::{

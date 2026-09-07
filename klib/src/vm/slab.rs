@@ -231,7 +231,7 @@ impl<'a> SlabAllocator<'a> {
 
             let req_pages = req / PAGE_SIZE;
 
-            let order = req_pages.next_power_of_two().trailing_zeros() as usize;
+            let _order = req_pages.next_power_of_two().trailing_zeros() as usize;
 
             let need_backing_ptr = layout.align() > PAGE_SIZE;
 

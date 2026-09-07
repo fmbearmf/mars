@@ -125,7 +125,7 @@ pub fn handle(node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
         })
         .collect();
 
-    let mut itses: Vec<&mut GitsRegisters> = node
+    let itses: Vec<&mut GitsRegisters> = node
         .resources
         .iter()
         .skip(1 + redistributor_count as usize)

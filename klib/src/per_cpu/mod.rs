@@ -1,9 +1,9 @@
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
 
 use aarch64_cpu::registers::{Readable, TPIDR_EL1, Writeable};
 use alloc::vec::Vec;
 
-use crate::{cpu_interface::CpuIdLogical, sync::FairSpinlock, thread::ThreadId};
+use crate::cpu_interface::CpuIdLogical;
 
 static REGISTRY_PTR: AtomicPtr<PerCpuData> = AtomicPtr::new(core::ptr::null_mut());
 static REGISTRY_LEN: AtomicUsize = AtomicUsize::new(0);

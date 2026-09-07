@@ -3,7 +3,7 @@ use core::{
     usize,
 };
 
-use crate::{cpu_interface::CpuIdLogical, this_cpu};
+use crate::cpu_interface::CpuIdLogical;
 
 use super::{
     context::RegisterFileRef,

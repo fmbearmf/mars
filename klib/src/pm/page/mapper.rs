@@ -2,11 +2,10 @@ use core::ptr::NonNull;
 
 use crate::vm::{
     L1_BLOCK_SIZE, L2_BLOCK_SIZE, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE,
-    TTable, is_kernel_address,
+    TTable,
 };
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 
-use log::debug;
 
 pub trait TableAllocator {
     fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>>;

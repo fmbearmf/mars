@@ -1,11 +1,8 @@
 use core::ops::{BitAnd, BitOrAssign, Shl, Shr};
 
 use mars_models::{
-    declare_register, declare_structs,
-    memory::registers::{
-        field::{FieldType, RegisterValue},
-        volatile::{PureReadable, RPureReadWrite, Writeable},
-    },
+    declare_register,
+    memory::registers::field::{FieldType, RegisterValue},
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 

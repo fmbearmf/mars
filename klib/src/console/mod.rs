@@ -5,7 +5,7 @@ use core::{
 
 use alloc::boxed::Box;
 
-use crate::{cpu_interface::CpuTopologyId, guard::InterruptGuard, sync::FairSpinlock, this_cpu};
+use crate::{cpu_interface::CpuTopologyId, guard::InterruptGuard, sync::FairSpinlock};
 
 pub trait ConsoleBackend: Write + Send {
     fn flush(&mut self) -> fmt::Result {

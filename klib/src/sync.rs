@@ -49,12 +49,12 @@ impl<'a, T: ?Sized> SleepingMutex<'a, T> {
                 };
             }
 
-            let current = scheduler
+            let _current = scheduler
                 .current_thread()
                 .expect("can't sleep mutex without a running thread!!");
 
             {
-                let mut queue = self.wait_queue.lock();
+                let _queue = self.wait_queue.lock();
 
                 if self
                     .locked

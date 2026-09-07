@@ -1,17 +1,12 @@
-use core::{fmt::Debug, range::Range, sync::atomic::Atomic};
+use core::fmt::Debug;
 
-use crate::{pm::page::mapper::AddressTranslator, stack::Stack, sync::FairSpinlock};
+use crate::{stack::Stack, sync::FairSpinlock};
 
 use super::{context::RegisterFile, process::Process, sync::RwLock};
 
 use aarch64_cpu::registers::SPSR_EL1;
-use alloc::{
-    boxed::Box,
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+use alloc::sync::{Arc, Weak};
 use derivative::Derivative;
-use tock_registers::fields::FieldValue;
 
 pub type ThreadId = u32;
 

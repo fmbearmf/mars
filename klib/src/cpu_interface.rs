@@ -11,7 +11,7 @@ use hashbrown::HashMap;
 use log::trace;
 use rustc_hash::FxHasher;
 
-use crate::{pm::page::mapper::id_map, this_cpu};
+use crate::this_cpu;
 
 use super::interrupt::InterruptInterface;
 

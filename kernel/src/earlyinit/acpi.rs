@@ -295,17 +295,17 @@ fn handle_dsdt(table: &[u8]) {
 fn aml_stream(parser: &mut AmlParser, depth: usize) -> Result<(), &'static str> {
     while let Some(term) = parser.parse_next()? {
         match term {
-            AmlTerm::Scope { name, mut contents } => {
+            AmlTerm::Scope { mut contents, .. } => {
                 aml_stream(&mut contents, depth + 1)?;
             }
-            AmlTerm::Device { name, mut contents } => {
+            AmlTerm::Device { mut contents, .. } => {
                 aml_stream(&mut contents, depth + 1)?;
             }
-            AmlTerm::Name { name, value } => {}
-            AmlTerm::Method { name, flags, code } => {}
-            AmlTerm::OpRegion { name } => {}
+            AmlTerm::Name { .. } => {}
+            AmlTerm::Method { .. } => {}
+            AmlTerm::OpRegion { .. } => {}
             AmlTerm::Field => {}
-            AmlTerm::UnsupportedOpcode(_op) => {}
+            AmlTerm::UnsupportedOpcode(_) => {}
         }
     }
     Ok(())
