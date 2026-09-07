@@ -15,12 +15,32 @@ use crate::{
     ecam::Ecam,
 };
 
-pub fn enumerate_segment(ecam: &Ecam, dt: &mut DeviceTree) {
+pub fn enumerate_segment(
+    ecam: &Ecam,
+    phys_base: u64,
+    ecam_start_bus: u8,
+    ecam_end_bus: u8,
+    dt: &mut DeviceTree,
+) {
     // standard init
-    scan_bus(ecam, ecam.start_bus, dt);
+    scan_bus(
+        ecam,
+        phys_base,
+        ecam_start_bus,
+        ecam_end_bus,
+        ecam.start_bus,
+        dt,
+    );
 }
 
-fn scan_bus(ecam: &Ecam, bus: u8, dt: &mut DeviceTree) {
+fn scan_bus(
+    ecam: &Ecam,
+    phys_base: u64,
+    ecam_start_bus: u8,
+    ecam_end_bus: u8,
+    bus: u8,
+    dt: &mut DeviceTree,
+) {
     for device in 0..32 {
         let bdf = Bdf::new(ecam.segment, bus, device, 0);
         let vendor = ecam.read_u16(bdf, 0x00);
@@ -29,7 +49,17 @@ fn scan_bus(ecam: &Ecam, bus: u8, dt: &mut DeviceTree) {
             continue; // no device
         }
 
-        scan_function(ecam, bdf, dt);
+        scan_function(
+            ecam,
+            phys_base,
+            ecam_start_bus,
+            ecam_end_bus,
+            bus,
+            device,
+            0,
+            bdf,
+            dt,
+        );
 
         let header_type = ecam.read_u8(bdf, 0x0E);
         if (header_type & 0x80) != 0 {
@@ -39,14 +69,34 @@ fn scan_bus(ecam: &Ecam, bus: u8, dt: &mut DeviceTree) {
                 let func_vendor = ecam.read_u16(func_bdf, 0x00);
 
                 if func_vendor != !0 {
-                    scan_function(ecam, func_bdf, dt);
+                    scan_function(
+                        ecam,
+                        phys_base,
+                        ecam_start_bus,
+                        ecam_end_bus,
+                        bus,
+                        device,
+                        function,
+                        func_bdf,
+                        dt,
+                    );
                 }
             }
         }
     }
 }
 
-fn scan_function(ecam: &Ecam, bdf: Bdf, dt: &mut DeviceTree) {
+fn scan_function(
+    ecam: &Ecam,
+    phys_base: u64,
+    ecam_start_bus: u8,
+    ecam_end_bus: u8,
+    bus: u8,
+    device: u8,
+    function: u8,
+    bdf: Bdf,
+    dt: &mut DeviceTree,
+) {
     let vendor_id = ecam.read_u16(bdf, 0x00);
     let device_id = ecam.read_u16(bdf, 0x02);
     let class_code = ecam.read_u8(bdf, 0x0B);
@@ -64,7 +114,22 @@ fn scan_function(ecam: &Ecam, bdf: Bdf, dt: &mut DeviceTree) {
         let bars = probe_bars(ecam, bdf);
         let mut resources = Vec::new();
 
+        // it's a surprise tool that'll help [the endpoint driver access PCIe caps] later
+        resources.push(Resource::PciEcam {
+            segment: ecam.segment,
+            bus,
+            device,
+            function,
+            ecam_phys_base: phys_base,
+            ecam_start_bus,
+            ecam_end_bus,
+        });
+
         for bar in &bars {
+            let Some(bar) = bar else {
+                continue; // none
+            };
+
             match bar {
                 BarType::Memory32 { address, size, .. } => {
                     let address = *address as usize;
@@ -108,7 +173,14 @@ fn scan_function(ecam: &Ecam, bdf: Bdf, dt: &mut DeviceTree) {
         );
 
         if secondary_bus > bdf.bus && secondary_bus <= subordinate_bus {
-            scan_bus(ecam, secondary_bus, dt);
+            scan_bus(
+                ecam,
+                phys_base,
+                ecam_start_bus,
+                ecam_end_bus,
+                secondary_bus,
+                dt,
+            );
         }
     }
 }

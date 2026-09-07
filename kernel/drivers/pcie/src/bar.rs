@@ -36,8 +36,9 @@ impl Drop for CommandRegGuard<'_> {
     }
 }
 
-pub fn probe_bars(ecam: &Ecam, bdf: Bdf) -> Vec<BarType> {
-    let mut bars = Vec::new();
+pub fn probe_bars(ecam: &Ecam, bdf: Bdf) -> [Option<BarType>; 6] {
+    const NONE_BAR: Option<BarType> = None;
+    let mut bars = [NONE_BAR; 6];
     let mut bar_i = 0;
 
     let original_command = ecam.read_u16(bdf, CMD_REG_OFFSET);
@@ -69,7 +70,7 @@ pub fn probe_bars(ecam: &Ecam, bdf: Bdf) -> Vec<BarType> {
 
             let addr = original_val & 0xFFFF_FFFC;
             let size = (!(mask & 0xFFFF_FFFC)).wrapping_add(1);
-            bars.push(BarType::Io {
+            bars[bar_i as usize] = Some(BarType::Io {
                 address: addr,
                 size,
             });
@@ -84,7 +85,7 @@ pub fn probe_bars(ecam: &Ecam, bdf: Bdf) -> Vec<BarType> {
             let prefetchable = ((original_val >> 3) & 0x1) != 0;
             let addr = original_val & 0xFFFF_FFF0;
             let size = (!(mask & 0xFFFF_FFF0)).wrapping_add(1);
-            bars.push(BarType::Memory32 {
+            bars[bar_i as usize] = Some(BarType::Memory32 {
                 address: addr,
                 size,
                 prefetchable,
@@ -114,7 +115,7 @@ pub fn probe_bars(ecam: &Ecam, bdf: Bdf) -> Vec<BarType> {
             let addr = ((original_high as u64) << 32) | (original_val as u64 & 0xFFFF_FFF0);
             let size = (!raw_mask).wrapping_add(1);
 
-            bars.push(BarType::Memory64 {
+            bars[bar_i as usize] = Some(BarType::Memory64 {
                 address: addr,
                 size,
                 prefetchable,

@@ -1,0 +1,12 @@
+[package]
+name = "mars-virtio-driver"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+klib.workspace = true
+log.workspace = true
+mars-models.workspace = true
+mars-models-zerocopy = { workspace = true, features = ["derive"] }
+mars-pcie-driver.workspace = true
+aarch64-cpu-ext.workspace = true

@@ -5,7 +5,6 @@ use core::{
     slice::{self},
 };
 
-use crate::KALLOCATOR;
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
     registers::TTBR1_EL1,
@@ -23,8 +22,8 @@ use klib::{
     },
     sync::RwLock,
     vm::{
-        MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, PAGE_SIZE, TABLE_ENTRIES, TTable, VmError,
-        align_down, align_up,
+        KALLOCATOR, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, PAGE_SIZE, TABLE_ENTRIES, TTable,
+        VmError, align_down, align_up,
         page_allocator::PhysicalPageAllocator,
         phys_addr_to_dmap,
         user::{PageDescriptor, PtState},

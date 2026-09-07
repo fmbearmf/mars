@@ -366,6 +366,7 @@ dependencies = [
  "mars-models",
  "mars-models-zerocopy",
  "mars-pcie-driver",
+ "mars-virtio-driver",
  "phf",
  "protocol",
  "tock-registers 0.10.1",
@@ -482,6 +483,18 @@ dependencies = [
  "log",
  "mars-models",
  "mars-models-zerocopy",
+]
+
+[[package]]
+name = "mars-virtio-driver"
+version = "0.0.1"
+dependencies = [
+ "aarch64-cpu-ext",
+ "klib",
+ "log",
+ "mars-models",
+ "mars-models-zerocopy",
+ "mars-pcie-driver",
 ]
 
 [[package]]

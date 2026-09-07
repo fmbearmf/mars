@@ -15,7 +15,7 @@ use klib::{
     per_cpu::PerCpu,
     pm::page::mapper::{AddressTranslator, map_page},
     smccc::USE_HVC,
-    vm::{MAIR_DEVICE_INDEX, PAGE_SIZE},
+    vm::{MAIR_DEVICE_INDEX, PAGE_SIZE, user::address_space::KERNEL_ADDRESS_SPACE},
 };
 use mars_acpi_aml_driver::{
     ast::{AmlTerm, AmlValue},
@@ -35,7 +35,7 @@ use uefi::table::cfg::ConfigTableEntry;
 use uefi_raw::table::{configuration::ConfigurationTable, system::SystemTable};
 use zerocopy::FromBytes;
 
-use crate::{DEVICE_TREE, KERNEL_ADDRESS_SPACE, earlyinit::platform::BootInfoToken};
+use crate::{DEVICE_TREE, earlyinit::platform::BootInfoToken};
 
 fn config_table(st: NonNull<SystemTable>) -> &'static [ConfigTableEntry] {
     let st = KernelAddressTranslator.phys_to_dmap(st.as_ptr() as _) as *const SystemTable;
@@ -183,7 +183,13 @@ fn handle_mcfg(table: &'static [u8]) {
             alloc.end_bus_num(),
         );
 
-        enumerate_segment(&ecam, &mut dt);
+        enumerate_segment(
+            &ecam,
+            phys_base,
+            alloc.start_bus_num(),
+            alloc.end_bus_num(),
+            &mut dt,
+        );
     }
 }
 

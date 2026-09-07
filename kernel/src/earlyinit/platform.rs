@@ -11,13 +11,16 @@ use klib::{
     scheduler::GLOBAL_SCHEDULER,
     stack::Stack,
     this_cpu,
-    vm::{PAGE_SIZE, user::PAGE_DESCRIPTORS},
+    vm::{
+        KALLOCATOR, PAGE_SIZE,
+        user::{PAGE_DESCRIPTORS, address_space::KERNEL_ADDRESS_SPACE},
+    },
 };
 use protocol::BootInfo;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
 use crate::{
-    __KBASE, DEVICE_TREE, KALLOCATOR, KERNEL_ADDRESS_SPACE,
+    __KBASE, DEVICE_TREE,
     earlyinit::{
         acpi::acpi_init,
         earlycon::{EARLYCON, EarlyCon},

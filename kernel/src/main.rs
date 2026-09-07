@@ -4,7 +4,6 @@
 
 extern crate alloc;
 
-mod allocator;
 mod earlyinit;
 mod log;
 mod lut;
@@ -12,16 +11,17 @@ mod lut;
 use aarch64_cpu::asm::wfe;
 use atomic_refcell::AtomicRefCell;
 use core::{
+    alloc::GlobalAlloc,
     arch::{asm, naked_asm},
     panic::PanicInfo,
 };
 use klib::{
     allocator_support::KernelAddressTranslator,
-    cpu_interface::{CpuIdLogical, CpuTopologyId},
+    cpu_interface::CpuTopologyId,
     hardware::device::DeviceTree,
     pm::page::PageAllocator,
     register_drivers,
-    vm::{slab::SlabAllocator, user::address_space::AddressSpace},
+    vm::{KALLOCATOR, KPAGE_ALLOCATOR, slab::SlabAllocator, user::address_space::AddressSpace},
 };
 use protocol::BootInfo;
 
@@ -31,31 +31,11 @@ use crate::earlyinit::{
     platform::{BootInfoInitToken, uefi_arm64_bootstrap},
 };
 
-use self::{
-    allocator::KernelPTAllocator,
-    earlyinit::{earlycon::EARLYCON, exception::Exceptions},
-};
+use self::earlyinit::exception::Exceptions;
 
 klib::exception_handlers!(Exceptions);
 
 static DEVICE_TREE: AtomicRefCell<DeviceTree> = AtomicRefCell::new(DeviceTree::new());
-
-// use `KALLOCATOR`
-static KPAGE_ALLOCATOR: PageAllocator = PageAllocator::new(&KernelAddressTranslator);
-
-#[global_allocator]
-static KALLOCATOR: SlabAllocator = SlabAllocator::new(&KPAGE_ALLOCATOR, &KernelAddressTranslator);
-
-static KPT_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
-
-static KERNEL_ADDRESS_SPACE: AddressSpace = unsafe {
-    AddressSpace::new_dangling(
-        None,
-        &KPT_ALLOCATOR,
-        &KPAGE_ALLOCATOR,
-        &KernelAddressTranslator,
-    )
-};
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -69,6 +49,32 @@ fn panic(info: &PanicInfo) -> ! {
     }
     busy_loop()
 }
+
+struct GlobalAllocWrapper;
+
+unsafe impl GlobalAlloc for GlobalAllocWrapper {
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+        unsafe { KALLOCATOR.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
+        unsafe {
+            KALLOCATOR.dealloc(ptr, layout);
+        }
+    }
+
+    unsafe fn realloc(
+        &self,
+        ptr: *mut u8,
+        layout: core::alloc::Layout,
+        new_size: usize,
+    ) -> *mut u8 {
+        unsafe { KALLOCATOR.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+pub(self) static GLOBAL_ALLOCATOR: GlobalAllocWrapper = GlobalAllocWrapper;
 
 register_drivers!([]);
 

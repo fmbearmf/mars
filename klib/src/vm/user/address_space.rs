@@ -7,7 +7,18 @@ use alloc::vec::Vec;
 
 use super::super::{TABLE_ENTRIES, TTable, page_allocator::PhysicalPageAllocator};
 use super::{PAGE_DESCRIPTORS, allocator::UserAllocator, cursor::Cursor, entry_cover, entry_index};
+use crate::allocator_support::KernelAddressTranslator;
 use crate::pm::page::mapper::{AddressTranslator, TableAllocator};
+use crate::vm::{KPAGE_ALLOCATOR, KPT_ALLOCATOR};
+
+pub static KERNEL_ADDRESS_SPACE: AddressSpace = unsafe {
+    AddressSpace::new_dangling(
+        None,
+        &KPT_ALLOCATOR,
+        &KPAGE_ALLOCATOR,
+        &KernelAddressTranslator,
+    )
+};
 
 pub struct AddressSpace<'a> {
     root: SyncUnsafeCell<Option<NonNull<TTable<TABLE_ENTRIES>>>>,

@@ -2,9 +2,23 @@ use core::{fmt::Debug, mem::transmute};
 
 use aarch64_cpu_ext::structures::tte::{TTE4K48, TTE16K48};
 
+use crate::{
+    allocator_support::KernelAddressTranslator,
+    pm::page::PageAllocator,
+    vm::{page_allocator::KernelPTAllocator, slab::SlabAllocator},
+};
+
 pub mod page_allocator;
 pub mod slab;
 pub mod user;
+
+// use `KALLOCATOR`
+pub static KPAGE_ALLOCATOR: PageAllocator = PageAllocator::new(&KernelAddressTranslator);
+
+pub static KPT_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
+
+pub static KALLOCATOR: SlabAllocator =
+    SlabAllocator::new(&KPAGE_ALLOCATOR, &KernelAddressTranslator);
 
 pub type TTENATIVE = TTE16K48;
 pub type TTEUEFI = TTE4K48;

@@ -12,3 +12,4 @@ result-*
 **/hax.fst.config.json
 *.patch
 trace-events.txt
+*.img

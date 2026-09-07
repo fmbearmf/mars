@@ -16,11 +16,9 @@ use klib::{
     },
     pm::page::mapper::AddressTranslator,
     this_cpu,
-    vm::MAIR_DEVICE_INDEX,
+    vm::{MAIR_DEVICE_INDEX, user::address_space::KERNEL_ADDRESS_SPACE},
 };
 use zerocopy::FromBytes;
-
-use crate::KERNEL_ADDRESS_SPACE;
 
 pub fn secondary_handle(_node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
     use log::*;
