@@ -1,6 +1,7 @@
 use core::{borrow::Borrow, mem::MaybeUninit};
 
 use klib::{
+    console::set_backend,
     cpu_interface::{CpuTopologyId, init_cpu_maps},
     hardware::{
         device::{DeviceClass, DeviceInitPriority, DeviceNode, IrqFn},
@@ -23,7 +24,7 @@ use crate::{
     __KBASE, DEVICE_TREE,
     earlyinit::{
         acpi::acpi_init,
-        earlycon::{EARLYCON, EarlyCon},
+        earlycon::{EARLYCON, EarlyCon, earlycon_write_impl},
         mem::{
             clone_and_process_mmap, create_page_descriptors, populate_alloc_stage0,
             populate_alloc_stage1, switch_to_new_page_tables,
@@ -151,10 +152,11 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     let boot_info = boot_info_token.get_mut();
     let load_addr = boot_info.kernel_load_physical_address;
 
-    {
-        let mut lock = EARLYCON.lock();
-        *lock = Some(EarlyCon::new(boot_info.serial_uart_address));
+    unsafe {
+        *EARLYCON.get() = Some(EarlyCon::new(boot_info.serial_uart_address));
     }
+
+    set_backend(klib::console::BackendSlot::UnsafeFn(earlycon_write_impl));
 
     LOGGER
         .init(LevelFilter::Trace)

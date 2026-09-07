@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(negative_impls)]
+#![feature(sync_unsafe_cell)]
 
 extern crate alloc;
 
@@ -16,12 +17,8 @@ use core::{
     panic::PanicInfo,
 };
 use klib::{
-    allocator_support::KernelAddressTranslator,
-    cpu_interface::CpuTopologyId,
-    hardware::device::DeviceTree,
-    pm::page::PageAllocator,
-    register_drivers,
-    vm::{KALLOCATOR, KPAGE_ALLOCATOR, slab::SlabAllocator, user::address_space::AddressSpace},
+    cpu_interface::CpuTopologyId, guard::InterruptGuard, hardware::device::DeviceTree,
+    register_drivers, unsafe_println_panic_only_unsafe, vm::KALLOCATOR,
 };
 use protocol::BootInfo;
 
@@ -39,13 +36,10 @@ static DEVICE_TREE: AtomicRefCell<DeviceTree> = AtomicRefCell::new(DeviceTree::n
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    InterruptGuard::disable();
     unsafe {
         let core = CpuTopologyId::current();
-        #[cfg(not(debug_assertions))]
-        {
-            EARLYCON.steal();
-        }
-        earlycon_writeln!("CPU MPIDR={} PANIC: {}", core, info);
+        unsafe_println_panic_only_unsafe!("CPU MPIDR={} PANIC: {}", core, info);
     }
     busy_loop()
 }

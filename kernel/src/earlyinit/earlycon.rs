@@ -1,37 +1,22 @@
 use arm_pl011_uart::{LineConfig, PL011Registers, Uart, UniqueMmioPointer};
-use core::{fmt::Write, ptr::NonNull};
-use klib::sync::FairSpinlock;
+use core::{
+    cell::SyncUnsafeCell,
+    fmt::{self, Write},
+    ptr::NonNull,
+};
 
-pub static EARLYCON: FairSpinlock<Option<EarlyCon>> = FairSpinlock::new(None);
+pub static EARLYCON: SyncUnsafeCell<Option<EarlyCon>> = SyncUnsafeCell::new(None);
 
-#[macro_export]
-macro_rules! earlycon_write {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        if let Some(uart) = crate::earlyinit::earlycon::EARLYCON.lock().as_mut() {
-            let _ = core::write!(uart.uart, $($arg)*);
-        }
-    }};
-}
-
-#[macro_export]
-macro_rules! earlycon_writeln {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        if let Some(uart) = crate::earlyinit::earlycon::EARLYCON.lock().as_mut() {
-            let _ = core::writeln!(uart.uart, $($arg)*);
-        }
-    }};
-}
-
-#[macro_export]
-macro_rules! earlycon_writeln_debug {
-    ($($arg:tt)*) => {{
-        #[cfg(debug_assertions)]
-        {
-            $crate::earlycon_writeln!($($arg)*);
-        }
-    }};
+/// SAFETY: call from console subsystem only. unsynchronized.
+pub unsafe fn earlycon_write_impl(f: fmt::Arguments) -> fmt::Result {
+    // UB when panicking (codegen believes this has exclusive access, but panic calls it without synchronization).
+    // arm_pl011_uart forces my hand, because you can't write without `&mut self`.
+    // TODO: fix that probably.
+    if let Some(earlycon) = unsafe { (*EARLYCON.get()).as_mut() } {
+        earlycon.uart.write_fmt(f)
+    } else {
+        Ok(())
+    }
 }
 
 pub struct EarlyCon<'a> {

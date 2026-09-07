@@ -15,6 +15,7 @@ use core::{
 pub mod allocator_support;
 pub mod block;
 pub mod cache;
+pub mod console;
 pub mod context;
 pub mod cpu_interface;
 pub mod exception;

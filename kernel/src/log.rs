@@ -1,6 +1,5 @@
+use klib::println;
 use log::{Level, LevelFilter, SetLoggerError};
-
-use crate::earlycon_writeln;
 
 pub static LOGGER: Logger = Logger;
 
@@ -37,7 +36,7 @@ impl log::Log for Logger {
                         .map_or("<???>", |str| str.rsplit('/').next().unwrap_or(str));
                     let line = record.line().unwrap_or(0);
 
-                    earlycon_writeln!(
+                    println!(
                         "{}[{:>5}]{} {}:{}: {}",
                         color,
                         level,
@@ -48,7 +47,7 @@ impl log::Log for Logger {
                     );
                 }
                 _ => {
-                    earlycon_writeln!("{}[{:>5}]{} {}", color, level, RESET_CODE, record.args());
+                    println!("{}[{:>5}]{} {}", color, level, RESET_CODE, record.args());
                 }
             }
         }

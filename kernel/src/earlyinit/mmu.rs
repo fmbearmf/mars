@@ -9,8 +9,6 @@ use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
 use klib::vm::{TABLE_ENTRIES, TTable};
 use tock_registers::interfaces::*;
 
-use crate::{busy_loop_ret, earlycon_writeln};
-
 unsafe extern "C" {
     static __KEND: usize;
 }
