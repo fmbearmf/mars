@@ -1,5 +1,6 @@
 use alloc::{vec, vec::Vec};
 
+/// really. just take a WILD guess as to what this does.
 pub struct LpiAllocator {
     bitmap: Vec<u64>,
     base_id: u32,

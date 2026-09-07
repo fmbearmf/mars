@@ -5,7 +5,7 @@ members = [ "bootloader",
             "kernel/drivers/acpi-aml",
             "kernel/drivers/generic-timer",
             "kernel/drivers/pcie",
-            "kernel/drivers/virtio/gpu-pci",
+            "kernel/drivers/virtio",
             "klib",
             "klib/models",
             "klib/models/zerocopy",
@@ -45,7 +45,7 @@ mars-acpi-driver = { path = "./kernel/drivers/acpi" }
 mars-acpi-aml-driver = { path = "./kernel/drivers/acpi-aml" }
 mars-generic-timer-driver = { path = "./kernel/drivers/generic-timer" }
 mars-pcie-driver = { path = "./kernel/drivers/pcie" }
-mars-virtio-driver = { path = "./kernel/drivers/virtio/gpu-pci" }
+mars-virtio-driver = { path = "./kernel/drivers/virtio" }
 
 # procedural
 syn = "2.0.117"

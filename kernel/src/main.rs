@@ -9,7 +9,10 @@ mod earlyinit;
 mod log;
 mod lut;
 
-use aarch64_cpu::asm::wfe;
+use aarch64_cpu::asm::{
+    barrier::{self, dsb},
+    wfe,
+};
 use atomic_refcell::AtomicRefCell;
 use core::{
     alloc::GlobalAlloc,
@@ -72,10 +75,14 @@ pub(self) static GLOBAL_ALLOCATOR: GlobalAllocWrapper = GlobalAllocWrapper;
 
 register_drivers!([]);
 
+/// "Overwatch stopped our train in the woods and took my husband for questioning.
+/// They said he'd be back on the next train. I'm not sure when that was.
+/// They're being nice, though, letting me wait for him." (cit_fence_woods)
 #[allow(dead_code)]
 fn busy_loop() -> ! {
     loop {
         wfe();
+        dsb(barrier::SY); // YIELD (i.e. core::hint::spin_loop())
     }
 }
 

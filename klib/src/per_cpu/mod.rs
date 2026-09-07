@@ -8,6 +8,7 @@ use crate::cpu_interface::CpuIdLogical;
 static REGISTRY_PTR: AtomicPtr<PerCpuData> = AtomicPtr::new(core::ptr::null_mut());
 static REGISTRY_LEN: AtomicUsize = AtomicUsize::new(0);
 
+/// TODO: make this data-oriented (to avoid false sharing with lots of CPUs sitting adjacent)
 #[repr(C, align(64))]
 pub struct PerCpuData {
     pub id: CpuIdLogical,
