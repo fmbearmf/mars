@@ -151,7 +151,12 @@ fn scan_function(
 
         let compat = vec![
             format!("pci{:04x},{:04x}", vendor_id, device_id),
+            format!(
+                "pci-class-{:02x}{:02x}{:02x}",
+                class_code, subclass, prog_if
+            ),
             format!("pci-class-{:02x}{:02x}", class_code, subclass),
+            format!("pci-class-{:02x}", class_code),
             String::from("pci-device"),
         ];
 

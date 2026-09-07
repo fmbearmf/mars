@@ -8,7 +8,7 @@ use core::{
 use aarch64_cpu::asm::{sev, wfe};
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
 
-use crate::{scheduler::Scheduler, thread::Thread};
+use crate::{guard::InterruptGuard, scheduler::Scheduler, thread::Thread};
 
 pub struct SleepingMutex<'a, T: ?Sized> {
     locked: AtomicBool,
@@ -122,6 +122,19 @@ impl TicketLock {
     }
 
     #[inline]
+    pub fn try_lock(&self) -> bool {
+        let user = self.users.load(Ordering::Acquire);
+        self.ticket
+            .compare_exchange(
+                user,
+                user.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+    }
+
+    #[inline]
     pub fn lock(&self) {
         let ticket = self.ticket.fetch_add(1, Ordering::AcqRel);
         while self.users.load(Ordering::Acquire) != ticket {
@@ -148,6 +161,7 @@ unsafe impl<T: ?Sized + Send> Send for UnfairSpinlock<T> {}
 
 pub struct UnfairSpinlockGuard<'a, T: ?Sized> {
     mutex: &'a UnfairSpinlock<T>,
+    guard: InterruptGuard,
 }
 
 impl<T> UnfairSpinlock<T> {
@@ -162,22 +176,40 @@ impl<T> UnfairSpinlock<T> {
 impl<T: ?Sized> UnfairSpinlock<T> {
     #[inline]
     pub fn lock(&self) -> UnfairSpinlockGuard<'_, T> {
+        let guard = InterruptGuard::new();
+
         while self
             .lock
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
             .is_err()
         {
             wfe();
         }
 
-        UnfairSpinlockGuard { mutex: self }
+        UnfairSpinlockGuard { mutex: self, guard }
+    }
+
+    #[inline]
+    pub fn try_lock(&self) -> Option<UnfairSpinlockGuard<'_, T>> {
+        let guard = InterruptGuard::new();
+
+        if self
+            .lock
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            Some(UnfairSpinlockGuard { mutex: self, guard })
+        } else {
+            None
+        }
     }
 
     #[inline]
     pub unsafe fn steal(&self) -> UnfairSpinlockGuard<'_, T> {
+        let guard = InterruptGuard::new();
         self.lock.store(true, Ordering::Release);
 
-        UnfairSpinlockGuard { mutex: self }
+        UnfairSpinlockGuard { mutex: self, guard }
     }
 
     #[inline]
@@ -220,6 +252,7 @@ unsafe impl<T: ?Sized + Send> Send for FairSpinlock<T> {}
 
 pub struct FairSpinlockGuard<'a, T: ?Sized> {
     mutex: &'a FairSpinlock<T>,
+    guard: InterruptGuard,
 }
 
 impl<T> FairSpinlock<T> {
@@ -234,17 +267,31 @@ impl<T> FairSpinlock<T> {
 impl<T: ?Sized> FairSpinlock<T> {
     #[inline]
     pub fn lock(&self) -> FairSpinlockGuard<'_, T> {
+        let guard = InterruptGuard::new();
+
         self.lock.lock();
 
-        FairSpinlockGuard { mutex: self }
+        FairSpinlockGuard { mutex: self, guard }
+    }
+
+    #[inline]
+    pub fn try_lock(&self) -> Option<FairSpinlockGuard<'_, T>> {
+        let guard = InterruptGuard::new();
+        if self.lock.try_lock() {
+            Some(FairSpinlockGuard { mutex: self, guard })
+        } else {
+            None
+        }
     }
 
     #[inline]
     pub unsafe fn steal(&self) -> FairSpinlockGuard<'_, T> {
+        let guard = InterruptGuard::new();
+
         let ticket = self.lock.ticket.fetch_add(1, Ordering::AcqRel);
         self.lock.users.store(ticket, Ordering::Release);
 
-        FairSpinlockGuard { mutex: self }
+        FairSpinlockGuard { mutex: self, guard }
     }
 
     #[inline]

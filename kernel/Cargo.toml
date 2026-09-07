@@ -30,6 +30,7 @@ mars-acpi-driver.workspace = true
 mars-acpi-aml-driver.workspace = true
 mars-generic-timer-driver.workspace = true
 mars-virtio-driver.workspace = true
+mars-xhci-driver.workspace = true
 mars-models.workspace = true
 mars-models-zerocopy = { workspace = true }
 atomic_refcell.workspace = true

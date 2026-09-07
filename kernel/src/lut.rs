@@ -14,5 +14,8 @@ pub enum DeviceCallback {
 pub static DEVICE_TABLE: phf::Map<&str, DeviceCallback> = phf_map! {
     "arm,gic-v3" => DeviceCallback::EveryCore((gicv3::handle, gicv3::secondary_handle)),
     "arm,armv8-timer" => DeviceCallback::EveryCore((gt::handle, gt::secondary_handle)),
-    "pci1af4,1050" => DeviceCallback::Once(mars_virtio_driver::handle)
+
+    "pci1af4,1050" => DeviceCallback::Once(mars_virtio_driver::handle),
+
+    "pci-class-0c0330" => DeviceCallback::Once(mars_xhci_driver::driver::handle)
 };

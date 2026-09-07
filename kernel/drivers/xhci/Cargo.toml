@@ -1,0 +1,11 @@
+[package]
+name = "mars-xhci-driver"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+klib.workspace = true
+log.workspace = true
+mars_getters.workspace = true
+mars-pcie-driver.workspace = true
+aarch64-cpu-ext.workspace = true
