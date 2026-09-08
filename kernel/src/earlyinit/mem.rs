@@ -357,7 +357,7 @@ fn descriptor_to_meta(
             Shareability::InnerShareable,
             false,
         ),
-        MemoryType::MMIO | MemoryType::RUNTIME_SERVICES_DATA => (
+        MemoryType::MMIO | MemoryType::RUNTIME_SERVICES_DATA | MemoryType::ACPI_NON_VOLATILE => (
             AccessPermission::PrivilegedReadWrite,
             Shareability::OuterShareable,
             true,
@@ -372,7 +372,11 @@ fn descriptor_to_meta(
             Shareability::InnerShareable,
             false,
         ),
-        _ => todo!(),
+        _ => {
+            use log::*;
+            info!("unrecognized type: {:?}", desc.ty);
+            todo!();
+        }
     };
 
     (access, share, true, pxn, attr_index)
