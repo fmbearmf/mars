@@ -1,4 +1,5 @@
-
+use aarch64_cpu_ext::asm::sev;
+use alloc::collections::vec_deque::VecDeque;
 
 use crate::{
     dma::DmaBuffer,
@@ -9,15 +10,21 @@ use crate::{
 
 const USBCMD_RUN: u32 = 1 << 0;
 const USBCMD_HCRST: u32 = 1 << 1;
+const USBCMD_INTE: u32 = 1 << 2;
 const USBSTS_HCH: u32 = 1 << 0;
 const USBSTS_CNR: u32 = 1 << 11;
 
+// write 1 to clear
+const PORTSC_RW1C_MASK: u32 = 0x7F << 17;
+const PORTSC_PP: u32 = 1 << 9; // port... with power
+
 pub struct HostController {
-    regs: XhciRegisters,
-    dcbaa: DmaBuffer<[u64]>,
-    cmd_ring: CommandRing,
-    event_ring: EventRing,
-    erst: DmaBuffer<[ErstEntry]>,
+    pub regs: XhciRegisters,
+    pub dcbaa: DmaBuffer<[u64]>,
+    pub cmd_ring: CommandRing,
+    pub event_ring: EventRing,
+    pub erst: DmaBuffer<[ErstEntry]>,
+    pub pending_events: VecDeque<Trb>,
 }
 
 impl HostController {
@@ -28,6 +35,7 @@ impl HostController {
             cmd_ring: CommandRing::new(64)?,
             event_ring: EventRing::new(256)?,
             erst: DmaBuffer::new_slice(1, ErstEntry::default())?,
+            pending_events: VecDeque::new(),
         };
 
         controller.reset()?;
@@ -74,6 +82,7 @@ impl HostController {
         let op = self.regs.op();
         let hcs_params1 = self.regs.cap().hcs_params1.read();
         let max_slots = (hcs_params1 & 0xFF) as u8;
+        let max_ports = ((hcs_params1 >> 24) & 0xFF) as usize;
 
         // set max device slots enabled.
         let mut config = op.config.read();
@@ -101,31 +110,60 @@ impl HostController {
         rt.irs[0].er_stba.write(erstba);
         rt.irs[0].erdp.write(self.event_ring.phys_addr());
 
+        // fire interrupts immediately
+        rt.irs[0].imod.write(0);
+
         // enable IMAN interrupter. IE [0] and IP [1]
         rt.irs[0].iman.write(3);
+
+        self.power_on_ports(max_ports);
 
         Ok(())
     }
 
+    fn power_on_ports(&mut self, max_ports: usize) {
+        let op_ptr = self.regs.op() as *const _ as *mut u8;
+        for port in 0..max_ports {
+            let portsc_ptr = unsafe {
+                (op_ptr.add(0x400 + port * 0x10))
+                    .cast::<Volatile<u32>>()
+                    .as_ref()
+            };
+            if let Some(portsc) = portsc_ptr {
+                let current = portsc.read();
+                let new_val = (current & !PORTSC_RW1C_MASK) | PORTSC_PP;
+                portsc.write(new_val);
+            }
+        }
+    }
+
     fn start(&mut self) -> Result<(), &'static str> {
-        let cmd = self.regs.op().usb_cmd.read() | USBCMD_RUN;
+        let cmd = self.regs.op().usb_cmd.read() | USBCMD_RUN | USBCMD_INTE;
         self.regs.op().usb_cmd.write(cmd);
 
         // wait for hardware to parse schedules
         self.wait_for_bit(&self.regs.op().usb_sts, USBSTS_HCH, false)?;
 
-        // drain any
-        self.process_events();
         Ok(())
+    }
+
+    pub fn test_interrupt(&mut self) -> Result<(), &'static str> {
+        self.send_command(Trb::command(TrbType::NoOpCommand))
     }
 
     pub fn send_command(&mut self, trb: Trb) -> Result<(), &'static str> {
         self.cmd_ring.enqueue(trb)?;
-        self.regs.ring_doorbell(0, 0); // gem alarm...
+        self.regs.ring_doorbell(0, 0); // gem alarm... doorbell 0 is the host controller cmd ring
         Ok(())
     }
 
     pub fn process_events(&mut self) {
+        let iman = self.regs.rt().irs[0].iman.read();
+        if (iman & 1) != 0 {
+            // clear IP [0] by writing 1 (RW1C)
+            self.regs.rt().irs[0].iman.write(iman | 1);
+        }
+
         let mut count = 0;
         while let Some(event) = self.event_ring.next_event() {
             count += 1;
@@ -143,19 +181,11 @@ impl HostController {
         use log::*;
 
         match trb.trb_type() {
-            Some(TrbType::CommandCompletionEvent) => {
-                info!(
-                    "xhci: command completed: code={}, slot_id={}",
-                    trb.completion_code(),
-                    trb.slot_id()
-                );
-            }
-            Some(TrbType::PortStatusChangeEvent) => {
-                let port_id = (trb.parameter >> 24) as u8;
-                info!("xhci: port status changed on port {}", port_id);
-            }
-            Some(TrbType::TransferEvent) => {
-                debug!("xhci: transfer event: {:?}", trb);
+            Some(TrbType::CommandCompletionEvent)
+            | Some(TrbType::PortStatusChangeEvent)
+            | Some(TrbType::TransferEvent) => {
+                self.pending_events.push_back(trb);
+                sev();
             }
             other => {
                 debug!(
@@ -165,5 +195,9 @@ impl HostController {
                 );
             }
         }
+    }
+
+    pub fn pop_event(&mut self) -> Option<Trb> {
+        self.pending_events.pop_front()
     }
 }

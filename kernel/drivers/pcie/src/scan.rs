@@ -3,9 +3,14 @@ use alloc::{
     string::String,
     {vec, vec::Vec},
 };
-use klib::hardware::{
-    device::{DeviceClass, DeviceInitPriority, DeviceTree},
-    resource::Resource,
+use klib::{
+    cpu_interface::CpuIdLogical,
+    hardware::{
+        device::{DeviceClass, DeviceInitPriority, DeviceTree},
+        resource::Resource,
+    },
+    interrupt::{InterruptController, InterruptInterface, singleton::get_interrupt_controller},
+    this_cpu,
 };
 use log::*;
 
@@ -149,6 +154,13 @@ fn scan_function(
             }
         }
 
+        let irq = try_get_legacy_irq(ecam, bdf);
+
+        if let Some(irq) = irq {
+            debug!("{}: Legacy IRQ {} Added", bdf, irq);
+            resources.push(Resource::Irq(irq));
+        }
+
         let compat = vec![
             format!("pci{:04x},{:04x}", vendor_id, device_id),
             format!(
@@ -187,5 +199,17 @@ fn scan_function(
                 dt,
             );
         }
+    }
+}
+
+fn try_get_legacy_irq(ecam: &Ecam, bdf: Bdf) -> Option<u32> {
+    // stone-age technology
+    let pin = ecam.read_u8(bdf, 0x3D);
+    let line = ecam.read_u8(bdf, 0x3C);
+
+    if pin != 0 && line != 0 && line != 0xFF {
+        Some(line as u32)
+    } else {
+        None
     }
 }

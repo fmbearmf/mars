@@ -72,9 +72,8 @@ pub enum IrqTarget {
 #[derive(Debug, Copy, Clone)]
 #[repr(align(8))]
 pub struct IrqHandler {
-    #[allow(unused, reason = "planned feature")]
-    target: IrqTarget,
-    dispatch_fn: IrqHandlerFnPtr,
+    pub target: IrqTarget,
+    pub dispatch_fn: IrqHandlerFnPtr,
 }
 
 struct ItsCmdQueue {

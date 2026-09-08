@@ -21,6 +21,10 @@ impl InterruptGuard {
     pub fn disable() {
         DAIF.modify(DAIF::I::Masked + DAIF::F::Masked);
     }
+
+    pub fn is_enabled() -> bool {
+        DAIF.matches_any(&[DAIF::I::Unmasked, DAIF::F::Unmasked])
+    }
 }
 
 impl Drop for InterruptGuard {

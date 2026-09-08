@@ -59,7 +59,7 @@ impl CommandRing {
 }
 
 pub struct EventRing {
-    buffer: DmaBuffer<[Trb]>,
+    pub buffer: DmaBuffer<[Trb]>,
     cycle_state: bool,
     dequeue_index: usize,
 }
