@@ -29,13 +29,13 @@ pub fn load_kernel(mut kernel: RegularFile) -> Result<(u64, u64, u64, u64), Stat
         }
     };
 
-    let mem_attr_proto = {
-        let handle = boot::get_handle_for_protocol::<MemoryProtection>()
-            .expect("UEFI memory attributes not available");
+    let mem_attr_proto = boot::get_handle_for_protocol::<MemoryProtection>()
+        .ok()
+        .and_then(|handle| boot::open_protocol_exclusive::<MemoryProtection>(handle).ok());
 
-        boot::open_protocol_exclusive::<MemoryProtection>(handle)
-            .expect("couldn't exclusively open memory attribute protocol")
-    };
+    if mem_attr_proto.is_none() {
+        log::warn!("EFI_MEMORY_ATTRIBUTE_PROTOCOL not supported; attributes will not be applied");
+    }
 
     let file_size = file_info.file_size() as usize;
     debug!("kernel.elf size = {}", file_size);
@@ -224,27 +224,31 @@ pub fn load_kernel(mut kernel: RegularFile) -> Result<(u64, u64, u64, u64), Stat
             }
         }
 
-        let mut attrs = MemoryAttribute::empty();
+        if let Some(ref proto) = mem_attr_proto {
+            let mut attrs = MemoryAttribute::empty();
 
-        if !r {
-            attrs |= MemoryAttribute::READ_PROTECT;
+            if !r {
+                attrs |= MemoryAttribute::READ_PROTECT;
+            }
+
+            if !x {
+                attrs |= MemoryAttribute::EXECUTE_PROTECT;
+            }
+
+            debug!("attr: {:?}", attrs);
+
+            if !attrs.is_empty() {
+                if let Err(e) = proto.set_memory_attributes(
+                    Range {
+                        start: start_align as _,
+                        end: end_align as _,
+                    },
+                    attrs,
+                ) {
+                    log::warn!("failed to set memory protections for segment: {:?}", e);
+                }
+            }
         }
-
-        if !x {
-            attrs |= MemoryAttribute::EXECUTE_PROTECT;
-        }
-
-        debug!("attr: {:?}", attrs);
-
-        mem_attr_proto
-            .set_memory_attributes(
-                Range {
-                    start: start_align as _,
-                    end: end_align as _,
-                },
-                attrs,
-            )
-            .expect("unable to set memory protections");
     }
 
     let entry_vaddr = ehdr.e_entry;
