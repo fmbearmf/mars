@@ -260,24 +260,5 @@ fn main() -> Status {
         system_table_raw: st,
     });
 
-    putc(b'J');
-    putc(b'\r');
-    putc(b'\n');
-
-    unsafe {
-        for offset in 0..20 {
-            let ptr = entry_paddr as *const u32;
-            let ptr = ptr.add(offset);
-            let data = core::ptr::read_unaligned(ptr);
-            let data = data.to_le_bytes();
-            putc(data[0]);
-            putc(data[1]);
-            putc(data[2]);
-            putc(data[3]);
-        }
-        putc(b'\r');
-        putc(b'\n');
-    }
-
     unsafe { drop_to_el1(entry_vaddr, boot_info.as_mut_ptr() as usize) }
 }

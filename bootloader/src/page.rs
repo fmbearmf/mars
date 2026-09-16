@@ -31,7 +31,11 @@ pub fn cpu_init() {
     MAIR_EL1.modify(
         MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck
             + MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
-            + MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc,
+            + MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc
+            + MAIR_EL1::Attr2_Normal_Outer::WriteThrough_NonTransient_ReadWriteAlloc
+            + MAIR_EL1::Attr2_Normal_Inner::WriteThrough_NonTransient_ReadWriteAlloc
+            + MAIR_EL1::Attr3_Normal_Outer::NonCacheable
+            + MAIR_EL1::Attr3_Normal_Inner::NonCacheable,
     );
 
     CPACR_EL1.modify(CPACR_EL1::FPEN::TrapNothing);
@@ -42,11 +46,11 @@ pub fn cpu_init() {
 }
 
 pub fn mmu_init(ttbr1: *const TTable<TABLE_ENTRIES>) {
-    MAIR_EL1.modify(
-        MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck
-            + MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
-            + MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc,
-    );
+    // MAIR_EL1.modify(
+    //     MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck
+    //         + MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
+    //         + MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc,
+    // );
 
     TCR_EL1.modify(
         TCR_EL1::TBI1::Ignored

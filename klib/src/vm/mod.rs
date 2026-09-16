@@ -45,6 +45,8 @@ pub const L0_BLOCK_MASK: usize = L0_BLOCK_SIZE - 1;
 pub const TABLE_ENTRIES: usize =
     aarch64_cpu_ext::structures::tte::block_sizes::granule_16k::LEVEL3_PAGE_SIZE / 8usize;
 
+pub const MAIR_NORMAL_WC_INDEX: u64 = 3;
+pub const MAIR_NORMAL_WT_INDEX: u64 = 2;
 pub const MAIR_NORMAL_INDEX: u64 = 1;
 pub const MAIR_DEVICE_INDEX: u64 = 0;
 

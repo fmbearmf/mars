@@ -22,8 +22,8 @@ use klib::{
     },
     sync::RwLock,
     vm::{
-        KALLOCATOR, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, PAGE_SIZE, TABLE_ENTRIES, TTable,
-        VmError, align_down, align_up,
+        KALLOCATOR, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MAIR_NORMAL_WC_INDEX,
+        MAIR_NORMAL_WT_INDEX, PAGE_SIZE, TABLE_ENTRIES, TTable, VmError, align_down, align_up,
         page_allocator::PhysicalPageAllocator,
         phys_addr_to_dmap,
         user::{PageDescriptor, PtState},
@@ -336,17 +336,29 @@ fn add_subrange(page_alloc: &mut PageAllocator, start: usize, end: usize) {
 fn descriptor_to_meta(
     desc: &MemoryDescriptor,
 ) -> (AccessPermission, Shareability, bool, bool, u64) {
-    let attr_index = match desc.att
-        & (MemoryAttribute::UNCACHEABLE
-            | MemoryAttribute::WRITE_BACK
-            | MemoryAttribute::WRITE_THROUGH
-            | MemoryAttribute::WRITE_COMBINE)
-    {
+    let caching_mask = MemoryAttribute::UNCACHEABLE
+        | MemoryAttribute::WRITE_COMBINE
+        | MemoryAttribute::WRITE_THROUGH
+        | MemoryAttribute::WRITE_BACK;
+
+    let attr_index = match desc.att & caching_mask {
         MemoryAttribute::UNCACHEABLE => MAIR_DEVICE_INDEX,
+        MemoryAttribute::WRITE_THROUGH => MAIR_NORMAL_WT_INDEX,
+        MemoryAttribute::WRITE_COMBINE => MAIR_NORMAL_WC_INDEX,
         MemoryAttribute::WRITE_BACK => MAIR_NORMAL_INDEX,
-        MemoryAttribute::WRITE_THROUGH => todo!(),
-        MemoryAttribute::WRITE_COMBINE => todo!(),
-        _ => todo!(), // multiple
+        multiple => {
+            // UEFI has advertised multiple supported caching attributes.
+            // select the best caching mode, in the order of WB > WT > WC > UC
+            if multiple.contains(MemoryAttribute::WRITE_BACK) {
+                MAIR_NORMAL_INDEX
+            } else if multiple.contains(MemoryAttribute::WRITE_THROUGH) {
+                MAIR_NORMAL_WT_INDEX
+            } else if multiple.contains(MemoryAttribute::WRITE_COMBINE) {
+                MAIR_NORMAL_WC_INDEX
+            } else {
+                MAIR_DEVICE_INDEX
+            }
+        }
     };
 
     let (access, share, pxn) = match desc.ty {
@@ -374,8 +386,15 @@ fn descriptor_to_meta(
         ),
         _ => {
             use log::*;
-            info!("unrecognized type: {:?}", desc.ty);
-            todo!();
+            warn!(
+                "unrecognized memory type: {:?}, defaulting to RO device",
+                desc.ty
+            );
+            (
+                AccessPermission::PrivilegedReadOnly,
+                Shareability::OuterShareable,
+                true,
+            )
         }
     };
 
