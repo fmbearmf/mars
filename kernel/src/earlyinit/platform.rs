@@ -1,6 +1,7 @@
 use core::{borrow::Borrow, mem::MaybeUninit};
 
 use klib::{
+    allocator_support::KernelAddressTranslator,
     console::set_backend,
     cpu_interface::{CpuTopologyId, init_cpu_maps},
     hardware::{
@@ -9,6 +10,7 @@ use klib::{
         resource::Resource,
     },
     interrupt::singleton::get_interrupt_controller,
+    pm::page::mapper::AddressTranslator,
     scheduler::GLOBAL_SCHEDULER,
     stack::Stack,
     this_cpu,
@@ -153,7 +155,8 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     let load_addr = boot_info.kernel_load_physical_address;
 
     unsafe {
-        *EARLYCON.get() = Some(EarlyCon::new(boot_info.serial_uart_address));
+        let vaddr = KernelAddressTranslator.phys_to_dmap(boot_info.serial_uart_address) as usize;
+        *EARLYCON.get() = Some(EarlyCon::new(vaddr));
     }
 
     set_backend(klib::console::BackendSlot::UnsafeFn(earlycon_write_impl));
@@ -172,6 +175,7 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
 
     trace!("init_mmu addr: {:#p}", init_mmu as *const ());
     init_mmu(boot_info.page_table_root);
+    trace!("init_mmu done");
 
     let uefi_mmap = &mut boot_info.memory_map;
     uefi_mmap.sort();

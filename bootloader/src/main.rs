@@ -17,7 +17,8 @@ use core::{
 use aarch64_cpu::asm::barrier::{self, dsb};
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use klib::{
-    pm::page::mapper::{TableAllocator, id_map, map_region},
+    allocator_support::KernelAddressTranslator,
+    pm::page::mapper::{AddressTranslator, TableAllocator, id_map, map_region},
     vm::{MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, PAGE_SIZE, align_down, align_up},
 };
 use log::{debug, error, info};
@@ -199,12 +200,25 @@ fn main() -> Status {
     );
 
     let uart_phys = 0x040d_0000;
-    //let uart_phys = 0x0900_0000;
+    let uart_phys = 0x0900_0000;
     let uart_phys_page = align_down(uart_phys, PAGE_SIZE);
     map_region(
         unsafe { root_ttbr0.as_mut() },
         uart_phys_page,
         uart_phys_page,
+        PAGE_SIZE,
+        AccessPermission::PrivilegedReadWrite,
+        Shareability::OuterShareable,
+        true,
+        false,
+        MAIR_DEVICE_INDEX,
+        &TABLE_ALLOC,
+        &UefiAddressTranslator,
+    );
+    map_region(
+        unsafe { root_ttbr1.as_mut() },
+        uart_phys_page,
+        KernelAddressTranslator.phys_to_dmap(uart_phys_page) as _,
         PAGE_SIZE,
         AccessPermission::PrivilegedReadWrite,
         Shareability::OuterShareable,
