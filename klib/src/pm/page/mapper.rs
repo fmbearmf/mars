@@ -1,11 +1,54 @@
 use core::ptr::NonNull;
 
-use crate::vm::{
-    L1_BLOCK_SIZE, L2_BLOCK_SIZE, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE,
-    TTable,
+use crate::{
+    cache::clean_dcache_range,
+    vm::{
+        L1_BLOCK_SIZE, L2_BLOCK_SIZE, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE,
+        TTable,
+    },
 };
-use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
+use aarch64_cpu::asm::barrier::{self, dsb, isb};
+use aarch64_cpu_ext::{
+    asm::tlb::{VAAE1IS, VMALLE1, VMALLE1IS, tlbi},
+    structures::tte::{AccessPermission, Shareability},
+};
 
+#[inline]
+fn clean_entry<T>(entry: &T) {
+    unsafe {
+        clean_dcache_range(entry as *const _ as *const u8, core::mem::size_of::<T>());
+    }
+}
+
+#[inline]
+fn clean_table<T>(table_ptr: *const T) {
+    unsafe {
+        clean_dcache_range(table_ptr as _, core::mem::size_of::<T>());
+    }
+}
+
+#[inline]
+pub fn tlb_invalidate_all() {
+    dsb(barrier::ISH);
+    tlbi(VMALLE1IS);
+    dsb(barrier::ISH);
+    isb(barrier::SY);
+}
+
+#[inline]
+pub fn tlb_invalidate_page(va: usize) {
+    let val = (va >> 12) & 0x0000_FFFF_FFFF_FFFF;
+    dsb(barrier::ISH);
+    unsafe {
+        core::arch::asm!(
+            "tlbi vaae1is, {val}",
+            val = in(reg) val,
+            options(nostack, preserves_flags)
+        );
+    }
+    dsb(barrier::ISH);
+    isb(barrier::SY);
+}
 
 pub trait TableAllocator {
     fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>>;
@@ -242,9 +285,13 @@ pub fn map_page(
     } else {
         let mut table = allocator.alloc_table();
 
+        clean_table(table.as_ptr());
+
         l0_entry.set_is_valid(true);
         l0_entry.set_is_table();
         l0_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
+
+        clean_entry(l0_entry);
 
         unsafe { table.as_mut() }
     };
@@ -259,9 +306,12 @@ pub fn map_page(
     } else {
         let mut table = allocator.alloc_table();
 
+        clean_table(table.as_ptr());
+
         l1_entry.set_is_valid(true);
         l1_entry.set_is_table();
         l1_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
+        clean_entry(l1_entry);
 
         unsafe { table.as_mut() }
     };
@@ -277,10 +327,12 @@ pub fn map_page(
         unsafe { table.as_mut() }
     } else {
         let mut table = allocator.alloc_table();
+        clean_table(table.as_ptr());
 
         l2_entry.set_is_valid(true);
         l2_entry.set_is_table();
         l2_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
+        clean_entry(l2_entry);
 
         unsafe { table.as_mut() }
     };
@@ -297,6 +349,8 @@ pub fn map_page(
     l3_entry.set_attr_index(attr_index);
     l3_entry.set_executable(!uxn);
     l3_entry.set_privileged_executable(!pxn);
+    clean_entry(l3_entry);
+    tlb_invalidate_page(va);
 }
 
 pub fn unmap_page(
@@ -347,23 +401,45 @@ pub fn unmap_page(
 
     l3_entry.set_is_valid(false);
     l3_entry.set_address(0);
+    clean_entry(l3_entry);
+
+    let mut free_l3 = None;
+    let mut free_l2 = None;
+    let mut free_l1 = None;
 
     if is_table_empty(l3_table) {
-        allocator.free_table(l3_table_ptr);
+        free_l3 = Some(l3_table_ptr);
         l2_entry.set_is_valid(false);
         l2_entry.set_address(0);
+        clean_entry(l2_entry);
 
         if is_table_empty(l2_table) {
-            allocator.free_table(l2_table_ptr);
+            free_l2 = Some(l2_table_ptr);
             l1_entry.set_is_valid(false);
             l1_entry.set_address(0);
+            clean_entry(l1_entry);
 
             if is_table_empty(l1_table) {
-                allocator.free_table(l1_table_ptr);
+                free_l1 = Some(l1_table_ptr);
                 l0_entry.set_is_valid(false);
                 l0_entry.set_address(0);
+                clean_entry(l0_entry);
             }
         }
+    }
+
+    tlb_invalidate_page(va);
+
+    if let Some(ptr) = free_l3 {
+        allocator.free_table(ptr);
+    }
+
+    if let Some(ptr) = free_l2 {
+        allocator.free_table(ptr);
+    }
+
+    if let Some(ptr) = free_l1 {
+        allocator.free_table(ptr);
     }
 }
 
@@ -423,15 +499,44 @@ pub fn free_tables(
                     }
 
                     l3_entry.set_is_valid(false);
+                    l3_entry.set_address(0);
                 }
+
+                unsafe {
+                    clean_dcache_range(
+                        l3_table as *mut _ as _,
+                        core::mem::size_of::<TTable<TABLE_ENTRIES>>(),
+                    )
+                };
+
+                l2_entry.set_is_valid(false);
+                l2_entry.set_address(0);
+                unsafe {
+                    clean_dcache_range(l2_entry as *mut _ as _, core::mem::size_of_val(l2_entry))
+                };
 
                 allocator.free_table(unsafe { NonNull::new_unchecked(l3_table) });
             }
+
+            l1_entry.set_is_valid(false);
+            l1_entry.set_address(0);
+            unsafe {
+                clean_dcache_range(l1_entry as *mut _ as _, core::mem::size_of_val(l1_entry))
+            };
+
             allocator.free_table(unsafe { NonNull::new_unchecked(l2_table) });
         }
+
+        l0_entry.set_is_valid(false);
+        l0_entry.set_address(0);
+        unsafe { clean_dcache_range(l0_entry as *mut _ as _, core::mem::size_of_val(l0_entry)) };
+
         allocator.free_table(unsafe { NonNull::new_unchecked(l1_table) });
     }
+
     allocator.free_table(unsafe { NonNull::new_unchecked(root_table) });
+
+    tlb_invalidate_all();
 }
 
 fn is_table_empty(table: &TTable<TABLE_ENTRIES>) -> bool {
