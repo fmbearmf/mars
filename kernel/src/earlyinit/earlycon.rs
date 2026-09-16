@@ -35,7 +35,7 @@ impl<'a> EarlyCon<'a> {
             parity: arm_pl011_uart::Parity::None,
             stop_bits: arm_pl011_uart::StopBits::One,
         };
-        _ = uart.enable(line_conf, 115_200, 16_000_000);
+        _ = uart.enable(line_conf, 115_200, 100_000_000);
         _ = writeln!(uart, "UART {:#x} enabled", serial_uart_addr);
 
         Self { uart }

@@ -190,6 +190,23 @@ fn main() -> Status {
     id_map(
         unsafe { root_ttbr0.as_mut() },
         AccessPermission::PrivilegedReadWrite,
+        Shareability::InnerShareable,
+        true,
+        false,
+        MAIR_NORMAL_INDEX,
+        &TABLE_ALLOC,
+        &UefiAddressTranslator,
+    );
+
+    let uart_phys = 0x040d_0000;
+    //let uart_phys = 0x0900_0000;
+    let uart_phys_page = align_down(uart_phys, PAGE_SIZE);
+    map_region(
+        unsafe { root_ttbr0.as_mut() },
+        uart_phys_page,
+        uart_phys_page,
+        PAGE_SIZE,
+        AccessPermission::PrivilegedReadWrite,
         Shareability::OuterShareable,
         true,
         false,
@@ -201,24 +218,52 @@ fn main() -> Status {
     let entry_fn: fn(boot_info: *mut BootInfo) -> ! = unsafe { transmute(entry_vaddr) };
     debug!("entry_fn: {:p}", entry_fn as *const ());
 
-    mmu_init(root_ttbr1.as_ptr());
+    let putc = |c: u8| unsafe {
+        let fr = (uart_phys + 0x18) as *const u32;
+        while (core::ptr::read_volatile(fr) & (1 << 5)) != 0 {}
+
+        let dr = uart_phys as *mut u32;
+        core::ptr::write_volatile(dr, c as u32);
+    };
 
     let mut boot_info = MaybeUninit::<BootInfo>::uninit();
 
     let mem_map_final = unsafe { boot::exit_boot_services(None) };
 
-    unsafe { mmu_init_post_exit() };
+    unsafe {
+        mmu_init(root_ttbr1.as_ptr());
+        mmu_init_post_exit();
+    }
 
     let st = uefi::table::system_table_raw().expect("no system table?");
 
     boot_info.write(BootInfo {
         kernel_load_physical_address: base_phys as usize,
         kernel_size: load_size as usize,
-        serial_uart_address: 0x0900_0000,
+        serial_uart_address: uart_phys,
         memory_map: mem_map_final,
         page_table_root: Some(root_ttbr0.as_ptr()),
         system_table_raw: st,
     });
+
+    putc(b'J');
+    putc(b'\r');
+    putc(b'\n');
+
+    unsafe {
+        for offset in 0..20 {
+            let ptr = entry_paddr as *const u32;
+            let ptr = ptr.add(offset);
+            let data = core::ptr::read_unaligned(ptr);
+            let data = data.to_le_bytes();
+            putc(data[0]);
+            putc(data[1]);
+            putc(data[2]);
+            putc(data[3]);
+        }
+        putc(b'\r');
+        putc(b'\n');
+    }
 
     unsafe { drop_to_el1(entry_vaddr, boot_info.as_mut_ptr() as usize) }
 }

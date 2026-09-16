@@ -6,7 +6,10 @@ use core::{
 };
 
 use alloc::vec;
-use klib::vm::{PAGE_SIZE, TTENATIVE, align_down, align_up};
+use klib::{
+    cache::{clean_dcache_range, clean_icache_range},
+    vm::{PAGE_SIZE, TTENATIVE, align_down, align_up},
+};
 use log::{debug, error};
 use uefi::{
     Status,
@@ -267,6 +270,11 @@ pub fn load_kernel(mut kernel: RegularFile) -> Result<(u64, u64, u64, u64), Stat
         "entrypoint at physical {:#x} virt {:#x} (offset {:#x})",
         entry_paddr, entry_vaddr, entry_offset
     );
+
+    unsafe {
+        clean_icache_range(base_phys as _, load_size);
+        clean_dcache_range(base_phys as _, load_size);
+    }
 
     Ok((entry_offset, min_vaddr, base_phys, load_size as _))
 }

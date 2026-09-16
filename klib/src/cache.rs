@@ -19,6 +19,32 @@ fn get_dcache_line_size() -> usize {
     1 << (dmin_line + 2)
 }
 
+pub unsafe fn clean_icache_range(addr: *const u8, len: usize) {
+    let cache_line_size = get_dcache_line_size();
+
+    let start = align_down(addr as usize, cache_line_size);
+    let end = align_up(addr as usize + len, cache_line_size);
+
+    for ptr in (start..end).step_by(cache_line_size) {
+        unsafe {
+            core::arch::asm!(
+                "dc cvau, {0}",
+                in(reg) ptr,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+    }
+
+    dsb(barrier::ISH);
+
+    unsafe {
+        core::arch::asm!("ic iallu", options(nomem, nostack, preserves_flags));
+    }
+
+    dsb(barrier::ISH);
+    isb(barrier::SY);
+}
+
 pub unsafe fn clean_dcache_range(addr: *const u8, len: usize) {
     let cache_line_size = get_dcache_line_size();
 
@@ -28,13 +54,13 @@ pub unsafe fn clean_dcache_range(addr: *const u8, len: usize) {
     for ptr in (start..end).step_by(cache_line_size) {
         unsafe {
             core::arch::asm!(
-                "dc cvac, {}",
+                "dc civac, {}",
                 in(reg) ptr,
                 options(nomem, nostack, preserves_flags)
             );
         }
     }
 
-    dsb(barrier::SY);
+    dsb(barrier::ISH);
     isb(barrier::SY);
 }

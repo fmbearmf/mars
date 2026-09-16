@@ -2,7 +2,7 @@ use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
     registers::{
         CNTHCTL_EL2, CNTVOFF_EL2, CPACR_EL1, CPTR_EL2, CurrentEL, ELR_EL2, HCR_EL2, MAIR_EL1,
-        SCTLR_EL1, SPSR_EL2, TCR_EL1, TTBR0_EL1, TTBR1_EL1,
+        SCTLR_EL1, SP, SP_EL1, SPSR_EL2, TCR_EL1, TTBR0_EL1, TTBR0_EL2, TTBR1_EL1,
     },
 };
 use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
@@ -75,7 +75,11 @@ pub unsafe fn mmu_init_post_exit() {
     if CurrentEL.read(CurrentEL::EL) == 2 {
         let mair_el1 = MAIR_EL1.get();
         let tcr_el1 = TCR_EL1.get();
-        let ttbr0_el1 = TTBR0_EL1.get();
+        let ttbr0_el1 = if HCR_EL2.is_set(HCR_EL2::E2H) {
+            TTBR0_EL1.get()
+        } else {
+            TTBR0_EL2.get()
+        };
         let ttbr1_el1 = TTBR1_EL1.get();
         let sctlr_el1 = SCTLR_EL1.get();
 
@@ -120,6 +124,7 @@ pub unsafe fn drop_to_el1(entry: usize, arg: usize) -> ! {
         );
 
         ELR_EL2.set(entry as u64);
+        SP_EL1.set(SP.get());
 
         dsb(barrier::SY);
         isb(barrier::SY);
