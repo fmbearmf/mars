@@ -1,5 +1,9 @@
 use core::sync::atomic::Ordering;
 
+use aarch64_cpu::asm::{
+    barrier::{self, dsb},
+    sev,
+};
 use alloc::sync::Arc;
 use klib::{
     context::RegisterFileRef, guard::InterruptGuard, scheduler::GLOBAL_SCHEDULER, stack::Stack,

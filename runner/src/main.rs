@@ -68,7 +68,7 @@ fn main() -> Result<()> {
     let qemu_status = Command::new("qemu-system-aarch64")
         .args([
             "-M",
-            "virt,gic-version=3,its=on",
+            "virt,gic-version=3,its=on,virtualization=on",
             "-accel",
             "tcg",
             "-cpu",

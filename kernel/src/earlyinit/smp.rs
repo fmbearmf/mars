@@ -51,32 +51,41 @@ global_asm!(
     "mrs x9, CurrentEL",
     "lsr x9, x9, #2",
     "cmp x9, #2",
-    "b.ne .L_el1",
+    "b.ne .L_el2",
     //
-    "mov x9, #(1 << 31)",
+    // [34] = E2H (VHE)
+    // [31] = RW (AArch64)
+    // [27] = TGE (route EL1 registers to EL2)
+    "movz x9, #0x8800, lsl #16",
+    "movk x9, #0x0004, lsl #32",
     "msr hcr_el2, x9",
+    "isb",
     //
-    "msr cptr_el2, xzr",
-    //
-    "mov x9, #0x3c5",
+    "mov x9, #0x3c9",
     "msr spsr_el2, x9",
     //
-    "adr x9, .L_el1",
+    "adr x9, .L_el2",
     "msr elr_el2, x9",
     //
-    "msr cptr_el2, xzr",
     "msr hstr_el2, xzr",
     //
-    "mov x9, #3",
+    // under VHE, CNTHCTL_EL2 has the same layout as CNTKCTL_EL1
+    // [1:0] = EL0 phys/virt counter accesses
+    // [11:10] = EL0 phys/virt timer accesses
+    "mov x9, #((3 << 10) | 3)",
     "msr cnthctl_el2, x9",
     "msr cntvoff_el2, xzr",
+    //
+    "mov x9, #0xf",
+    "msr icc_sre_el2, x9",
+    "isb",
     //
     "dsb sy",
     "isb",
     //
     "eret",
     //
-    ".L_el1:",
+    ".L_el2:",
     "ldr x9, [x0, #0]",   // SecondaryBootArgs.stack_top (virtual)
     "ldr x7, [x0, #8]",   // SecondaryBootArgs.entry_fn (virtual)
     "ldr w8, [x0, #16]",  // SecondaryBootArgs.cpu_id
@@ -149,7 +158,7 @@ pub unsafe fn boot_secondary(
     let args_phys = KernelAddressTranslator.dmap_to_phys(args_ptr as _) as u64;
 
     info!(
-        "Woke up CPU {} at {:#x}",
+        "Waking up CPU {} at {:#x}",
         core.to_logical()
             .map(|c| c.to_u32())
             .map_or(-1, |c| c as i32),
@@ -158,11 +167,16 @@ pub unsafe fn boot_secondary(
 
     cpu_on(core, trampoline_phys, args_phys)?;
 
+    trace!("cpu_on returned");
+
     let pcpu = PerCpu::get(logical_id.to_usize()).expect("invalid logical_id passed");
 
-    while pcpu.ready.load(Ordering::Acquire) != true {
-        core::hint::spin_loop();
-    }
+    while pcpu.ready.load(Ordering::Acquire) != true {}
+
+    trace!(
+        "SMP: CPU {} is confirmed to be ready. moving on...",
+        logical_id.to_u32()
+    );
 
     Ok(())
 }

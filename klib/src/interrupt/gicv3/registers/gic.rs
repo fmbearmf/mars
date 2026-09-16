@@ -259,6 +259,12 @@ declare_register!(
             size: 1,
             type: bool,
         );
+        /// whether direct injection of virtual LPIs is supported (indicator of GICv4)
+        field VirtualLPISupport => (
+            offset: 1,
+            size: 1,
+            type: bool
+        );
         /// whether direct injection of LPIs is supported
         field DirectLPISupport => (
             offset: 3,

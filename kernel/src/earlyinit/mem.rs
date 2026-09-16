@@ -385,11 +385,11 @@ fn descriptor_to_meta(
             false,
         ),
         _ => {
-            use log::*;
-            warn!(
-                "unrecognized memory type: {:?}, defaulting to RO device",
-                desc.ty
-            );
+            //use log::*;
+            //warn!(
+            //    "unrecognized memory type: {:?}, defaulting to RO device",
+            //    desc.ty
+            //);
             (
                 AccessPermission::PrivilegedReadOnly,
                 Shareability::OuterShareable,

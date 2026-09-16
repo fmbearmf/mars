@@ -1,6 +1,6 @@
 use core::{ops::Range, ptr::NonNull, sync::atomic::Ordering};
 
-use aarch64_cpu::registers::{MPIDR_EL1, Readable};
+use aarch64_cpu::registers::{CurrentEL, MPIDR_EL1, Readable};
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{format, string::String, vec, vec::Vec};
 use atomic_refcell::AtomicRefMut;
@@ -129,10 +129,15 @@ fn handle_mcfg(table: &'static [u8]) {
     let mut dt = DEVICE_TREE.borrow_mut();
 
     for alloc in mcfg.allocations() {
-        let bus_count = (alloc.end_bus_num() as usize - alloc.start_bus_num() as usize) + 1;
+        let start_bus = alloc.start_bus_num() as usize;
+        let end_bus = alloc.end_bus_num() as usize;
+        let bus_count = (end_bus - start_bus) + 1;
         let ecam_size = bus_count * (1024 * 1024); // 32 dev * 8 func * 4KiB
-        let phys_base = alloc.base_addr();
-        let va_start = KernelAddressTranslator.phys_to_dmap(phys_base as usize) as usize;
+
+        let phys_base_bus0 = alloc.base_addr() as usize;
+        let phys_base = phys_base_bus0 + (start_bus << 20);
+
+        let va_start = KernelAddressTranslator.phys_to_dmap(phys_base) as usize;
         let va_end = va_start + ecam_size;
 
         {
@@ -140,7 +145,7 @@ fn handle_mcfg(table: &'static [u8]) {
                 "ACPI: Mapping PCIe ECAM Segment {} [Phys: {:#018x}..{:#018x}] -> [Vir: {:#018x}..{:#018x}] [{} MiB]",
                 alloc.pci_segment_group(),
                 phys_base,
-                phys_base + (ecam_size as u64),
+                phys_base + ecam_size,
                 va_start,
                 va_end,
                 ecam_size / (1024 * 1024)
@@ -155,7 +160,7 @@ fn handle_mcfg(table: &'static [u8]) {
             for offset in (0..ecam_size).step_by(PAGE_SIZE) {
                 map_page(
                     root,
-                    phys_base as usize + offset,
+                    phys_base + offset,
                     va_start + offset,
                     AccessPermission::PrivilegedReadWrite,
                     Shareability::OuterShareable,
@@ -177,7 +182,7 @@ fn handle_mcfg(table: &'static [u8]) {
         );
 
         let ecam = Ecam::new(
-            phys_base,
+            phys_base as u64,
             alloc.pci_segment_group(),
             alloc.start_bus_num(),
             alloc.end_bus_num(),
@@ -185,7 +190,7 @@ fn handle_mcfg(table: &'static [u8]) {
 
         enumerate_segment(
             &ecam,
-            phys_base,
+            phys_base as u64,
             alloc.start_bus_num(),
             alloc.end_bus_num(),
             &mut dt,
@@ -210,12 +215,17 @@ fn handle_gtdt(table: &[u8]) {
         );
     }
 
+    let gsiv = match CurrentEL.read(CurrentEL::EL) {
+        2 => gtdt.ns_el2_gsiv(),
+        _ => gtdt.virt_el1_gsiv(),
+    };
+
     let mut dt = DEVICE_TREE.borrow_mut();
     dt.add_device(
         None,
         DeviceClass::Timer,
         vec![String::from("arm,armv8-timer")],
-        vec![Resource::Irq(gtdt.virt_el1_gsiv())],
+        vec![Resource::Irq(gsiv)],
         Default::default(),
     );
 }
@@ -287,9 +297,9 @@ fn handle_dsdt(table: &[u8]) {
 
     debug!("ACPI: DSDT AML length = {}", aml_bytes.len());
 
-    let mut output = String::new();
-    format_aml_stream(&mut root_parser, 0, &mut output).unwrap();
-    debug!("{}", output);
+    //let mut output = String::new();
+    //format_aml_stream(&mut root_parser, 0, &mut output).unwrap();
+    //debug!("{}", output);
 }
 
 fn aml_stream(parser: &mut AmlParser, depth: usize) -> Result<(), &'static str> {
@@ -425,9 +435,10 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
         .map_err(|_| "MADT GIC Distributor entry contained wrong bytes")
         .unwrap();
 
-    if gicd.gic_version() != 3 {
+    let gic_version = gicd.gic_version();
+    if gic_version < 3 {
         error!(
-            "    GIC version isn't 3 (unsupported): {}",
+            "    GIC version is less than 3 (unsupported): {}",
             gicd.gic_version()
         );
         unimplemented!();
@@ -461,6 +472,10 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
         );
     }
 
+    // GICv3 = 2 frames (128k), advance 1
+    // GICv4 = 4 frames (256k), advance 2
+    let step = if gic_version == 4 { 2 } else { 1 };
+
     for (_, slice) in madt().filter(|(entry_type, _)| matches!(entry_type, 0xE)) {
         // GICR
         let gicr_handle: &GicRedistributor = GicRedistributor::ref_from_bytes(slice)
@@ -470,28 +485,26 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
             .frames()
             .expect("MADT GIC Redistributor entry contained invalid GICR block");
 
-        for i in 0..gicr_block.len() {
+        let mut i = 0;
+        while i < gicr_block.len() {
+            // break if every (known) CPU is accounted for
+            if redistributor_count >= cpu_topologies.len() {
+                break;
+            }
+
             let gicr_frame = match gicr_block.get(i) {
                 Some(f) => f,
                 None => break,
             };
 
-            let gicr_regs = gicr_frame.reg;
-
-            let last = gicr_regs
-                .type_
-                .read_field_pure(GicrTyper::LastRedistributor);
+            let paddr = gicr_frame.reg as *const GicrRegisters as usize;
 
             gic_resources.push(Resource::Mmio {
-                range: (gicr_regs as *const GicrRegisters as usize)
-                    ..(gicr_regs as *const GicrRegisters as usize + size_of::<GicrRegisters>()),
+                range: paddr..(paddr + size_of::<GicrRegisters>()),
             });
 
             redistributor_count += 1;
-
-            if last {
-                break;
-            }
+            i += step;
         }
     }
 
@@ -511,7 +524,7 @@ fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTre
     dt.add_device(
         None,
         DeviceClass::GicV3 {
-            redistributor_count,
+            redistributor_count: redistributor_count as _,
         },
         vec![String::from("arm,gic-v3")],
         gic_resources,

@@ -2,10 +2,11 @@ use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
     registers::{
         CNTHCTL_EL2, CNTVOFF_EL2, CPACR_EL1, CPTR_EL2, CurrentEL, ELR_EL2, HCR_EL2, MAIR_EL1,
-        SCTLR_EL1, SP, SP_EL1, SPSR_EL2, TCR_EL1, TTBR0_EL1, TTBR0_EL2, TTBR1_EL1,
+        SCTLR_EL1, SCTLR_EL2, SP, SP_EL1, SP_EL2, SPSR_EL2, TCR_EL1, TTBR0_EL1, TTBR0_EL2,
+        TTBR1_EL1,
     },
 };
-use aarch64_cpu_ext::asm::tlb::{VMALLE1, tlbi};
+use aarch64_cpu_ext::asm::tlb::{ALLE2, VMALLE1, tlbi};
 use klib::{
     pm::page::mapper::AddressTranslator,
     vm::{TABLE_ENTRIES, TTable},
@@ -28,6 +29,38 @@ impl AddressTranslator for UefiAddressTranslator {
 }
 
 pub fn cpu_init() {
+    let el = CurrentEL.read(CurrentEL::EL);
+
+    if el == 2 {
+        let was_on = SCTLR_EL2.is_set(SCTLR_EL2::M);
+        if was_on {
+            SCTLR_EL2.modify(SCTLR_EL2::M::Enable);
+            isb(barrier::SY);
+        }
+
+        // 64-bit
+        HCR_EL2.write(
+            HCR_EL2::RW::EL1IsAarch64
+                + HCR_EL2::E2H::EnableOsAtEl2
+                + HCR_EL2::TGE::EnableTrapGeneralExceptionsToEl2,
+        );
+        isb(barrier::SY);
+
+        if was_on {
+            SCTLR_EL2.modify(SCTLR_EL2::M::Enable);
+        }
+
+        tlbi(ALLE2);
+        dsb(barrier::SY);
+        isb(barrier::SY);
+
+        // passthrough timer
+        CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
+        CNTVOFF_EL2.set(0);
+
+        isb(barrier::SY);
+    }
+
     MAIR_EL1.modify(
         MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck
             + MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
@@ -46,12 +79,6 @@ pub fn cpu_init() {
 }
 
 pub fn mmu_init(ttbr1: *const TTable<TABLE_ENTRIES>) {
-    // MAIR_EL1.modify(
-    //     MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck
-    //         + MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
-    //         + MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc,
-    // );
-
     TCR_EL1.modify(
         TCR_EL1::TBI1::Ignored
             + TCR_EL1::IPS::Bits_48
@@ -87,8 +114,8 @@ pub unsafe fn mmu_init_post_exit() {
         let ttbr1_el1 = TTBR1_EL1.get();
         let sctlr_el1 = SCTLR_EL1.get();
 
-        HCR_EL2.modify(HCR_EL2::E2H::CLEAR);
-        isb(barrier::SY);
+        //HCR_EL2.modify(HCR_EL2::E2H::CLEAR);
+        //isb(barrier::SY);
 
         MAIR_EL1.set(mair_el1);
         TCR_EL1.set(tcr_el1);
@@ -103,32 +130,22 @@ pub unsafe fn mmu_init_post_exit() {
     }
 }
 
-pub unsafe fn drop_to_el1(entry: usize, arg: usize) -> ! {
+pub unsafe fn drop_to_kernel(entry: usize, arg: usize) -> ! {
     use tock_registers::interfaces::{Readable, Writeable};
 
     let el = CurrentEL.read(CurrentEL::EL);
 
     if el == 2 {
-        // 64-bit
-        HCR_EL2.write(HCR_EL2::RW::EL1IsAarch64);
-        // no FP/SIMD traps
-        CPTR_EL2.set(0);
-
-        // passthrough timer
-        CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
-        CNTVOFF_EL2.set(0);
-
         // all exceptions masked by default
         SPSR_EL2.write(
             SPSR_EL2::D::Masked
                 + SPSR_EL2::A::Masked
                 + SPSR_EL2::I::Masked
                 + SPSR_EL2::F::Masked
-                + SPSR_EL2::M::EL1h,
+                + SPSR_EL2::M::EL2h,
         );
 
         ELR_EL2.set(entry as u64);
-        SP_EL1.set(SP.get());
 
         dsb(barrier::SY);
         isb(barrier::SY);

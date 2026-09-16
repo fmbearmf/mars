@@ -41,15 +41,15 @@ impl PsciError {
 }
 
 #[inline(always)]
-unsafe fn smccc_call_hvc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
+pub unsafe fn smccc_call_hvc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
     let res: i64;
     unsafe {
         asm!(
             "hvc #0",
             inlateout("x0") fid as u64 => res,
-            in("x1") arg1,
-            in("x2") arg2,
-            in("x3") arg3,
+            inout("x1") arg1 => _,
+            inout("x2") arg2 => _,
+            inout("x3") arg3 => _,
             out("x4") _, out("x5") _, out("x6") _, out("x7") _,
             out("x8") _, out("x9") _, out("x10") _, out("x11") _,
             out("x12") _, out("x13") _, out("x14") _, out("x15") _,
@@ -62,15 +62,17 @@ unsafe fn smccc_call_hvc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
 }
 
 #[inline(always)]
-unsafe fn smccc_call_smc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
+pub unsafe fn smccc_call_smc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
+    use log::*;
+    trace!("smccc_call_smc {:#x}: before", fid);
     let res: i64;
     unsafe {
         asm!(
             "smc #0",
             inlateout("x0") fid as u64 => res,
-            in("x1") arg1,
-            in("x2") arg2,
-            in("x3") arg3,
+            inout("x1") arg1 => _,
+            inout("x2") arg2 => _,
+            inout("x3") arg3 => _,
             out("x4") _, out("x5") _, out("x6") _, out("x7") _,
             out("x8") _, out("x9") _, out("x10") _, out("x11") _,
             out("x12") _, out("x13") _, out("x14") _, out("x15") _,
@@ -78,6 +80,7 @@ unsafe fn smccc_call_smc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
             options(nostack)
         )
     };
+    trace!("smccc_call_smc {:#x}: after", fid);
 
     res
 }

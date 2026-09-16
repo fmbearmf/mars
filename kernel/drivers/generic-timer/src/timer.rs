@@ -1,8 +1,11 @@
-use core::{time::Duration, u64};
+use core::time::Duration;
 
 use aarch64_cpu::{
     asm::barrier::{self, isb},
-    registers::{CNTFRQ_EL0, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0, Readable, Writeable},
+    registers::{
+        CNTFRQ_EL0, CNTP_CTL_EL0, CNTP_CVAL_EL0, CNTPCT_EL0, CNTV_CTL_EL0, CNTV_CVAL_EL0,
+        CNTVCT_EL0, CurrentEL, Readable, Writeable,
+    },
 };
 use atomic_refcell::AtomicRefCell;
 
@@ -72,59 +75,82 @@ impl Timer {
 
     #[inline]
     pub fn counter(&self) -> u64 {
-        read_cntvct_el0()
+        match CurrentEL.read(CurrentEL::EL) {
+            2 => read_cntpct_el0(),
+            _ => read_cntvct_el0(),
+        }
     }
 
     // can't be bothered to write a `register_bitfields`
     #[inline]
     pub fn enabled(&self) -> bool {
-        CNTV_CTL_EL0.matches_all(CNTV_CTL_EL0::ENABLE::SET)
+        match CurrentEL.read(CurrentEL::EL) {
+            2 => CNTP_CTL_EL0.matches_all(CNTP_CTL_EL0::ENABLE::SET),
+            _ => CNTV_CTL_EL0.matches_all(CNTV_CTL_EL0::ENABLE::SET),
+        }
     }
 
     #[inline]
     pub fn masked(&self) -> bool {
-        CNTV_CTL_EL0.matches_all(CNTV_CTL_EL0::IMASK::SET)
+        match CurrentEL.read(CurrentEL::EL) {
+            2 => CNTP_CTL_EL0.matches_all(CNTP_CTL_EL0::IMASK::SET),
+            _ => CNTV_CTL_EL0.matches_all(CNTV_CTL_EL0::IMASK::SET),
+        }
     }
 
     #[inline]
     pub fn pending(&self) -> bool {
-        CNTV_CTL_EL0.matches_all(CNTV_CTL_EL0::ISTATUS::SET)
+        match CurrentEL.read(CurrentEL::EL) {
+            2 => CNTP_CTL_EL0.matches_all(CNTP_CTL_EL0::ISTATUS::SET),
+            _ => CNTV_CTL_EL0.matches_all(CNTV_CTL_EL0::ISTATUS::SET),
+        }
     }
 
     #[inline]
     pub fn enable(&self) {
-        CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET);
+        match CurrentEL.read(CurrentEL::EL) {
+            2 => CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET),
+            _ => CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET),
+        }
         isb(barrier::SY);
     }
 
     #[inline]
     pub fn disable(&self) {
-        CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::CLEAR);
+        match CurrentEL.read(CurrentEL::EL) {
+            2 => CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::CLEAR),
+            _ => CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::CLEAR),
+        }
         isb(barrier::SY);
     }
 
     #[inline]
     pub fn set_masked(&self, masked: bool) {
-        let value = if masked {
-            CNTV_CTL_EL0::IMASK::SET
-        } else {
-            CNTV_CTL_EL0::IMASK::CLEAR
+        match (CurrentEL.read(CurrentEL::EL), masked) {
+            (2, true) => CNTP_CTL_EL0.write(CNTP_CTL_EL0::IMASK::SET),
+            (2, false) => CNTP_CTL_EL0.write(CNTP_CTL_EL0::IMASK::CLEAR),
+            (_, true) => CNTV_CTL_EL0.write(CNTV_CTL_EL0::IMASK::SET),
+            (_, false) => CNTV_CTL_EL0.write(CNTV_CTL_EL0::IMASK::CLEAR),
         };
-
-        CNTV_CTL_EL0.write(value);
 
         isb(barrier::SY);
     }
 
     #[inline]
     pub fn set_compare(&self, cval: u64) {
-        write_cntv_cval_el0(cval);
+        match CurrentEL.read(CurrentEL::EL) {
+            2 => write_cntp_cval_el0(cval),
+            _ => write_cntv_cval_el0(cval),
+        }
         isb(barrier::SY);
     }
 
     #[inline]
     pub fn compare(&self) -> u64 {
-        read_cntv_cval_el0()
+        match CurrentEL.read(CurrentEL::EL) {
+            2 => read_cntp_cval_el0(),
+            _ => read_cntv_cval_el0(),
+        }
     }
 
     pub fn arm_after(&self, delta: Duration) -> Result<(), TimerError> {
@@ -189,11 +215,26 @@ fn read_cntvct_el0() -> u64 {
 }
 
 #[inline]
+fn read_cntpct_el0() -> u64 {
+    CNTPCT_EL0.get()
+}
+
+#[inline]
 fn read_cntv_cval_el0() -> u64 {
     CNTV_CVAL_EL0.get()
 }
 
 #[inline]
+fn read_cntp_cval_el0() -> u64 {
+    CNTP_CVAL_EL0.get()
+}
+
+#[inline]
 fn write_cntv_cval_el0(val: u64) {
+    CNTV_CVAL_EL0.set(val);
+}
+
+#[inline]
+fn write_cntp_cval_el0(val: u64) {
     CNTV_CVAL_EL0.set(val);
 }

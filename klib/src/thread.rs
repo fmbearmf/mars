@@ -4,7 +4,7 @@ use crate::{stack::Stack, sync::FairSpinlock};
 
 use super::{context::RegisterFile, process::Process, sync::RwLock};
 
-use aarch64_cpu::registers::SPSR_EL1;
+use aarch64_cpu::registers::{CurrentEL, Readable, SPSR_EL1, SPSR_EL2};
 use alloc::sync::{Arc, Weak};
 use derivative::Derivative;
 
@@ -134,13 +134,18 @@ impl<'a> Thread<'a> {
         priority: u8,
         // translator: &'a dyn AddressTranslator,
     ) -> Self {
+        let kernel_mode = match CurrentEL.read(CurrentEL::EL) {
+            2 => SPSR_EL2::M::EL2h.value,
+            _ => SPSR_EL1::M::EL1h.value,
+        };
+
         Self::new_inner(
             Weak::new(),
             true,
             stack,
             entry as _,
             priority,
-            SPSR_EL1::M::EL1h.value,
+            kernel_mode,
             // translator,
         )
     }

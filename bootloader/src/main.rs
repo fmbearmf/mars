@@ -35,7 +35,7 @@ use uefi_raw::table::system::SystemTable;
 use crate::{
     allocator::UefiTableAlloc,
     elf::load_kernel,
-    page::{UefiAddressTranslator, cpu_init, drop_to_el1, mmu_init, mmu_init_post_exit},
+    page::{UefiAddressTranslator, cpu_init, drop_to_kernel, mmu_init, mmu_init_post_exit},
 };
 
 #[global_allocator]
@@ -232,14 +232,6 @@ fn main() -> Status {
     let entry_fn: fn(boot_info: *mut BootInfo) -> ! = unsafe { transmute(entry_vaddr) };
     debug!("entry_fn: {:p}", entry_fn as *const ());
 
-    let putc = |c: u8| unsafe {
-        let fr = (uart_phys + 0x18) as *const u32;
-        while (core::ptr::read_volatile(fr) & (1 << 5)) != 0 {}
-
-        let dr = uart_phys as *mut u32;
-        core::ptr::write_volatile(dr, c as u32);
-    };
-
     let mut boot_info = MaybeUninit::<BootInfo>::uninit();
 
     let mem_map_final = unsafe { boot::exit_boot_services(None) };
@@ -260,5 +252,5 @@ fn main() -> Status {
         system_table_raw: st,
     });
 
-    unsafe { drop_to_el1(entry_vaddr, boot_info.as_mut_ptr() as usize) }
+    unsafe { drop_to_kernel(entry_vaddr, boot_info.as_mut_ptr() as usize) }
 }

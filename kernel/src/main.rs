@@ -9,9 +9,12 @@ mod earlyinit;
 mod log;
 mod lut;
 
-use aarch64_cpu::asm::{
-    barrier::{self, dsb},
-    wfe,
+use aarch64_cpu::{
+    asm::{
+        barrier::{self, dsb},
+        wfe,
+    },
+    registers::{CurrentEL, Readable},
 };
 use atomic_refcell::AtomicRefCell;
 use core::{
@@ -130,13 +133,25 @@ pub unsafe extern "C" fn _start(_boot_info_ref: *mut BootInfo) {
 }
 
 fn kentry(boot_info_ref: *mut BootInfo) -> ! {
-    unsafe {
-        asm!(
-            "adr {x}, vector_table_el1",
-            "msr vbar_el1, {x}",
-            x = out(reg) _,
-            options(nomem, nostack),
-        );
+    match CurrentEL.read(CurrentEL::EL) {
+        2 => unsafe {
+            asm!(
+                "adr {x}, vector_table_el1",
+                "msr vbar_el2, {x}",
+                "isb",
+                x = out(reg) _,
+                options(nomem, nostack),
+            );
+        },
+        _ => unsafe {
+            asm!(
+                "adr {x}, vector_table_el1",
+                "msr vbar_el1, {x}",
+                "isb",
+                x = out(reg) _,
+                options(nomem, nostack),
+            );
+        },
     }
     init_cpu();
 
