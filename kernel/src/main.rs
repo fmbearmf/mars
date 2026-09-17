@@ -100,7 +100,7 @@ unsafe extern "C" {
     static __KBASE: usize;
 }
 
-const STACK_SIZE: usize = 16 * 1024;
+const STACK_SIZE: usize = 32 * 1024;
 
 #[allow(dead_code)]
 #[repr(align(16))]
@@ -138,6 +138,7 @@ fn kentry(boot_info_ref: *mut BootInfo) -> ! {
             asm!(
                 "adr {x}, vector_table_el1",
                 "msr vbar_el2, {x}",
+                "msr vbar_el1, {x}",
                 "isb",
                 x = out(reg) _,
                 options(nomem, nostack),

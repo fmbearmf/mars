@@ -1,7 +1,7 @@
 use core::{
     arch::asm,
-    ops::Range,
     ptr::{self, NonNull},
+    range::Range,
     slice::{self},
 };
 
@@ -20,6 +20,7 @@ use klib::{
         PageAllocator,
         mapper::{AddressTranslator, TableAllocator, clone_page_tables, map_page},
     },
+    rangekeeper,
     sync::RwLock,
     vm::{
         KALLOCATOR, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MAIR_NORMAL_WC_INDEX,
@@ -78,17 +79,11 @@ macro_rules! kernel_address_space {
 
 /// check whether an entry is acceptable normal memory
 fn is_normal_desc(desc: &MemoryDescriptor) -> bool {
-    let att_ok = !desc.att.contains(MemoryAttribute::RUNTIME);
+    let att_bad = desc.att.contains(MemoryAttribute::RUNTIME);
 
-    let ty_ok = match desc.ty {
-        MemoryType::BOOT_SERVICES_CODE
-        | MemoryType::BOOT_SERVICES_DATA
-        | MemoryType::CONVENTIONAL
-        | MemoryType::LOADER_DATA => true,
-        _ => false,
-    };
+    let ty_ok = desc.ty == MemoryType::CONVENTIONAL;
 
-    att_ok && ty_ok
+    !att_bad && ty_ok
 }
 
 fn can_merge(a: &MemoryDescriptor, b: &MemoryDescriptor) -> bool {
@@ -97,118 +92,6 @@ fn can_merge(a: &MemoryDescriptor, b: &MemoryDescriptor) -> bool {
     }
 
     a.ty == b.ty && a.att == b.att
-}
-
-/// relocate memory map into the first usable region,
-/// opportunistically merge memory regions in-place,
-/// and finally return the relocated memory map
-pub fn clone_and_process_mmap<T: MemoryMap>(map: &T) -> MemoryMapRefMut<'static> {
-    let meta = map.meta();
-    let desc_size = meta.desc_size;
-
-    let mut final_count = 0;
-    let mut first_normal_start: Option<u64> = None;
-    let mut last_processed: Option<MemoryDescriptor> = None;
-
-    for desc in map.entries().filter(|d| d.ty != MemoryType::LOADER_CODE) {
-        let mut current = *desc;
-
-        if is_normal_desc(&current) && current.ty != MemoryType::BOOT_SERVICES_DATA {
-            current.ty = MemoryType::CONVENTIONAL;
-            if first_normal_start.is_none() {
-                first_normal_start = Some(current.phys_start);
-            }
-        }
-
-        if let Some(ref mut last) = last_processed {
-            if can_merge(last, &current) {
-                last.page_count += current.page_count;
-            } else {
-                final_count += 1;
-                last_processed = Some(current);
-            }
-        } else {
-            last_processed = Some(current);
-        }
-    }
-
-    if last_processed.is_some() {
-        final_count += 1;
-    }
-
-    let dest_pa = first_normal_start.expect("no suitable memory found");
-
-    let map_bytes = final_count * desc_size;
-    let map_pages = align_up(map_bytes, UEFI_PS) / UEFI_PS;
-    let dest_ptr = dest_pa as *mut u8;
-
-    let mut write_i = 0;
-    let mut merged: Option<MemoryDescriptor> = None;
-
-    let mut punch = |mut desc: MemoryDescriptor| {
-        if desc.phys_start <= dest_pa
-            && (desc.phys_start + desc.page_count * UEFI_PS as u64) > dest_pa
-        {
-            let offset_pages = (dest_pa - desc.phys_start) / UEFI_PS as u64;
-            let total_needed = offset_pages + map_pages as u64;
-
-            if desc.page_count > total_needed {
-                desc.phys_start += total_needed * UEFI_PS as u64;
-                desc.page_count -= total_needed;
-            } else {
-                // entirely consumed
-                return;
-            }
-        }
-
-        desc.virt_start = KernelAddressTranslator.phys_to_dmap(desc.phys_start as _) as _;
-
-        let ptr = unsafe { dest_ptr.add(write_i * desc_size) as *mut MemoryDescriptor };
-        unsafe {
-            ptr::write(ptr, desc);
-        };
-        write_i += 1;
-    };
-
-    for desc in map
-        .entries()
-        .filter(|desc| desc.ty != MemoryType::LOADER_CODE)
-    {
-        let mut current = *desc;
-
-        if is_normal_desc(&current) && current.ty != MemoryType::BOOT_SERVICES_DATA {
-            current.ty = MemoryType::CONVENTIONAL;
-        }
-
-        if let Some(ref mut last) = merged {
-            if can_merge(last, &current) {
-                last.page_count += current.page_count;
-            } else {
-                punch(*last);
-                merged = Some(current);
-            }
-        } else {
-            merged = Some(current);
-        }
-    }
-
-    if let Some(last) = merged {
-        punch(last);
-    }
-
-    let final_map_size = write_i * desc_size;
-    let final_buf = unsafe { slice::from_raw_parts_mut(dest_ptr, final_map_size) };
-
-    MemoryMapRefMut::new(
-        final_buf,
-        MemoryMapMeta {
-            desc_size,
-            map_size: final_map_size,
-            map_key: meta.map_key,
-            desc_version: meta.desc_version,
-        },
-    )
-    .expect("invalid ref")
 }
 
 pub fn create_page_descriptors() -> (Box<[PageDescriptor]>, Range<usize>) {
@@ -237,67 +120,28 @@ pub fn create_page_descriptors() -> (Box<[PageDescriptor]>, Range<usize>) {
 }
 
 /// give the allocator a safe interim piece of memory.
-pub fn populate_alloc_stage0<T: MemoryMap>(map: &T) {
+pub fn populate_alloc_stage0() {
     let page_alloc = unsafe { KALLOCATOR.page_alloc_mut() };
 
-    if let Some(entry) = map
-        .entries()
-        .filter(|x| {
-            x.ty == MemoryType::CONVENTIONAL && (x.page_count as usize * UEFI_PS) >= 4 * PAGE_SIZE
-        })
-        .max_by_key(|x| x.page_count)
-    {
-        let start = align_up(entry.phys_start as usize, PAGE_SIZE);
-        let end = align_down(
-            entry.phys_start as usize + (entry.page_count as usize * UEFI_PS),
-            PAGE_SIZE,
-        );
+    rangekeeper::for_each_range(|r| {
+        log::info!("Rangekeeper range: {:#010x}..{:#010x}", r.start, r.end);
+    });
 
-        let range = Range { start, end };
-        trace!("page allocator push: {:#x?} {:#x}", range, entry.page_count);
-
-        page_alloc.add_range(&range);
+    if let Some(entry) = rangekeeper::largest_range() {
+        if (entry.end - entry.start) >= 4 * PAGE_SIZE {
+            trace!("page allocator push stage0: {:#x?}", entry);
+            page_alloc.add_range(&entry);
+        }
     }
 }
 
-/// wipe and then fully populate the allocator.
-/// safety: only call when UEFI boot services data is safe to be clobbered
-pub fn populate_alloc_stage1<T: MemoryMap>(map: &T) {
+/// fully populate the allocator.
+pub fn populate_alloc_stage1() {
     let page_alloc = unsafe { KALLOCATOR.page_alloc_mut() };
-    //unsafe { page_alloc.wipe() };
 
-    let mut current_start: Option<usize> = None;
-    let mut current_end: Option<usize> = None;
-
-    for entry in map.entries().filter(|e| is_normal_desc(e)) {
-        let start = entry.phys_start as usize;
-        let end = start + (entry.page_count as usize * UEFI_PS);
-
-        let is_normal = is_normal_desc(entry);
-        let is_contig = current_end == Some(start);
-
-        if is_normal && is_contig {
-            current_end = Some(end);
-        } else {
-            if let (Some(start), Some(end)) = (current_start, current_end) {
-                flush(page_alloc, start, end);
-            }
-
-            if is_normal {
-                current_start = Some(start);
-                current_end = Some(end);
-            } else {
-                current_start = None;
-                current_end = None;
-            }
-        }
-    }
-
-    if let (Some(start), Some(end)) = (current_start, current_end) {
-        flush(page_alloc, start, end);
-    }
-
-    //unsafe { page_alloc.transition_dmap() };
+    rangekeeper::for_each_range(|range| {
+        flush(page_alloc, range.start, range.end);
+    });
 }
 
 fn flush(page_alloc: &mut PageAllocator, start: usize, end: usize) {
@@ -384,18 +228,19 @@ fn descriptor_to_meta(
             Shareability::InnerShareable,
             false,
         ),
-        _ => {
-            //use log::*;
-            //warn!(
-            //    "unrecognized memory type: {:?}, defaulting to RO device",
-            //    desc.ty
-            //);
-            (
-                AccessPermission::PrivilegedReadOnly,
-                Shareability::OuterShareable,
-                true,
-            )
+        MemoryType::RESERVED => {
+            use log::*;
+            warn!(
+                "invalid memory type: {:?}. this should've been caught",
+                desc.ty
+            );
+            unimplemented!();
         }
+        _ => (
+            AccessPermission::PrivilegedReadOnly,
+            Shareability::OuterShareable,
+            true,
+        ),
     };
 
     (access, share, true, pxn, attr_index)

@@ -1,8 +1,8 @@
 use core::{
     cell::UnsafeCell,
     fmt::Debug,
-    ops::Range,
     ptr::{self},
+    range::Range,
     sync::atomic::{AtomicUsize, Ordering},
     usize,
 };
@@ -208,7 +208,7 @@ impl PageAllocator<'_> {
                     .dmap_to_phys((zone.data_base + (zone.total_pages * PAGE_SIZE)) as _);
 
                 if range.start < zone_end && zone_start < range.end {
-                    result = Some(zone_start..zone_end);
+                    result = Some(Range::from(zone_start..zone_end));
                     break;
                 }
 

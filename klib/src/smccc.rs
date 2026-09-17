@@ -3,6 +3,8 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use aarch64_cpu::asm::barrier::{self, isb};
+
 use super::cpu_interface::CpuTopologyId;
 
 pub const PSCI_0_2_FN64_CPU_ON: u32 = 0xC400_0003;
@@ -40,7 +42,6 @@ impl PsciError {
     }
 }
 
-#[inline(always)]
 pub unsafe fn smccc_call_hvc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
     let res: i64;
     unsafe {
@@ -61,7 +62,6 @@ pub unsafe fn smccc_call_hvc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
     res
 }
 
-#[inline(always)]
 pub unsafe fn smccc_call_smc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
     use log::*;
     trace!("smccc_call_smc {:#x}: before", fid);
@@ -77,7 +77,6 @@ pub unsafe fn smccc_call_smc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
             out("x8") _, out("x9") _, out("x10") _, out("x11") _,
             out("x12") _, out("x13") _, out("x14") _, out("x15") _,
             out("x16") _, out("x17") _,
-            options(nostack)
         )
     };
     trace!("smccc_call_smc {:#x}: after", fid);

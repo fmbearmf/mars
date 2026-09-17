@@ -1,5 +1,9 @@
 use core::{borrow::Borrow, mem::MaybeUninit};
 
+use aarch64_cpu::{
+    asm::barrier::{self, dsb, isb},
+    registers::{DAIF, ReadWriteable},
+};
 use klib::{
     allocator_support::KernelAddressTranslator,
     console::set_backend,
@@ -11,6 +15,7 @@ use klib::{
     },
     interrupt::singleton::get_interrupt_controller,
     pm::page::mapper::AddressTranslator,
+    rangekeeper,
     scheduler::GLOBAL_SCHEDULER,
     stack::Stack,
     this_cpu,
@@ -20,7 +25,10 @@ use klib::{
     },
 };
 use protocol::BootInfo;
-use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
+use uefi::{
+    boot::MemoryType,
+    mem::memory_map::{MemoryMap, MemoryMapMut},
+};
 
 use crate::{
     __KBASE, DEVICE_TREE,
@@ -28,8 +36,8 @@ use crate::{
         acpi::acpi_init,
         earlycon::{EARLYCON, EarlyCon, earlycon_write_impl},
         mem::{
-            clone_and_process_mmap, create_page_descriptors, populate_alloc_stage0,
-            populate_alloc_stage1, switch_to_new_page_tables,
+            create_page_descriptors, populate_alloc_stage0, populate_alloc_stage1,
+            switch_to_new_page_tables,
         },
         mmu::init_mmu,
         smp::boot_secondary,
@@ -151,6 +159,9 @@ pub use sealed::*;
 pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     use log::*;
 
+    let sp: usize;
+    unsafe { core::arch::asm!("mov {}, sp", out(reg) sp) };
+
     let boot_info = boot_info_token.get_mut();
     let load_addr = boot_info.kernel_load_physical_address;
 
@@ -172,6 +183,7 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     );
 
     trace!("address of bootinfo: {:#p}", &boot_info);
+    debug!("uefi_arm64_bootstrap: current SP: {:#x}", sp);
 
     trace!("init_mmu addr: {:#p}", init_mmu as *const ());
     init_mmu(boot_info.page_table_root);
@@ -179,29 +191,35 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
 
     let uefi_mmap = &mut boot_info.memory_map;
     uefi_mmap.sort();
+    log::trace!("{:?}", uefi_mmap);
 
-    //trace!(
-    //    "uefi_mmap @ {:p}",
-    //    uefi_mmap.buffer() as *const _ as *const ()
-    //);
+    rangekeeper::init_rangekeeper(uefi_mmap);
 
-    let uefi_mmap = clone_and_process_mmap(uefi_mmap);
-    trace!("processed uefi_mmap @ {:p}", uefi_mmap.buffer() as *const _);
+    populate_alloc_stage0();
 
-    //for desc in uefi_mmap.entries() {
-    //    trace!("{:x?}", desc);
-    //}
+    dsb(barrier::SY);
+    isb(barrier::SY);
+    log::trace!("PSCI_VERSION: {}", unsafe {
+        klib::smccc::smccc_call_smc(0x8400_0000, 0, 0, 0)
+    });
 
-    populate_alloc_stage0(&uefi_mmap);
-
-    let new_pt = unsafe { switch_to_new_page_tables(|| uefi_mmap.entries(), &KALLOCATOR) };
+    let new_pt = unsafe {
+        switch_to_new_page_tables(
+            || {
+                uefi_mmap
+                    .entries()
+                    .filter(|&x| x.ty != MemoryType::RESERVED)
+            },
+            &KALLOCATOR,
+        )
+    };
 
     unsafe { KALLOCATOR.transition_dmap() };
 
-    populate_alloc_stage1(&uefi_mmap);
+    populate_alloc_stage1();
 
     let (page_descriptors, range) = create_page_descriptors();
-    PAGE_DESCRIPTORS.init(page_descriptors, range);
+    PAGE_DESCRIPTORS.init(page_descriptors, range.into());
 
     KERNEL_ADDRESS_SPACE.init_from_table(new_pt);
 

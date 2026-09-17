@@ -19,6 +19,7 @@ use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use klib::{
     allocator_support::KernelAddressTranslator,
     pm::page::mapper::{AddressTranslator, TableAllocator, id_map, map_region},
+    smccc::smccc_call_smc,
     vm::{MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, PAGE_SIZE, align_down, align_up},
 };
 use log::{debug, error, info};
@@ -107,7 +108,6 @@ fn main() -> Status {
 
     debug!("main() @ {:#x}", main as *const () as usize);
 
-    cpu_init();
     info!("Loader starting...");
 
     let mut sfs_prot = match boot::get_image_file_system(boot::image_handle()) {
@@ -200,7 +200,7 @@ fn main() -> Status {
     );
 
     let uart_phys = 0x040d_0000;
-    let uart_phys = 0x0900_0000;
+    //let uart_phys = 0x0900_0000;
     let uart_phys_page = align_down(uart_phys, PAGE_SIZE);
     map_region(
         unsafe { root_ttbr0.as_mut() },
@@ -229,6 +229,14 @@ fn main() -> Status {
         &UefiAddressTranslator,
     );
 
+    let putc = |c: u8| unsafe {
+        let fr = (uart_phys + 0x18) as *const u32;
+        while (core::ptr::read_volatile(fr) & (1 << 5)) != 0 {}
+
+        let dr = uart_phys as *mut u32;
+        core::ptr::write_volatile(dr, c as u32);
+    };
+
     let entry_fn: fn(boot_info: *mut BootInfo) -> ! = unsafe { transmute(entry_vaddr) };
     debug!("entry_fn: {:p}", entry_fn as *const ());
 
@@ -237,8 +245,15 @@ fn main() -> Status {
     let mem_map_final = unsafe { boot::exit_boot_services(None) };
 
     unsafe {
-        mmu_init(root_ttbr1.as_ptr());
+        putc(b'X');
+        cpu_init();
+        putc(b'Y');
+        mmu_init(root_ttbr0.as_ptr(), root_ttbr1.as_ptr());
+        putc(b'Z');
         mmu_init_post_exit();
+        putc(b'W');
+        putc(b'\r');
+        putc(b'\n');
     }
 
     let st = uefi::table::system_table_raw().expect("no system table?");
@@ -252,5 +267,6 @@ fn main() -> Status {
         system_table_raw: st,
     });
 
+    putc(b'J');
     unsafe { drop_to_kernel(entry_vaddr, boot_info.as_mut_ptr() as usize) }
 }

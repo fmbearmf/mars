@@ -46,10 +46,6 @@ pub fn init_mmu(ttbr0: Option<*const TTable<TABLE_ENTRIES>>) {
 pub fn init_cpu() {
     TPIDR_EL1.set(0);
 
-    CPACR_EL1.modify(CPACR_EL1::FPEN::TrapNothing);
-    CPACR_EL1.modify(CPACR_EL1::ZEN::TrapNothing);
-    CPACR_EL1.modify(CPACR_EL1::TTA::NoTrap);
-
     DAIF.write(DAIF::D::Masked + DAIF::A::Masked + DAIF::I::Masked + DAIF::F::Masked);
 
     dsb(barrier::SY);

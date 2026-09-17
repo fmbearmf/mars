@@ -25,6 +25,8 @@ pub mod interrupt;
 pub mod per_cpu;
 pub mod pm;
 pub mod process;
+/// manager of early allocator regions, collected from the firmware memory map
+pub mod rangekeeper;
 pub mod scheduler;
 pub mod smccc;
 pub mod stack;

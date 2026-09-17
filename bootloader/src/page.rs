@@ -6,7 +6,7 @@ use aarch64_cpu::{
         TTBR1_EL1,
     },
 };
-use aarch64_cpu_ext::asm::tlb::{ALLE2, VMALLE1, tlbi};
+use aarch64_cpu_ext::asm::tlb::{ALLE2, ALLE2IS, VMALLE1, tlbi};
 use klib::{
     pm::page::mapper::AddressTranslator,
     vm::{TABLE_ENTRIES, TTable},
@@ -29,37 +29,19 @@ impl AddressTranslator for UefiAddressTranslator {
 }
 
 pub fn cpu_init() {
-    let el = CurrentEL.read(CurrentEL::EL);
+    SCTLR_EL2
+        .modify(SCTLR_EL2::M::Disable + SCTLR_EL2::C::NonCacheable + SCTLR_EL2::I::NonCacheable);
+    isb(barrier::SY);
 
-    if el == 2 {
-        let was_on = SCTLR_EL2.is_set(SCTLR_EL2::M);
-        if was_on {
-            SCTLR_EL2.modify(SCTLR_EL2::M::Enable);
-            isb(barrier::SY);
-        }
+    HCR_EL2.write(
+        HCR_EL2::RW::EL1IsAarch64
+            + HCR_EL2::E2H::EnableOsAtEl2
+            + HCR_EL2::TGE::EnableTrapGeneralExceptionsToEl2,
+    );
+    isb(barrier::SY);
 
-        // 64-bit
-        HCR_EL2.write(
-            HCR_EL2::RW::EL1IsAarch64
-                + HCR_EL2::E2H::EnableOsAtEl2
-                + HCR_EL2::TGE::EnableTrapGeneralExceptionsToEl2,
-        );
-        isb(barrier::SY);
-
-        if was_on {
-            SCTLR_EL2.modify(SCTLR_EL2::M::Enable);
-        }
-
-        tlbi(ALLE2);
-        dsb(barrier::SY);
-        isb(barrier::SY);
-
-        // passthrough timer
-        CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
-        CNTVOFF_EL2.set(0);
-
-        isb(barrier::SY);
-    }
+    CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
+    CNTVOFF_EL2.set(0);
 
     MAIR_EL1.modify(
         MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck
@@ -78,7 +60,7 @@ pub fn cpu_init() {
     dsb(barrier::SY);
 }
 
-pub fn mmu_init(ttbr1: *const TTable<TABLE_ENTRIES>) {
+pub fn mmu_init(ttbr0: *const TTable<TABLE_ENTRIES>, ttbr1: *const TTable<TABLE_ENTRIES>) {
     TCR_EL1.modify(
         TCR_EL1::TBI1::Ignored
             + TCR_EL1::IPS::Bits_48
@@ -92,7 +74,7 @@ pub fn mmu_init(ttbr1: *const TTable<TABLE_ENTRIES>) {
 
     TTBR1_EL1.set_baddr(ttbr1 as _);
 
-    tlbi(VMALLE1);
+    tlbi(ALLE2IS);
     dsb(barrier::ISHST);
     isb(barrier::SY);
 
