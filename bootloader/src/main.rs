@@ -19,7 +19,6 @@ use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use klib::{
     allocator_support::KernelAddressTranslator,
     pm::page::mapper::{AddressTranslator, TableAllocator, id_map, map_region},
-    smccc::smccc_call_smc,
     vm::{MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, PAGE_SIZE, align_down, align_up},
 };
 use log::{debug, error, info};
@@ -36,7 +35,7 @@ use uefi_raw::table::system::SystemTable;
 use crate::{
     allocator::UefiTableAlloc,
     elf::load_kernel,
-    page::{UefiAddressTranslator, cpu_init, drop_to_kernel, mmu_init, mmu_init_post_exit},
+    page::{UefiAddressTranslator, cpu_init, drop_to_kernel, mmu_init},
 };
 
 #[global_allocator]
@@ -194,7 +193,7 @@ fn main() -> Status {
         Shareability::InnerShareable,
         true,
         false,
-        MAIR_NORMAL_INDEX,
+        MAIR_DEVICE_INDEX,
         &TABLE_ALLOC,
         &UefiAddressTranslator,
     );
@@ -229,14 +228,6 @@ fn main() -> Status {
         &UefiAddressTranslator,
     );
 
-    let putc = |c: u8| unsafe {
-        let fr = (uart_phys + 0x18) as *const u32;
-        while (core::ptr::read_volatile(fr) & (1 << 5)) != 0 {}
-
-        let dr = uart_phys as *mut u32;
-        core::ptr::write_volatile(dr, c as u32);
-    };
-
     let entry_fn: fn(boot_info: *mut BootInfo) -> ! = unsafe { transmute(entry_vaddr) };
     debug!("entry_fn: {:p}", entry_fn as *const ());
 
@@ -245,15 +236,8 @@ fn main() -> Status {
     let mem_map_final = unsafe { boot::exit_boot_services(None) };
 
     unsafe {
-        putc(b'X');
         cpu_init();
-        putc(b'Y');
         mmu_init(root_ttbr0.as_ptr(), root_ttbr1.as_ptr());
-        putc(b'Z');
-        mmu_init_post_exit();
-        putc(b'W');
-        putc(b'\r');
-        putc(b'\n');
     }
 
     let st = uefi::table::system_table_raw().expect("no system table?");
@@ -263,10 +247,9 @@ fn main() -> Status {
         kernel_size: load_size as usize,
         serial_uart_address: uart_phys,
         memory_map: mem_map_final,
-        page_table_root: Some(root_ttbr0.as_ptr()),
         system_table_raw: st,
+        page_table_root: Some(root_ttbr0.as_ptr()),
     });
 
-    putc(b'J');
     unsafe { drop_to_kernel(entry_vaddr, boot_info.as_mut_ptr() as usize) }
 }

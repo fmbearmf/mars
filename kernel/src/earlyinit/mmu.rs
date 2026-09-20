@@ -16,13 +16,14 @@ unsafe extern "C" {
 pub fn init_mmu(ttbr0: Option<*const TTable<TABLE_ENTRIES>>) {
     use log::*;
 
-    TCR_EL1.modify(TCR_EL1::EPD0::DisableTTBR0Walks);
-    isb(barrier::SY);
+    // TCR_EL1.modify(TCR_EL1::EPD0::DisableTTBR0Walks);
+    // isb(barrier::SY);
 
     if let Some(table) = ttbr0 {
-        trace!("setting TTBR0_EL1");
+        trace!("setting TTBR0");
         TTBR0_EL1.set_baddr(table as _);
-        trace!("set TTBR0_EL1");
+        isb(barrier::SY);
+        trace!("set TTBR0");
     }
 
     trace!("setting TCR_EL1");
@@ -37,7 +38,19 @@ pub fn init_mmu(ttbr0: Option<*const TTable<TABLE_ENTRIES>>) {
     );
     trace!("set TCR_EL1");
 
-    asm::barrier::dsb(asm::barrier::ISH);
+    trace!("setting MAIR indices");
+    MAIR_EL1.modify(
+        MAIR_EL1::Attr0_Device::nonGathering_nonReordering_noEarlyWriteAck
+            + MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
+            + MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc
+            + MAIR_EL1::Attr2_Normal_Outer::WriteThrough_NonTransient_ReadWriteAlloc
+            + MAIR_EL1::Attr2_Normal_Inner::WriteThrough_NonTransient_ReadWriteAlloc
+            + MAIR_EL1::Attr3_Normal_Outer::NonCacheable
+            + MAIR_EL1::Attr3_Normal_Inner::NonCacheable,
+    );
+    trace!("set MAIR indices");
+    isb(barrier::SY);
+
     tlbi(VMALLE1IS);
     asm::barrier::dsb(asm::barrier::ISH);
     asm::barrier::isb(asm::barrier::SY);

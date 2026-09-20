@@ -1,6 +1,7 @@
 use core::{marker::PhantomData, mem, num::NonZeroUsize, ptr, slice};
 
 use super::FromBytes;
+use alloc::boxed::Box;
 use hax_lib::{assume, attributes, ensures, include, loop_invariant, opaque, requires};
 
 use crate::{
@@ -80,8 +81,12 @@ impl Xsdp {
     }
 
     #[requires(self.xsdt_addr() as usize != 0)]
-    pub fn xsdt(&self) -> Result<&'static SdtHeader, &'static str> {
+    pub fn xsdt(
+        &self,
+        phys_to_dmap: impl Fn(usize) -> usize,
+    ) -> Result<&'static SdtHeader, &'static str> {
         let xsdt_addr = self.xsdt_addr() as usize;
+        let xsdt_addr = phys_to_dmap(xsdt_addr);
 
         if xsdt_addr == 0 {
             unreachable!();
@@ -105,6 +110,7 @@ pub struct XsdtIter<'a> {
     count: usize,
     curr: usize,
     _marker: PhantomData<&'a SdtHeader>,
+    translator: Box<dyn Fn(usize) -> usize>,
 }
 
 #[attributes]
@@ -118,7 +124,7 @@ impl<'a> XsdtIter<'a> {
 
     #[requires(xsdt.len() as usize >= mem::size_of::<SdtHeader>())]
     #[ensures(|result| result.curr == 0 && result.count == (xsdt.len() as usize - mem::size_of::<SdtHeader>()) / 8)]
-    pub fn new(xsdt: &SdtHeader) -> Self {
+    pub fn new(xsdt: &SdtHeader, phys_to_dmap: Box<dyn Fn(usize) -> usize>) -> Self {
         let len = xsdt.len() as usize;
         let header_sz = mem::size_of::<SdtHeader>();
 
@@ -134,6 +140,7 @@ impl<'a> XsdtIter<'a> {
             count: byte_count,
             curr: 0,
             _marker: PhantomData,
+            translator: phys_to_dmap,
         }
     }
 
@@ -170,6 +177,7 @@ impl<'a> Iterator for XsdtIter<'a> {
             if index < self.count {
                 // it's always less than count, but F* is unable to infer that
                 let table_addr = self.read_table_entry(index);
+                let table_addr = (self.translator)(table_addr as usize) as u64;
                 self.curr += 1;
 
                 if table_addr != 0 {

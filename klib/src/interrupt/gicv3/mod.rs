@@ -25,7 +25,7 @@ use mars_models::memory::registers::volatile::{
 use crate::{
     allocator_support::KernelAddressTranslator,
     cache::clean_dcache_range,
-    cpu_interface::CpuIdLogical,
+    cpu_interface::{CpuIdLogical, CpuTopologyId},
     guard::InterruptGuard,
     interrupt::{
         GicrRegisters, GitsRegisters,
@@ -141,12 +141,16 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
     }
 
     fn redistributor_mut(&self) -> &'a mut GicrRegisters {
-        let cpu_id = this_cpu!().id;
-        // no actual race conditions; relaxed is fine
-        let ptr = self.redistributors[cpu_id.to_usize()].load(Ordering::Relaxed);
+        let mpidr = CpuTopologyId::current().to_u32();
 
-        debug_assert!(!ptr.is_null());
-        unsafe { &mut *ptr }
+        for ptr in &self.redistributors {
+            let redist = unsafe { &*ptr.load(Ordering::Relaxed) };
+            let redist_aff = redist.type_.read_field_pure(GicrTyper::AffinityValue);
+            if redist_aff == mpidr {
+                return unsafe { &mut *ptr.load(Ordering::Relaxed) };
+            }
+        }
+        panic!("no redistributor found for MPIDR {:#x}", mpidr)
     }
 
     fn rdbase_for_redist(&self, index: usize) -> Option<u64> {

@@ -390,6 +390,7 @@ dependencies = [
  "mars-models-zerocopy",
  "mars_getters",
  "rustc-hash",
+ "smccc",
  "tock-registers 0.10.1",
  "uefi",
  "uefi-raw",
@@ -769,6 +770,15 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "smccc"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "597fda855abe96a6a39b2beeca3ee15de3a73c8ed3ff3432778fd2f1db400fcd"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "syn"

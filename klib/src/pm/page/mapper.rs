@@ -9,7 +9,7 @@ use crate::{
 };
 use aarch64_cpu::asm::barrier::{self, dsb, isb};
 use aarch64_cpu_ext::{
-    asm::tlb::{VAAE1IS, VMALLE1, VMALLE1IS, tlbi},
+    asm::tlb::{VMALLE1IS, tlbi},
     structures::tte::{AccessPermission, Shareability},
 };
 
@@ -29,16 +29,16 @@ fn clean_table<T>(table_ptr: *const T) {
 
 #[inline]
 pub fn tlb_invalidate_all() {
-    dsb(barrier::ISH);
+    dsb(barrier::SY);
     tlbi(VMALLE1IS);
-    dsb(barrier::ISH);
+    dsb(barrier::SY);
     isb(barrier::SY);
 }
 
 #[inline]
 pub fn tlb_invalidate_page(va: usize) {
-    let val = (va >> 12) & 0x0000_FFFF_FFFF_FFFF;
-    dsb(barrier::ISH);
+    let val = (va >> 12) & 0x0000_0FFF_FFFF_FFFF;
+    dsb(barrier::SY);
     unsafe {
         core::arch::asm!(
             "tlbi vaae1is, {val}",
@@ -46,7 +46,7 @@ pub fn tlb_invalidate_page(va: usize) {
             options(nostack, preserves_flags)
         );
     }
-    dsb(barrier::ISH);
+    dsb(barrier::SY);
     isb(barrier::SY);
 }
 
@@ -171,6 +171,8 @@ macro_rules! impl_clone_pt_level {
                 }
             }
 
+            clean_table(new_table_ptr.as_ptr());
+            dsb(barrier::SY);
             new_table_ptr
         }
     };
@@ -188,6 +190,8 @@ fn clone_l3(
         new_table.entries[i] = src.entries[i];
     }
 
+    clean_table(new_table_ptr.as_ptr());
+    dsb(barrier::SY);
     new_table_ptr
 }
 
@@ -220,10 +224,15 @@ pub fn map_l2_block(
         unsafe { z.as_mut() }
     } else {
         let mut table = allocator.alloc_table();
+        clean_table(table.as_ptr());
+        dsb(barrier::SY);
 
         l0_entry.set_is_valid(true);
         l0_entry.set_is_table();
         l0_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
+
+        clean_entry(l0_entry);
+        dsb(barrier::SY);
 
         unsafe { table.as_mut() }
     };
@@ -237,10 +246,15 @@ pub fn map_l2_block(
         unsafe { z.as_mut() }
     } else {
         let mut table = allocator.alloc_table();
+        clean_table(table.as_ptr());
+        dsb(barrier::SY);
 
         l1_entry.set_is_valid(true);
         l1_entry.set_is_table();
         l1_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
+
+        clean_entry(l1_entry);
+        dsb(barrier::SY);
 
         unsafe { table.as_mut() }
     };
@@ -256,6 +270,8 @@ pub fn map_l2_block(
     l2_entry.set_attr_index(attr_index);
     l2_entry.set_executable(!uxn);
     l2_entry.set_privileged_executable(!pxn);
+    clean_entry(l2_entry);
+    tlb_invalidate_page(va);
 }
 
 pub fn map_page(
@@ -286,12 +302,14 @@ pub fn map_page(
         let mut table = allocator.alloc_table();
 
         clean_table(table.as_ptr());
+        dsb(barrier::SY);
 
         l0_entry.set_is_valid(true);
         l0_entry.set_is_table();
         l0_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
 
         clean_entry(l0_entry);
+        dsb(barrier::SY);
 
         unsafe { table.as_mut() }
     };
@@ -307,11 +325,14 @@ pub fn map_page(
         let mut table = allocator.alloc_table();
 
         clean_table(table.as_ptr());
+        dsb(barrier::SY);
 
         l1_entry.set_is_valid(true);
         l1_entry.set_is_table();
         l1_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
+
         clean_entry(l1_entry);
+        dsb(barrier::SY);
 
         unsafe { table.as_mut() }
     };
@@ -327,12 +348,16 @@ pub fn map_page(
         unsafe { table.as_mut() }
     } else {
         let mut table = allocator.alloc_table();
+
         clean_table(table.as_ptr());
+        dsb(barrier::SY);
 
         l2_entry.set_is_valid(true);
         l2_entry.set_is_table();
         l2_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
+
         clean_entry(l2_entry);
+        dsb(barrier::SY);
 
         unsafe { table.as_mut() }
     };
@@ -449,94 +474,54 @@ pub fn free_tables(
     translator: &dyn AddressTranslator,
 ) {
     let root_table = unsafe { root.as_mut() };
-    for i0 in 0..2 {
-        let l0_entry = &mut (root_table.entries[i0]);
 
+    for l0_entry in &mut root_table.entries {
         if !l0_entry.is_valid() || !l0_entry.is_table() {
             continue;
         }
 
         let l1_pa = l0_entry.address();
-        let l1_va = translator.phys_to_dmap(l1_pa as _);
 
-        let mut l1_table_ptr =
-            unsafe { NonNull::new_unchecked(l1_va as *mut TTable<TABLE_ENTRIES>) };
-        let l1_table = unsafe { l1_table_ptr.as_mut() };
+        l0_entry.set_is_valid(false);
+        l0_entry.set_address(0);
+        clean_entry(l0_entry);
+        tlb_invalidate_all();
 
-        for i1 in 0..TABLE_ENTRIES {
-            let l1_entry = &mut (l1_table.entries[i1]);
+        let l1_va = translator.phys_to_dmap(l1_pa as _) as *mut TTable<TABLE_ENTRIES>;
+        let l1_table = unsafe { &mut *l1_va };
 
+        for l1_entry in &mut l1_table.entries {
             if !l1_entry.is_valid() || !l1_entry.is_table() {
                 continue;
             }
 
-            let l2_pa = l1_entry.address();
-            let l2_va = translator.phys_to_dmap(l2_pa as _);
+            let l2_va =
+                translator.phys_to_dmap(l1_entry.address() as _) as *mut TTable<TABLE_ENTRIES>;
+            let l2_table = unsafe { &mut *l2_va };
 
-            let mut l2_table_ptr =
-                unsafe { NonNull::new_unchecked(l2_va as *mut TTable<TABLE_ENTRIES>) };
-            let l2_table = unsafe { l2_table_ptr.as_mut() };
-
-            for i2 in 0..TABLE_ENTRIES {
-                let l2_entry = &mut (l2_table.entries[i2]);
-
+            for l2_entry in &mut l2_table.entries {
                 if !l2_entry.is_valid() || !l2_entry.is_table() {
                     continue;
                 }
 
-                let l3_pa = l2_entry.address();
-                let l3_va = translator.phys_to_dmap(l3_pa as _);
+                let l3_va =
+                    translator.phys_to_dmap(l2_entry.address() as _) as *mut TTable<TABLE_ENTRIES>;
 
-                let mut l3_table_ptr =
-                    unsafe { NonNull::new_unchecked(l3_va as *mut TTable<TABLE_ENTRIES>) };
-                let l3_table = unsafe { l3_table_ptr.as_mut() };
-
-                for i3 in 0..TABLE_ENTRIES {
-                    let l3_entry = &mut (l3_table.entries[i3]);
-
-                    if !l3_entry.is_valid() || !l3_entry.is_table() {
-                        continue;
-                    }
-
-                    l3_entry.set_is_valid(false);
-                    l3_entry.set_address(0);
-                }
-
-                unsafe {
-                    clean_dcache_range(
-                        l3_table as *mut _ as _,
-                        core::mem::size_of::<TTable<TABLE_ENTRIES>>(),
-                    )
-                };
-
-                l2_entry.set_is_valid(false);
-                l2_entry.set_address(0);
-                unsafe {
-                    clean_dcache_range(l2_entry as *mut _ as _, core::mem::size_of_val(l2_entry))
-                };
-
-                allocator.free_table(unsafe { NonNull::new_unchecked(l3_table) });
+                clean_table(l3_va);
+                allocator.free_table(unsafe { NonNull::new_unchecked(l3_va) });
             }
 
-            l1_entry.set_is_valid(false);
-            l1_entry.set_address(0);
-            unsafe {
-                clean_dcache_range(l1_entry as *mut _ as _, core::mem::size_of_val(l1_entry))
-            };
-
-            allocator.free_table(unsafe { NonNull::new_unchecked(l2_table) });
+            clean_table(l2_va);
+            allocator.free_table(unsafe { NonNull::new_unchecked(l2_va) });
         }
 
-        l0_entry.set_is_valid(false);
-        l0_entry.set_address(0);
-        unsafe { clean_dcache_range(l0_entry as *mut _ as _, core::mem::size_of_val(l0_entry)) };
-
-        allocator.free_table(unsafe { NonNull::new_unchecked(l1_table) });
+        clean_table(l1_va);
+        allocator.free_table(unsafe { NonNull::new_unchecked(l1_va) });
     }
 
-    allocator.free_table(unsafe { NonNull::new_unchecked(root_table) });
-
-    tlb_invalidate_all();
+    clean_table(root.as_ptr());
+    dsb(barrier::SY);
+    allocator.free_table(root);
 }
 
 fn is_table_empty(table: &TTable<TABLE_ENTRIES>) -> bool {

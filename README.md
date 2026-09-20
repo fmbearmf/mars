@@ -1,6 +1,10 @@
 # Mars
 Mars is a WIP kernel for ARMv8 (aka AArch64).
 
+## Tested On
+* QEMU (TCG)
+* Orange Pi 6 Plus
+
 ## Prerequisites
 * Rust nightly compiler with support for `aarch64-unknown-none` and `aarch64-unknown-uefi`
 * Nix (recommended)

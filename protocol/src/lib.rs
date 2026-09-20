@@ -14,7 +14,7 @@ pub struct BootInfo {
     /// size of the kernel in bytes
     pub kernel_size: usize,
 
-    /// the TTBR0 that the kernel should load, if any
+    /// what TTBR0 the kernel should load, if any
     pub page_table_root: Option<*const TTable<TABLE_ENTRIES>>,
 
     /// serial uart

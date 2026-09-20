@@ -1,9 +1,4 @@
-use core::{
-    arch::asm,
-    ptr::{self, NonNull},
-    range::Range,
-    slice::{self},
-};
+use core::{arch::asm, ptr::NonNull, range::Range};
 
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
@@ -21,6 +16,7 @@ use klib::{
         mapper::{AddressTranslator, TableAllocator, clone_page_tables, map_page},
     },
     rangekeeper,
+    smccc::print_psci_version,
     sync::RwLock,
     vm::{
         KALLOCATOR, MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, MAIR_NORMAL_WC_INDEX,
@@ -31,10 +27,7 @@ use klib::{
     },
 };
 use log::{debug, trace};
-use uefi::{
-    boot::{MemoryAttribute, MemoryDescriptor, MemoryType, PAGE_SIZE as UEFI_PS},
-    mem::memory_map::{MemoryMap, MemoryMapMeta, MemoryMapRefMut},
-};
+use uefi::boot::{MemoryAttribute, MemoryDescriptor, MemoryType, PAGE_SIZE as UEFI_PS};
 
 struct BootTempAllocator<'a>(pub &'a dyn PhysicalPageAllocator);
 
@@ -69,12 +62,6 @@ impl AddressTranslator for IdentityTranslator {
     fn phys_to_dmap(&self, phys: usize) -> *mut u8 {
         phys as *mut _
     }
-}
-
-macro_rules! kernel_address_space {
-    () => {
-        let guard = crate::KERNEL_ADDRESS_SPACE.read().unwrap();
-    };
 }
 
 /// check whether an entry is acceptable normal memory

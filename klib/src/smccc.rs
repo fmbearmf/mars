@@ -1,14 +1,14 @@
-use core::{
-    arch::asm,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use aarch64_cpu::asm::barrier::{self, isb};
+use smccc::{
+    Call, Hvc, Smc,
+    psci::{PSCI_CPU_ON_64, version},
+};
 
 use super::cpu_interface::CpuTopologyId;
 
-pub const PSCI_0_2_FN64_CPU_ON: u32 = 0xC400_0003;
-
+// pub const PSCI_0_2_FN64_CPU_ON: u32 = 0xC400_0003;
+//
 #[repr(i64)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PsciError {
@@ -26,7 +26,7 @@ pub enum PsciError {
 
 impl PsciError {
     pub fn from_i64(code: i64) -> Result<(), PsciError> {
-        match code {
+        match code as i32 {
             0 => Ok(()),
             -1 => Err(PsciError::NotSupported),
             -2 => Err(PsciError::InvalidParameters),
@@ -42,48 +42,6 @@ impl PsciError {
     }
 }
 
-pub unsafe fn smccc_call_hvc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
-    let res: i64;
-    unsafe {
-        asm!(
-            "hvc #0",
-            inlateout("x0") fid as u64 => res,
-            inout("x1") arg1 => _,
-            inout("x2") arg2 => _,
-            inout("x3") arg3 => _,
-            out("x4") _, out("x5") _, out("x6") _, out("x7") _,
-            out("x8") _, out("x9") _, out("x10") _, out("x11") _,
-            out("x12") _, out("x13") _, out("x14") _, out("x15") _,
-            out("x16") _, out("x17") _,
-            options(nostack)
-        )
-    };
-
-    res
-}
-
-pub unsafe fn smccc_call_smc(fid: u32, arg1: u64, arg2: u64, arg3: u64) -> i64 {
-    use log::*;
-    trace!("smccc_call_smc {:#x}: before", fid);
-    let res: i64;
-    unsafe {
-        asm!(
-            "smc #0",
-            inlateout("x0") fid as u64 => res,
-            inout("x1") arg1 => _,
-            inout("x2") arg2 => _,
-            inout("x3") arg3 => _,
-            out("x4") _, out("x5") _, out("x6") _, out("x7") _,
-            out("x8") _, out("x9") _, out("x10") _, out("x11") _,
-            out("x12") _, out("x13") _, out("x14") _, out("x15") _,
-            out("x16") _, out("x17") _,
-        )
-    };
-    trace!("smccc_call_smc {:#x}: after", fid);
-
-    res
-}
-
 pub static USE_HVC: AtomicBool = AtomicBool::new(false);
 
 /// power on a CPU by its MPIDR using PSCI.
@@ -92,22 +50,25 @@ pub fn cpu_on(
     entry_point_paddr: u64,
     context_id: u64,
 ) -> Result<(), PsciError> {
-    let res = unsafe {
-        match USE_HVC.load(Ordering::Relaxed) {
-            true => smccc_call_hvc(
-                PSCI_0_2_FN64_CPU_ON,
-                target_cpu.to_mpidr(),
-                entry_point_paddr,
-                context_id,
-            ),
-            false => smccc_call_smc(
-                PSCI_0_2_FN64_CPU_ON,
-                target_cpu.to_mpidr(),
-                entry_point_paddr,
-                context_id,
-            ),
-        }
+    let mut args = [0u64; 17];
+    args[0] = target_cpu.to_mpidr();
+    args[1] = entry_point_paddr;
+    args[2] = context_id;
+
+    let res = match USE_HVC.load(Ordering::Relaxed) {
+        true => Hvc::call64(PSCI_CPU_ON_64, args),
+        false => Smc::call64(PSCI_CPU_ON_64, args),
     };
 
-    PsciError::from_i64(res)
+    PsciError::from_i64(res[0] as i64)
+}
+
+pub fn print_psci_version() {
+    use log::*;
+    trace!("before SMC call");
+    match version::<Smc>() {
+        Ok(v) => trace!("PSCI_VERSION: {}.{}", v.major, v.minor),
+        Err(e) => error!("failed to get PSCI version: {:?}", e),
+    }
+    trace!("after SMC call");
 }

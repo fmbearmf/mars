@@ -139,6 +139,10 @@ impl CpuTopologyId {
         aff0 as u64 | ((aff1 as u64) << 8) | ((aff2 as u64) << 16) | ((aff3 as u64) << 32)
     }
 
+    pub const fn to_u32(&self) -> u32 {
+        self.0
+    }
+
     pub fn to_logical(self) -> Option<CpuIdLogical> {
         CPU_ID_MAP.borrow().get(&self).copied()
     }

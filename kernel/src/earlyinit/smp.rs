@@ -62,12 +62,15 @@ global_asm!(
     "isb",
     //
     "mov x9, #0x3c9",
-    "msr spsr_el2, x9",
+    "msr spsr_el1, x9",
+    "isb",
     //
     "adr x9, .L_el2",
-    "msr elr_el2, x9",
+    "msr elr_el1, x9",
+    "isb",
     //
     "msr hstr_el2, xzr",
+    "isb",
     //
     // under VHE, CNTHCTL_EL2 has the same layout as CNTKCTL_EL1
     // [1:0] = EL0 phys/virt counter accesses
@@ -75,6 +78,7 @@ global_asm!(
     "mov x9, #((3 << 10) | 3)",
     "msr cnthctl_el2, x9",
     "msr cntvoff_el2, xzr",
+    "isb",
     //
     "mov x9, #0xf",
     "msr icc_sre_el2, x9",
@@ -98,10 +102,12 @@ global_asm!(
     "ldr x10, [x0, #72]", // SecondaryBootArgs.cpacr
     //
     "msr ttbr0_el1, x1",
+    "isb",
     "msr ttbr1_el1, x2",
+    "isb",
     "msr tcr_el1, x3",
+    "isb",
     "msr mair_el1, x4",
-    //
     "isb",
     //
     "tlbi vmalle1",
@@ -109,7 +115,9 @@ global_asm!(
     "isb",
     //
     "msr sctlr_el1, x5",
+    "isb",
     "msr cpacr_el1, x6",
+    "isb",
     "msr vbar_el1, x10",
     "isb",
     //

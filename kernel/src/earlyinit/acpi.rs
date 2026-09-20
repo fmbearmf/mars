@@ -2,7 +2,7 @@ use core::{ops::Range, ptr::NonNull, sync::atomic::Ordering};
 
 use aarch64_cpu::registers::{CurrentEL, MPIDR_EL1, Readable};
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 use atomic_refcell::AtomicRefMut;
 use klib::{
     allocator_support::KernelAddressTranslator,
@@ -35,7 +35,7 @@ use uefi::table::cfg::ConfigTableEntry;
 use uefi_raw::table::{configuration::ConfigurationTable, system::SystemTable};
 use zerocopy::FromBytes;
 
-use crate::{DEVICE_TREE, earlyinit::platform::BootInfoToken};
+use crate::{DEVICE_TREE, busy_loop_ret, earlyinit::platform::BootInfoToken};
 
 fn config_table(st: NonNull<SystemTable>) -> &'static [ConfigTableEntry] {
     let st = KernelAddressTranslator.phys_to_dmap(st.as_ptr() as _) as *const SystemTable;
@@ -68,15 +68,26 @@ pub fn acpi_init(token: &BootInfoToken) {
 
     let mut iter = cfg_table
         .iter()
-        .filter(|t| t.guid == ConfigTableEntry::ACPI2_GUID);
+        .map(|p| {
+            (
+                KernelAddressTranslator.phys_to_dmap(p.address as _) as *const Xsdp,
+                p,
+            )
+        })
+        .filter(|t| t.1.guid == ConfigTableEntry::ACPI2_GUID);
 
-    let xsdp = iter.next().expect("no ACPI2 table").address as *const Xsdp;
+    let xsdp = iter.next().expect("no ACPI2 table").0;
 
     assert_eq!(iter.next(), None, "more than one ACPI2 table?");
 
     let xsdp = Xsdp::try_from_addr(xsdp as _).unwrap_or_else(|e| panic!("XSDP err: {}", e));
 
-    let xsdt: &SdtHeader = xsdp.xsdt().unwrap_or_else(|e| panic!("XSDT err: {}", e));
+    let xsdt: &SdtHeader = xsdp
+        .xsdt(|addr| match addr {
+            0 => 0usize,
+            any => KernelAddressTranslator.phys_to_dmap(any) as _,
+        })
+        .unwrap_or_else(|e| panic!("XSDT err: {}", e));
 
     let xsdt: &SdtHeader = unsafe {
         &*(KernelAddressTranslator.phys_to_dmap(xsdt as *const _ as _) as *const SdtHeader)
@@ -84,7 +95,13 @@ pub fn acpi_init(token: &BootInfoToken) {
 
     trace!("sdt: {:?}", xsdt);
 
-    let xsdt_iter = XsdtIter::new(xsdt);
+    let xsdt_iter = XsdtIter::new(
+        xsdt,
+        Box::new(|addr| match addr {
+            0 => 0usize,
+            any => KernelAddressTranslator.phys_to_dmap(any) as _,
+        }),
+    );
     for phys_table_bytes in xsdt_iter {
         let table_bytes: &[u8] = {
             let size = phys_table_bytes.len();

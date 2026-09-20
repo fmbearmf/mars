@@ -34,6 +34,7 @@ hashbrown = "0.17.1"
 rustc-hash = { version = "2.1.2", default-features = false }
 phf = { version = "0.13.1", default-features = false }
 atomic_enum = "0.3.0"
+smccc = "0.2.3"
 
 # self
 mars_getters = { path = "./klib/getters" }

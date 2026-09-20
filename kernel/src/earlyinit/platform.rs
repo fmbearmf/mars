@@ -1,9 +1,6 @@
 use core::{borrow::Borrow, mem::MaybeUninit};
 
-use aarch64_cpu::{
-    asm::barrier::{self, dsb, isb},
-    registers::{DAIF, ReadWriteable},
-};
+use aarch64_cpu::asm::barrier::{self, dsb, isb};
 use klib::{
     allocator_support::KernelAddressTranslator,
     console::set_backend,
@@ -185,10 +182,6 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     trace!("address of bootinfo: {:#p}", &boot_info);
     debug!("uefi_arm64_bootstrap: current SP: {:#x}", sp);
 
-    trace!("init_mmu addr: {:#p}", init_mmu as *const ());
-    init_mmu(boot_info.page_table_root);
-    trace!("init_mmu done");
-
     let uefi_mmap = &mut boot_info.memory_map;
     uefi_mmap.sort();
     log::trace!("{:?}", uefi_mmap);
@@ -199,9 +192,6 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
 
     dsb(barrier::SY);
     isb(barrier::SY);
-    log::trace!("PSCI_VERSION: {}", unsafe {
-        klib::smccc::smccc_call_smc(0x8400_0000, 0, 0, 0)
-    });
 
     let new_pt = unsafe {
         switch_to_new_page_tables(
@@ -222,6 +212,10 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     PAGE_DESCRIPTORS.init(page_descriptors, range.into());
 
     KERNEL_ADDRESS_SPACE.init_from_table(new_pt);
+
+    trace!("init_mmu addr: {:#p}", init_mmu as *const ());
+    init_mmu(boot_info.page_table_root);
+    trace!("init_mmu done");
 
     acpi_init(&boot_info_token);
 

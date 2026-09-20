@@ -1,13 +1,14 @@
 use aarch64_cpu::{
     asm::barrier::{self, dsb, isb},
     registers::{
-        CNTHCTL_EL2, CNTVOFF_EL2, CPACR_EL1, CPTR_EL2, CurrentEL, ELR_EL2, HCR_EL2, MAIR_EL1,
-        SCTLR_EL1, SCTLR_EL2, SP, SP_EL1, SP_EL2, SPSR_EL2, TCR_EL1, TTBR0_EL1, TTBR0_EL2,
-        TTBR1_EL1,
+        CNTHCTL_EL2, CNTVOFF_EL2, CPACR_EL1, CPTR_EL2, CurrentEL, ELR_EL2, HCR_EL2, ICC_SRE_EL2,
+        MAIR_EL1, SCTLR_EL1, SCTLR_EL2, SP, SP_EL1, SP_EL2, SPSR_EL2, TCR_EL1, TTBR0_EL1,
+        TTBR0_EL2, TTBR1_EL1,
     },
 };
-use aarch64_cpu_ext::asm::tlb::{ALLE2, ALLE2IS, VMALLE1, tlbi};
+use aarch64_cpu_ext::asm::tlb::{ALLE2, ALLE2IS, VMALLE1, VMALLE1IS, tlbi};
 use klib::{
+    cache::clean_dcache_range,
     pm::page::mapper::AddressTranslator,
     vm::{TABLE_ENTRIES, TTable},
 };
@@ -29,29 +30,37 @@ impl AddressTranslator for UefiAddressTranslator {
 }
 
 pub fn cpu_init() {
-    SCTLR_EL2
-        .modify(SCTLR_EL2::M::Disable + SCTLR_EL2::C::NonCacheable + SCTLR_EL2::I::NonCacheable);
-    isb(barrier::SY);
+    if CurrentEL.read(CurrentEL::EL) == 2 {
+        dsb(barrier::SY);
+        SCTLR_EL2.modify(
+            SCTLR_EL2::M::Disable + SCTLR_EL2::C::NonCacheable + SCTLR_EL2::I::NonCacheable,
+        );
+        isb(barrier::SY);
 
-    HCR_EL2.write(
-        HCR_EL2::RW::EL1IsAarch64
-            + HCR_EL2::E2H::EnableOsAtEl2
-            + HCR_EL2::TGE::EnableTrapGeneralExceptionsToEl2,
-    );
-    isb(barrier::SY);
+        HCR_EL2.write(
+            HCR_EL2::RW::EL1IsAarch64
+                + HCR_EL2::E2H::EnableOsAtEl2
+                + HCR_EL2::TGE::EnableTrapGeneralExceptionsToEl2,
+        );
+        isb(barrier::SY);
 
-    CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
-    CNTVOFF_EL2.set(0);
+        CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
+        CNTVOFF_EL2.set(0);
+    } else {
+        SCTLR_EL1.modify(
+            SCTLR_EL1::M::Disable + SCTLR_EL1::C::NonCacheable + SCTLR_EL1::I::NonCacheable,
+        );
+    }
 
-    MAIR_EL1.modify(
-        MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck
-            + MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
-            + MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc
-            + MAIR_EL1::Attr2_Normal_Outer::WriteThrough_NonTransient_ReadWriteAlloc
-            + MAIR_EL1::Attr2_Normal_Inner::WriteThrough_NonTransient_ReadWriteAlloc
-            + MAIR_EL1::Attr3_Normal_Outer::NonCacheable
-            + MAIR_EL1::Attr3_Normal_Inner::NonCacheable,
-    );
+    // MAIR_EL1.modify(
+    //     MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck
+    //         + MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
+    //         + MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc
+    //         + MAIR_EL1::Attr2_Normal_Outer::WriteThrough_NonTransient_ReadWriteAlloc
+    //         + MAIR_EL1::Attr2_Normal_Inner::WriteThrough_NonTransient_ReadWriteAlloc
+    //         + MAIR_EL1::Attr3_Normal_Outer::NonCacheable
+    //         + MAIR_EL1::Attr3_Normal_Inner::NonCacheable,
+    // );
 
     CPACR_EL1.modify(CPACR_EL1::FPEN::TrapNothing);
     CPACR_EL1.modify(CPACR_EL1::ZEN::TrapNothing);
@@ -72,9 +81,15 @@ pub fn mmu_init(ttbr0: *const TTable<TABLE_ENTRIES>, ttbr1: *const TTable<TABLE_
             + TCR_EL1::T1SZ.val(16),
     );
 
+    //TTBR0_EL1.set_baddr(ttbr0 as _);
     TTBR1_EL1.set_baddr(ttbr1 as _);
 
-    tlbi(ALLE2IS);
+    if CurrentEL.read(CurrentEL::EL) == 2 {
+        tlbi(ALLE2IS);
+    } else {
+        tlbi(VMALLE1IS);
+    }
+
     dsb(barrier::ISHST);
     isb(barrier::SY);
 
@@ -82,34 +97,6 @@ pub fn mmu_init(ttbr0: *const TTable<TABLE_ENTRIES>, ttbr1: *const TTable<TABLE_
 
     dsb(barrier::SY);
     isb(barrier::SY);
-}
-
-pub unsafe fn mmu_init_post_exit() {
-    if CurrentEL.read(CurrentEL::EL) == 2 {
-        let mair_el1 = MAIR_EL1.get();
-        let tcr_el1 = TCR_EL1.get();
-        let ttbr0_el1 = if HCR_EL2.is_set(HCR_EL2::E2H) {
-            TTBR0_EL1.get()
-        } else {
-            TTBR0_EL2.get()
-        };
-        let ttbr1_el1 = TTBR1_EL1.get();
-        let sctlr_el1 = SCTLR_EL1.get();
-
-        //HCR_EL2.modify(HCR_EL2::E2H::CLEAR);
-        //isb(barrier::SY);
-
-        MAIR_EL1.set(mair_el1);
-        TCR_EL1.set(tcr_el1);
-        TTBR0_EL1.set(ttbr0_el1);
-        TTBR1_EL1.set(ttbr1_el1);
-        tlbi(VMALLE1);
-        dsb(barrier::ISHST);
-        isb(barrier::SY);
-        SCTLR_EL1.set(sctlr_el1);
-        dsb(barrier::SY);
-        isb(barrier::SY);
-    }
 }
 
 pub unsafe fn drop_to_kernel(entry: usize, arg: usize) -> ! {
@@ -126,7 +113,12 @@ pub unsafe fn drop_to_kernel(entry: usize, arg: usize) -> ! {
                 + SPSR_EL2::F::Masked
                 + SPSR_EL2::M::EL2h,
         );
+        isb(barrier::SY);
 
+        ICC_SRE_EL2.write(ICC_SRE_EL2::SRE::SET + ICC_SRE_EL2::ENABLE::SET);
+        isb(barrier::SY);
+
+        //SP_EL2.set(SP.get());
         ELR_EL2.set(entry as u64);
 
         dsb(barrier::SY);

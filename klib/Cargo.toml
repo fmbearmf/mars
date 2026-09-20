@@ -24,3 +24,4 @@ mars-models-zerocopy = { workspace = true, features = ["derive"] }
 atomic_refcell.workspace = true
 hashbrown.workspace = true
 rustc-hash.workspace = true
+smccc.workspace = true
