@@ -175,8 +175,6 @@ pub unsafe fn boot_secondary(
 
     cpu_on(core, trampoline_phys, args_phys)?;
 
-    trace!("cpu_on returned");
-
     let pcpu = PerCpu::get(logical_id.to_usize()).expect("invalid logical_id passed");
 
     while pcpu.ready.load(Ordering::Acquire) != true {}

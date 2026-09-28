@@ -135,8 +135,22 @@ impl<'a> Thread<'a> {
         // translator: &'a dyn AddressTranslator,
     ) -> Self {
         let kernel_mode = match CurrentEL.read(CurrentEL::EL) {
-            2 => SPSR_EL2::M::EL2h.value,
-            _ => SPSR_EL1::M::EL1h.value,
+            2 => {
+                (SPSR_EL2::D::Masked
+                    + SPSR_EL2::A::Masked
+                    + SPSR_EL2::I::Masked
+                    + SPSR_EL2::F::Masked
+                    + SPSR_EL2::M::EL2h)
+                    .value
+            }
+            _ => {
+                (SPSR_EL1::D::Masked
+                    + SPSR_EL1::A::Masked
+                    + SPSR_EL1::I::Masked
+                    + SPSR_EL1::F::Masked
+                    + SPSR_EL1::M::EL1h)
+                    .value
+            }
         };
 
         Self::new_inner(

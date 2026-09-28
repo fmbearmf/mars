@@ -1,4 +1,3 @@
-
 use aarch64_cpu::registers::{DAIF, ESR_EL1, Readable, TTBR0_EL1, Writeable};
 use klib::{
     context::RegisterFileRef,
@@ -53,11 +52,11 @@ impl ExceptionHandler for Exceptions {
     extern "C" fn irq_current(register_file: RegisterFileRef) -> RegisterFileRef {
         let _guard = PreemptionGuard::save();
 
-        trace!(
-            "irq (CPU {}): before scheduling: {:?}",
-            CpuTopologyId::current().to_mpidr(),
-            register_file
-        );
+        // trace!(
+        //     "irq (CPU {}): before scheduling: {:?}",
+        //     CpuTopologyId::current().to_mpidr(),
+        //     register_file
+        // );
         let regs: RegisterFileRef = {
             let gic = get_interrupt_controller();
 
@@ -105,11 +104,11 @@ impl ExceptionHandler for Exceptions {
             regs
         };
 
-        trace!(
-            "irq (CPU {}): after scheduling: {:?}",
-            CpuTopologyId::current().to_mpidr(),
-            regs
-        );
+        //trace!(
+        //    "irq (CPU {}): after scheduling: {:?}",
+        //    CpuTopologyId::current().to_mpidr(),
+        //    regs
+        //);
 
         timer_schedule();
 
