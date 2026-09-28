@@ -2,7 +2,7 @@ use core::{ops::Range, ptr::NonNull, sync::atomic::Ordering};
 
 use aarch64_cpu::registers::{CurrentEL, MPIDR_EL1, Readable};
 use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
-use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, string::String, vec, vec::Vec};
 use atomic_refcell::AtomicRefMut;
 use klib::{
     allocator_support::KernelAddressTranslator,
@@ -17,10 +17,7 @@ use klib::{
     smccc::USE_HVC,
     vm::{MAIR_DEVICE_INDEX, PAGE_SIZE, user::address_space::KERNEL_ADDRESS_SPACE},
 };
-use mars_acpi_aml_driver::{
-    ast::{AmlTerm, AmlValue},
-    parser::AmlParser,
-};
+use mars_acpi_aml_driver::{device::TreeBuilder, parser::AmlParser};
 use mars_acpi_driver::acpi::{
     fadt::Fadt,
     gtdt::Gtdt,
@@ -102,8 +99,10 @@ pub fn acpi_init(token: &BootInfoToken) {
             any => KernelAddressTranslator.phys_to_dmap(any) as _,
         }),
     );
+    let mut dsdt_table = None;
+    let mut ssdt_tables = Vec::new();
     for phys_table_bytes in xsdt_iter {
-        let table_bytes: &[u8] = {
+        let table_bytes: &'static [u8] = {
             let size = phys_table_bytes.len();
             let addr = KernelAddressTranslator
                 .phys_to_dmap(phys_table_bytes as *const [u8] as *const () as _);
@@ -127,16 +126,21 @@ pub fn acpi_init(token: &BootInfoToken) {
             }
             b"FACP" => {
                 trace!("    fadt found");
-
-                handle_fadt(table_bytes);
+                dsdt_table = handle_fadt(table_bytes);
             }
             b"MCFG" => {
                 trace!("    mcfg found");
                 handle_mcfg(table_bytes);
             }
+            b"SSDT" => {
+                trace!("    ssdt found");
+                ssdt_tables.push(table_bytes);
+            }
             _ => trace!("unrecognized ACPI table: {}", header.signature()),
         }
     }
+
+    handle_aml_tables(dsdt_table.into_iter().chain(ssdt_tables));
 }
 
 fn handle_mcfg(table: &'static [u8]) {
@@ -259,7 +263,7 @@ fn handle_madt(table: &[u8]) {
     }
 }
 
-fn handle_fadt(table: &[u8]) {
+fn handle_fadt(table: &[u8]) -> Option<&'static [u8]> {
     use log::*;
 
     let (fadt, _) = Fadt::ref_from_prefix(table)
@@ -281,143 +285,59 @@ fn handle_fadt(table: &[u8]) {
 
     let dsdt_addr = KernelAddressTranslator.phys_to_dmap(dsdt_phys_addr) as *const u8;
 
-    let dsdt_bytes = unsafe {
+    let dsdt_bytes: &'static [u8] = unsafe {
         let header_ptr = dsdt_addr as *const SdtHeader;
         let len = (*header_ptr).len() as usize;
-
         core::slice::from_raw_parts(dsdt_addr, len)
     };
 
-    handle_dsdt(dsdt_bytes);
+    Some(dsdt_bytes)
 }
 
-fn handle_dsdt(table: &[u8]) {
+fn handle_aml_tables(tables: impl IntoIterator<Item = &'static [u8]>) {
     use log::*;
 
-    let (header, aml_bytes) = match SdtHeader::ref_from_prefix(table) {
-        Ok(v) => v,
-        Err(e) => {
-            error!("DSDT header too small: {}", e);
-            return;
-        }
-    };
+    let mut tree = DEVICE_TREE.borrow_mut();
+    let old_device_count = tree.nodes.len();
+    let mut builder = TreeBuilder::new(&mut tree);
 
-    if &header.sig() != b"DSDT" {
-        error!(
-            "ACPI: Invalid DSDT table signature: \"{}\"",
-            core::str::from_utf8(&header.sig()).unwrap()
-        );
-        return;
-    }
-
-    let mut root_parser = AmlParser::new(aml_bytes);
-
-    debug!("ACPI: DSDT AML length = {}", aml_bytes.len());
-
-    //let mut output = String::new();
-    //format_aml_stream(&mut root_parser, 0, &mut output).unwrap();
-    //debug!("{}", output);
-}
-
-fn aml_stream(parser: &mut AmlParser, depth: usize) -> Result<(), &'static str> {
-    while let Some(term) = parser.parse_next()? {
-        match term {
-            AmlTerm::Scope { mut contents, .. } => {
-                aml_stream(&mut contents, depth + 1)?;
+    for table in tables {
+        let (header, aml_bytes) = match SdtHeader::ref_from_prefix(table) {
+            Ok(value) => value,
+            Err(error) => {
+                error!("ACPI AML table header is invalid: {error}");
+                continue;
             }
-            AmlTerm::Device { mut contents, .. } => {
-                aml_stream(&mut contents, depth + 1)?;
-            }
-            AmlTerm::Name { .. } => {}
-            AmlTerm::Method { .. } => {}
-            AmlTerm::OpRegion { .. } => {}
-            AmlTerm::Field => {}
-            AmlTerm::UnsupportedOpcode(_) => {}
+        };
+        let signature = header.sig();
+        if signature != *b"DSDT" && signature != *b"SSDT" {
+            error!("ACPI AML table has an unexpected signature");
+            continue;
         }
-    }
-    Ok(())
-}
 
-fn format_aml_value(val: &AmlValue, depth: usize, out: &mut String) {
-    let indent = "  ".repeat(depth);
-    match val {
-        AmlValue::Zero => out.push_str("Zero"),
-        AmlValue::One => out.push_str("One"),
-        AmlValue::Ones => out.push_str("Ones"),
-        AmlValue::Integer(val) => out.push_str(&format!("{val:#X}")),
-        AmlValue::String(s) => out.push_str(&format!("\"{s}\"")),
-        AmlValue::NamePath(path) => out.push_str(&format!("{path}")),
-        AmlValue::Buffer(buf) => out.push_str(&format!("Buffer ({}) {{ ... }}", buf.len())),
-        AmlValue::Package(elems) => {
-            if elems.is_empty() {
-                out.push_str("Package (0x00) {}");
-            } else {
-                out.push_str(&format!("Package ({:#04X}) {{\n", elems.len()));
-                let inner_indent = "  ".repeat(depth + 1);
-                for (i, elem) in elems.iter().enumerate() {
-                    out.push_str(&inner_indent);
-                    format_aml_value(elem, depth + 1, out);
-                    if i + 1 < elems.len() {
-                        out.push(',');
-                    }
-                    out.push('\n');
+        let mut parser = AmlParser::new(aml_bytes);
+        let mut terms = Vec::new();
+        while !parser.is_empty() {
+            match parser.parse_next() {
+                Ok(Some(term)) => terms.push(term),
+                Ok(None) => break,
+                Err(error) => {
+                    warn!("ACPI AML parsing stopped after a partial table: {error}");
+                    break;
                 }
-                out.push_str(&format!("{indent}}}"));
             }
         }
-    }
-}
 
-fn format_aml_stream(
-    parser: &mut AmlParser,
-    depth: usize,
-    out: &mut String,
-) -> Result<(), &'static str> {
-    let indent = "  ".repeat(depth);
-
-    while let Some(term) = parser.parse_next()? {
-        match term {
-            AmlTerm::Scope { name, mut contents } => {
-                out.push_str(&format!("{indent}Scope ({name}) {{\n"));
-                format_aml_stream(&mut contents, depth + 1, out)?;
-                out.push_str(&format!("{indent}}}\n"));
-            }
-            AmlTerm::Device { name, mut contents } => {
-                out.push_str(&format!("{indent}Device ({name}) {{\n"));
-                format_aml_stream(&mut contents, depth + 1, out)?;
-                out.push_str(&format!("{indent}}}\n"));
-            }
-            AmlTerm::Name { name, value } => {
-                out.push_str(&format!("{indent}Name ({name}, "));
-                format_aml_value(&value, depth, out);
-                out.push_str(")\n");
-            }
-            AmlTerm::Method { name, flags, code } => {
-                let arg_count = flags & 0x07;
-                let serialized = if (flags & 0x08) != 0 {
-                    "Serialized"
-                } else {
-                    "NotSerialized"
-                };
-
-                out.push_str(&format!(
-                    "{indent}Method ({name}, {arg_count}, {serialized}) [Bytecode: {} bytes]\n",
-                    code.len()
-                ));
-            }
-            AmlTerm::OpRegion { name } => {
-                out.push_str(&format!("{indent}OperationRegion ({name})\n"));
-            }
-            AmlTerm::Field => {
-                out.push_str(&format!("{indent}Field (...)\n"));
-            }
-            AmlTerm::UnsupportedOpcode(op) => {
-                out.push_str(&format!("{indent}// Unknown Opcode: {op:#04X}\n"));
-            }
+        if let Err(error) = builder.process_terms(terms, "\\", None) {
+            warn!("ACPI device-tree construction stopped early: {error}");
         }
     }
 
-    Ok(())
+    drop(builder);
+    info!(
+        "ACPI AML: discovered {} device node(s)",
+        tree.nodes.len() - old_device_count
+    );
 }
 
 fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTree>) {

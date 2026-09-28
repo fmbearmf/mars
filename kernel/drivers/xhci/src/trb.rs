@@ -96,7 +96,60 @@ impl Trb {
         Self {
             parameter: 0,
             status: 0,
-            control: ((cmd_type as u32) << 10),
+            control: (cmd_type as u32) << 10,
+        }
+    }
+
+    pub const fn command_with_slot(cmd_type: TrbType, slot_id: u8) -> Self {
+        Self {
+            parameter: 0,
+            status: 0,
+            control: ((cmd_type as u32) << 10) | ((slot_id as u32) << 24),
+        }
+    }
+
+    pub const fn setup_stage(setup: u64, transfer_type: u8, chained: bool) -> Self {
+        Self {
+            parameter: setup,
+            status: 8,
+            control: ((TrbType::SetupStage as u32) << 10)
+                | (1 << 6)
+                | (((transfer_type & 0x3) as u32) << 16)
+                | (if chained { 1 << 4 } else { 0 }),
+        }
+    }
+
+    pub const fn data_stage(buffer: u64, length: u32, direction_in: bool, chained: bool) -> Self {
+        Self {
+            parameter: buffer,
+            status: length,
+            control: ((TrbType::DataStage as u32) << 10)
+                | (if direction_in {
+                    (1 << 16) | (1 << 2)
+                } else {
+                    0
+                })
+                | (if chained { 1 << 4 } else { 0 }),
+        }
+    }
+
+    pub const fn status_stage(direction_in: bool) -> Self {
+        Self {
+            parameter: 0,
+            status: 0,
+            control: ((TrbType::StatusStage as u32) << 10)
+                | (1 << 5)
+                | (if direction_in { 1 << 16 } else { 0 }),
+        }
+    }
+
+    pub const fn normal(buffer: u64, length: u32, interrupt_on_short: bool) -> Self {
+        Self {
+            parameter: buffer,
+            status: length,
+            control: ((TrbType::Normal as u32) << 10)
+                | (1 << 5)
+                | (if interrupt_on_short { 1 << 2 } else { 0 }),
         }
     }
 
@@ -124,5 +177,10 @@ impl Trb {
     #[inline]
     pub fn slot_id(&self) -> u8 {
         ((self.control >> 24) & 0xFF) as u8
+    }
+
+    #[inline]
+    pub fn endpoint_id(&self) -> u8 {
+        ((self.control >> 16) & 0x1F) as u8
     }
 }

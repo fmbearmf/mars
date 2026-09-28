@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use core::{borrow::Borrow, mem::MaybeUninit};
 
 use aarch64_cpu::asm::barrier::{self, dsb, isb};
@@ -223,17 +224,29 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
         let dt = DEVICE_TREE.borrow();
 
         fn init_devices<'a>(i: impl Iterator<Item = &'a DeviceNode>) {
-            for (func, node) in i.filter_map(|node| {
-                node.compatible
+            let callbacks: Vec<_> = i
+                .filter_map(|node| {
+                    node.compatible
+                        .iter()
+                        .find_map(|tag| DEVICE_TABLE.get(tag))
+                        .map(|func| (func, node))
+                })
+                .collect();
+            let is_cix_xhci = |(_, node): &(&DeviceCallback, &DeviceNode)| {
+                node.compatible.iter().any(|id| id == "CIXH2031")
+            };
+
+            for (func, node) in callbacks.iter().copied().filter(is_cix_xhci).chain(
+                callbacks
                     .iter()
-                    .find_map(|tag| DEVICE_TABLE.get(tag))
-                    .map(|func| (func, node))
-            }) {
-                let f = match func {
-                    DeviceCallback::Once(f) => f,
-                    DeviceCallback::EveryCore((f, _)) => f,
+                    .copied()
+                    .filter(|entry| !is_cix_xhci(entry)),
+            ) {
+                let handler = match func {
+                    DeviceCallback::Once(handler) => handler,
+                    DeviceCallback::EveryCore((handler, _)) => handler,
                 };
-                f(node, ENABLE_IRQ, DISABLE_IRQ);
+                handler(node, ENABLE_IRQ, DISABLE_IRQ);
             }
         }
 

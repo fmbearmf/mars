@@ -26,6 +26,12 @@ impl<'a> AmlParser<'a> {
         let opcode = self.read_u8()?;
 
         match opcode {
+            // AliasOp
+            0x06 => {
+                self.read_name_path()?;
+                self.read_name_path()?;
+                Ok(Some(AmlTerm::UnsupportedOpcode(opcode)))
+            }
             // ScopeOp
             0x10 => {
                 let pkg_start = self.cursor;
@@ -68,6 +74,15 @@ impl<'a> AmlParser<'a> {
                 let code = self.take_bytes(code_len)?;
 
                 Ok(Some(AmlTerm::Method { name, flags, code }))
+            }
+            // ExternalOp
+            0x15 => {
+                self.read_name_path()?;
+                let object_type = self.read_u8()?;
+                if object_type == 0x08 {
+                    self.read_u8()?;
+                }
+                Ok(Some(AmlTerm::UnsupportedOpcode(opcode)))
             }
             // ExtOp Prefix
             0x5B => {
@@ -167,25 +182,38 @@ impl<'a> AmlParser<'a> {
                 Ok(AmlValue::Buffer(buf_data))
             }
 
-            // PackageOp (0x12) or VarPackageOp (0x13)
-            0x12 | 0x13 => {
+            // PackageOp
+            0x12 => {
                 let pkg_start = self.cursor;
                 let pkg_len = self.read_pkg_length()?;
-
-                if op == 0x12 {
-                    let _num_elems = self.read_u8()?;
-                } else {
-                    let _num_elems = self.parse_data_object()?;
-                }
+                let element_count = self.read_u8()? as usize;
 
                 let consumed_bytes = self.cursor - pkg_start;
                 let body_len = pkg_len
                     .checked_sub(consumed_bytes)
                     .ok_or("PackageOp PkgLength underflowed")?;
+                let package_bytes = self.take_bytes(body_len)?;
+                let mut package_parser = Self::new(package_bytes);
+                let mut elements = Vec::with_capacity(element_count);
+                for _ in 0..element_count {
+                    elements.push(package_parser.parse_data_object()?);
+                }
+                if !package_parser.is_empty() {
+                    return Err("PackageOp contains trailing bytes");
+                }
+                Ok(AmlValue::Package(elements))
+            }
+            // VarPackageOp has a computed element count which this parser does not evaluate.
+            0x13 => {
+                let pkg_start = self.cursor;
+                let pkg_len = self.read_pkg_length()?;
+                let _element_count = self.parse_data_object()?;
 
-                let pkg_bytes = self.take_bytes(body_len)?;
-
-                Ok(AmlValue::Buffer(pkg_bytes))
+                let consumed_bytes = self.cursor - pkg_start;
+                let body_len = pkg_len
+                    .checked_sub(consumed_bytes)
+                    .ok_or("VarPackageOp PkgLength underflowed")?;
+                Ok(AmlValue::Buffer(self.take_bytes(body_len)?))
             }
 
             // NamePath reference
@@ -302,8 +330,44 @@ impl<'a> AmlParser<'a> {
             Err("buffer overflow while taking bytes")
         }
     }
+}
 
-    fn remaining_bytes(&self) -> &'a [u8] {
-        &self.bytes[self.cursor..]
+#[cfg(test)]
+mod tests {
+    use super::AmlParser;
+    use crate::ast::AmlValue;
+
+    #[test]
+    fn parses_string_packages_used_by_acpi_cids() {
+        let bytes = [
+            0x12, 0x0b, 0x01, 0x0d, b'P', b'N', b'P', b'0', b'D', b'1', b'0', 0,
+        ];
+        let mut parser = AmlParser::new(&bytes);
+
+        assert!(matches!(
+            parser.parse_data_object(),
+            Ok(AmlValue::Package(values))
+                if matches!(values.as_slice(), [AmlValue::String("PNP0D10")])
+        ));
+        assert!(parser.is_empty());
+    }
+
+    #[test]
+    fn skips_external_terms_without_losing_following_names() {
+        let bytes = [
+            0x15, b'_', b'S', b'B', b'_', 0x06, 0x08, b'_', b'H', b'I', b'D', 0x0d, b'P', b'N',
+            b'P', b'0', b'D', b'1', b'0', 0,
+        ];
+        let mut parser = AmlParser::new(&bytes);
+
+        assert!(matches!(
+            parser.parse_next(),
+            Ok(Some(crate::ast::AmlTerm::UnsupportedOpcode(0x15)))
+        ));
+        assert!(matches!(
+            parser.parse_next(),
+            Ok(Some(crate::ast::AmlTerm::Name { .. }))
+        ));
+        assert!(parser.is_empty());
     }
 }

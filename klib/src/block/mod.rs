@@ -4,6 +4,8 @@ use alloc::{boxed::Box, string::String, sync::Arc};
 
 use crate::{scheduler::GLOBAL_SCHEDULER, sync::SleepingMutex};
 
+pub mod registry;
+
 /// errors that can occur during block I/O
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum BlockError {

@@ -33,23 +33,51 @@ pub struct XhciRegisters {
 unsafe impl Send for XhciRegisters {}
 
 impl XhciRegisters {
-    /// SAFETY: base must be a valid pointer to MMIO
-    pub unsafe fn new(base: NonNull<u8>) -> Self {
+    /// SAFETY: `base..base + mmio_size` must be mapped as xHCI MMIO.
+    pub unsafe fn new(base: NonNull<u8>, mmio_size: usize) -> Result<Self, &'static str> {
+        if mmio_size < size_of::<CapabilityRegs>() {
+            return Err("xHCI MMIO range is smaller than its capability registers");
+        }
+
         let base_ptr = base.as_ptr();
         let cap = base_ptr.cast::<CapabilityRegs>();
+        let cap_len = unsafe { (*cap).cap_len.read() } as usize;
+        let hcs_params1 = unsafe { (*cap).hcs_params1.read() };
+        let max_slots = (hcs_params1 & 0xff) as usize;
+        let max_ports = ((hcs_params1 >> 24) & 0xff) as usize;
+        let rt_offset = (unsafe { (*cap).rts_off.read() } & !0x1f) as usize;
+        let db_offset = (unsafe { (*cap).db_off.read() } & !0x03) as usize;
 
-        let cap_len = unsafe { (*cap).cap_len.read() };
-        let rt_offset = unsafe { (*cap).rts_off.read() } & !0x1F; // 32-byte alignment
-        let db_offset = unsafe { (*cap).db_off.read() } & !0x03; // 4-byte alignment
-
-        unsafe {
-            Self {
-                cap: NonNull::new_unchecked(cap),
-                op: NonNull::new_unchecked(base_ptr.add(cap_len as usize).cast()),
-                rt: NonNull::new_unchecked(base_ptr.add(rt_offset as usize).cast()),
-                db: NonNull::new_unchecked(base_ptr.add(db_offset as usize).cast()),
-            }
+        if cap_len < size_of::<CapabilityRegs>() {
+            return Err("invalid xHCI capability length");
         }
+        let op_end = cap_len
+            .checked_add(0x400)
+            .and_then(|offset| offset.checked_add(max_ports.checked_mul(0x10)?))
+            .ok_or("xHCI operational register range overflow")?;
+        let runtime_end = rt_offset
+            .checked_add(0x20 + size_of::<InterrupterRegisterSet>())
+            .ok_or("xHCI runtime register range overflow")?;
+        let doorbell_end = db_offset
+            .checked_add(
+                (max_slots + 1)
+                    .checked_mul(size_of::<u32>())
+                    .ok_or("xHCI doorbell range overflow")?,
+            )
+            .ok_or("xHCI doorbell range overflow")?;
+        if op_end > mmio_size || runtime_end > mmio_size || doorbell_end > mmio_size {
+            return Err("xHCI register offsets exceed the MMIO resource");
+        }
+
+        let op = unsafe { NonNull::new_unchecked(base_ptr.add(cap_len).cast()) };
+        let rt = unsafe { NonNull::new_unchecked(base_ptr.add(rt_offset).cast()) };
+        let db = unsafe { NonNull::new_unchecked(base_ptr.add(db_offset).cast()) };
+        Ok(Self {
+            cap: NonNull::new(cap).ok_or("null xHCI capability base")?,
+            op,
+            rt,
+            db,
+        })
     }
 
     #[inline]

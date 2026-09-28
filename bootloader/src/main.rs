@@ -199,7 +199,7 @@ fn main() -> Status {
     );
 
     let uart_phys = 0x040d_0000;
-    //let uart_phys = 0x0900_0000;
+    let uart_phys = 0x0900_0000;
     let uart_phys_page = align_down(uart_phys, PAGE_SIZE);
     map_region(
         unsafe { root_ttbr0.as_mut() },
