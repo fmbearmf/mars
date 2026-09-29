@@ -7,7 +7,7 @@ use klib::{
     block::registry::register_hardware_device,
     hardware::{
         device::{DeviceNode, IrqFn},
-        resource::Resource,
+        resource::{Resource, pci_bar_range},
     },
     interrupt::{
         InterruptError,
@@ -168,14 +168,7 @@ fn register_controller_interrupts(
 ) -> Result<Vec<u32>, &'static str> {
     if let Some((ecam, bdf)) = pci {
         if let Some(msix_info) = get_msix_info(ecam, *bdf) {
-            let table_resource = device
-                .resources
-                .iter()
-                .filter_map(|resource| match resource {
-                    Resource::Mmio { range } => Some(range),
-                    _ => None,
-                })
-                .nth(msix_info.table_bir as usize)
+            let table_resource = pci_bar_range(&device.resources, msix_info.table_bir)
                 .ok_or("xHCI MSI-X table BAR is missing")?;
             let table_size = msix_info.table_size as usize * 16;
             let table_end = msix_info

@@ -365,6 +365,7 @@ dependencies = [
  "mars-generic-timer-driver",
  "mars-models",
  "mars-models-zerocopy",
+ "mars-nvme-driver",
  "mars-pcie-driver",
  "mars-virtio-driver",
  "mars-xhci-driver",
@@ -475,6 +476,16 @@ name = "mars-models-zerocopy-derive"
 version = "0.0.1"
 dependencies = [
  "hax-lib",
+]
+
+[[package]]
+name = "mars-nvme-driver"
+version = "0.0.1"
+dependencies = [
+ "aarch64-cpu-ext",
+ "klib",
+ "log",
+ "mars-pcie-driver",
 ]
 
 [[package]]

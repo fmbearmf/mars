@@ -9,7 +9,7 @@ use klib::{
     cpu_interface::CpuTopologyId,
     hardware::{
         device::{DeviceClass, DeviceInitPriority, DeviceTree},
-        resource::Resource,
+        resource::{DmaRemapping, Resource},
     },
     interrupt::{GicdRegisters, GicrRegisters, GitsRegisters, gicv3::registers::gic::GicrTyper},
     per_cpu::PerCpu,
@@ -22,12 +22,13 @@ use mars_acpi_driver::acpi::{
     fadt::Fadt,
     gtdt::Gtdt,
     header::SdtHeader,
+    iort::{Iort, Translation},
     madt::{GicCpuInterface, GicDistributor, GicIts, GicRedistributor, Madt, MadtIter},
     mcfg::Mcfg,
     xsdp::{Xsdp, XsdtIter},
 };
 use mars_models::memory::registers::volatile::PureReadable;
-use mars_pcie_driver::{ecam::Ecam, scan::enumerate_segment};
+use mars_pcie_driver::{address::Bdf, ecam::Ecam, scan::enumerate_segment};
 use uefi::table::cfg::ConfigTableEntry;
 use uefi_raw::table::{configuration::ConfigurationTable, system::SystemTable};
 use zerocopy::FromBytes;
@@ -101,6 +102,8 @@ pub fn acpi_init(token: &BootInfoToken) {
     );
     let mut dsdt_table = None;
     let mut ssdt_tables = Vec::new();
+    let mut iort_table = None;
+    let mut duplicate_iort = false;
     for phys_table_bytes in xsdt_iter {
         let table_bytes: &'static [u8] = {
             let size = phys_table_bytes.len();
@@ -136,11 +139,90 @@ pub fn acpi_init(token: &BootInfoToken) {
                 trace!("    ssdt found");
                 ssdt_tables.push(table_bytes);
             }
+            b"IORT" => {
+                if iort_table.replace(table_bytes).is_some() {
+                    duplicate_iort = true;
+                }
+            }
             _ => trace!("unrecognized ACPI table: {}", header.signature()),
         }
     }
 
-    handle_aml_tables(dsdt_table.into_iter().chain(ssdt_tables));
+    let identity_dma = handle_aml_tables(dsdt_table.into_iter().chain(ssdt_tables));
+    // MCFG and IORT ordering in the XSDT must not affect PCI DMA discovery.
+    if duplicate_iort {
+        error!("ACPI: multiple IORT tables; PCI DMA topology remains unresolved");
+    } else if let Some(table) = iort_table {
+        if identity_dma {
+            handle_iort(table);
+        } else {
+            error!("ACPI: AML DMA addressing is unresolved; refusing identity-DMA devices");
+        }
+    }
+}
+
+fn handle_iort(table: &[u8]) {
+    let iort = match Iort::parse(table) {
+        Ok(iort) => iort,
+        Err(error) => {
+            log::error!("ACPI: invalid IORT: {error:?}; PCI DMA topology remains unresolved");
+            return;
+        }
+    };
+    let mut tree = DEVICE_TREE.borrow_mut();
+    for node in &mut tree.nodes {
+        let pci = node.resources.iter().find_map(|resource| match resource {
+            Resource::PciEcam {
+                segment,
+                bus,
+                device,
+                function,
+                ..
+            } => Some(Bdf::new(*segment, *bus, *device, *function)),
+            _ => None,
+        });
+        let Some(pci) = pci else { continue };
+        let route = match iort.pci_route(pci.segment, pci.requester_id() as u16) {
+            Ok(route) => route,
+            Err(error) => {
+                log::warn!("PCI {pci}: unresolved IORT DMA route: {error:?}");
+                continue;
+            }
+        };
+        let remapping = match route.translation {
+            Translation::None => DmaRemapping::NoIommu,
+            Translation::Smmu {
+                base,
+                span,
+                model,
+                flags,
+                stream_id,
+            } => DmaRemapping::ArmSmmu {
+                base,
+                span,
+                model,
+                flags,
+                stream_id,
+            },
+            Translation::SmmuV3 {
+                base,
+                flags,
+                model,
+                stream_id,
+            } => DmaRemapping::ArmSmmuV3 {
+                base,
+                flags,
+                model,
+                stream_id,
+            },
+        };
+        log::debug!("PCI {pci}: IORT {route:?}");
+        node.resources.push(Resource::PciDmaTopology {
+            address_bits: route.address_bits,
+            coherent: route.coherent,
+            remapping,
+        });
+    }
 }
 
 fn handle_mcfg(table: &'static [u8]) {
@@ -294,26 +376,31 @@ fn handle_fadt(table: &[u8]) -> Option<&'static [u8]> {
     Some(dsdt_bytes)
 }
 
-fn handle_aml_tables(tables: impl IntoIterator<Item = &'static [u8]>) {
+fn handle_aml_tables(tables: impl IntoIterator<Item = &'static [u8]>) -> bool {
     use log::*;
 
     let mut tree = DEVICE_TREE.borrow_mut();
     let old_device_count = tree.nodes.len();
     let mut builder = TreeBuilder::new(&mut tree);
+    let mut complete = true;
+    let mut saw_dsdt = false;
 
     for table in tables {
         let (header, aml_bytes) = match SdtHeader::ref_from_prefix(table) {
             Ok(value) => value,
             Err(error) => {
                 error!("ACPI AML table header is invalid: {error}");
+                complete = false;
                 continue;
             }
         };
         let signature = header.sig();
         if signature != *b"DSDT" && signature != *b"SSDT" {
             error!("ACPI AML table has an unexpected signature");
+            complete = false;
             continue;
         }
+        saw_dsdt |= signature == *b"DSDT";
 
         let mut parser = AmlParser::new(aml_bytes);
         let mut terms = Vec::new();
@@ -323,6 +410,7 @@ fn handle_aml_tables(tables: impl IntoIterator<Item = &'static [u8]>) {
                 Ok(None) => break,
                 Err(error) => {
                     warn!("ACPI AML parsing stopped after a partial table: {error}");
+                    complete = false;
                     break;
                 }
             }
@@ -330,14 +418,19 @@ fn handle_aml_tables(tables: impl IntoIterator<Item = &'static [u8]>) {
 
         if let Err(error) = builder.process_terms(terms, "\\", None) {
             warn!("ACPI device-tree construction stopped early: {error}");
+            complete = false;
         }
     }
 
+    // _DMA must be evaluated before using CPU physical addresses as PCI addresses.
+    // The AML interpreter does not yet implement translated DMA windows.
+    let identity_dma = complete && saw_dsdt && !builder.has_dma_translation();
     drop(builder);
     info!(
         "ACPI AML: discovered {} device node(s)",
         tree.nodes.len() - old_device_count
     );
+    identity_dma
 }
 
 fn handle_gicv3(madt: impl Fn() -> MadtIter, dt: &mut AtomicRefMut<'_, DeviceTree>) {

@@ -15,6 +15,9 @@ test = false
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_analyzer)'] }
 
+[features]
+nvme-self-test = ["mars-nvme-driver/self-test"]
+
 [dependencies]
 aarch64-cpu.workspace = true
 aarch64-cpu-ext.workspace = true
@@ -26,6 +29,7 @@ uefi = { workspace = true, default-features = false }
 uefi-raw.workspace = true
 log.workspace = true
 mars-pcie-driver.workspace = true
+mars-nvme-driver.workspace = true
 mars-acpi-driver.workspace = true
 mars-acpi-aml-driver.workspace = true
 mars-generic-timer-driver.workspace = true

@@ -1,6 +1,4 @@
-use super::super::{
-    PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable,
-};
+use super::super::{PAGE_SIZE, TABLE_ENTRIES, TTENATIVE, TTable};
 use super::{PAGE_DESCRIPTORS, PtState, PteMeta, Status, address_space::AddressSpace, entry_index};
 use crate::pm::page::mapper::AddressTranslator;
 use crate::{
