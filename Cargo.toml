@@ -1,5 +1,6 @@
 [workspace]
 members = [ "bootloader",
+            "directblock",
             "kernel",
             "kernel/drivers/acpi",
             "kernel/drivers/acpi-aml",
