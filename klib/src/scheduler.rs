@@ -6,21 +6,20 @@ use core::{
 use crate::cpu_interface::CpuIdLogical;
 
 use super::{
-    context::RegisterFileRef,
+    context::RegisterFile,
     sync::{RwLock, UnfairSpinlock},
     thread::{Thread, ThreadState},
 };
 
-use aarch64_cpu::{
-    asm::barrier::{self, isb},
-    registers::TTBR0_EL1,
-};
+use crate::{process::Process, vm::user::address_space::KERNEL_ADDRESS_SPACE};
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 #[derive(Debug)]
 pub struct LocalScheduler<'a> {
     thread_queue: VecDeque<Arc<Thread<'a>>>,
     current_thread: Option<Arc<Thread<'a>>>,
+    retired_thread: Option<Arc<Thread<'a>>>,
+    current_process: Option<Arc<Process<'a>>>,
 }
 
 impl LocalScheduler<'_> {
@@ -28,6 +27,8 @@ impl LocalScheduler<'_> {
         Self {
             thread_queue: VecDeque::new(),
             current_thread: None,
+            retired_thread: None,
+            current_process: None,
         }
     }
 }
@@ -78,9 +79,7 @@ impl<'a> Scheduler<'a> {
 
     #[inline(always)]
     pub fn yield_now() {
-        unsafe {
-            core::arch::asm!("svc #0");
-        }
+        unsafe { hal::context::request_reschedule() }
     }
 
     pub fn current_thread(&self) -> Option<Arc<Thread<'a>>> {
@@ -102,6 +101,25 @@ impl<'a> Scheduler<'a> {
         }
     }
 
+    /// bind the initial kernel thread to this processor
+    ///
+    /// safety:
+    /// keep interrupts masked until resuming the returned context
+    /// supply a fresh thread that no other processor or queue can run
+    pub unsafe fn start_kernel(&self, thread: Arc<Thread<'a>>) -> RegisterFile {
+        assert!(thread.is_kernel(), "initial thread must run in the kernel");
+        let context = thread.with_ctx(|context| *context);
+        let queues = self.queues.read();
+        let mut local = queues[CpuIdLogical::current().to_usize()].lock();
+        assert!(
+            local.current_thread.is_none(),
+            "processor already has a running thread"
+        );
+        thread.set_state(ThreadState::Running);
+        local.current_thread = Some(thread);
+        context
+    }
+
     pub fn spawn(&self, thread: Arc<Thread<'a>>) {
         let queues = self.queues.read();
         assert!(!queues.is_empty(), "scheduler has no CPUs");
@@ -114,7 +132,7 @@ impl<'a> Scheduler<'a> {
         target_queue.lock().thread_queue.push_back(thread);
     }
 
-    pub fn schedule<'ctx>(&self, ctx: RegisterFileRef<'ctx>) -> RegisterFileRef<'ctx> {
+    pub fn schedule(&self, ctx: &mut RegisterFile) {
         let cpu_id = CpuIdLogical::current();
         let queues_guard = self.queues.read();
         let queue_mutex = &queues_guard[cpu_id.to_usize()];
@@ -123,9 +141,7 @@ impl<'a> Scheduler<'a> {
         let prev_thread = local_queue.current_thread.take();
 
         if let Some(ref prev) = prev_thread {
-            prev.with_ctx_mut(|prev_ctx| {
-                *prev_ctx = *ctx;
-            });
+            prev.save_running_context(*ctx);
 
             if prev.get_state() == ThreadState::Running {
                 prev.set_state(ThreadState::Ready);
@@ -141,30 +157,38 @@ impl<'a> Scheduler<'a> {
         if let Some(next) = next_thread {
             if let Some(prev) = &prev_thread {
                 if Arc::ptr_eq(prev, &next) {
+                    next.set_state(ThreadState::Running);
                     local_queue.current_thread = Some(next);
-                    return ctx;
+                    return;
                 }
             }
 
+            let next_context = next.with_ctx(|context| *context);
             next.set_state(ThreadState::Running);
 
-            if let Some(process) = next.process() {
-                process.with_address_space(|addr_space| {
-                    let root = addr_space.root();
-                    let addr = root as *const _ as u64;
-                    TTBR0_EL1.set_baddr(addr);
-                    isb(barrier::SY);
+            let next_process = next.process();
+            if let Some(process) = &next_process {
+                process.with_address_space(|space| unsafe {
+                    space
+                        .activate()
+                        .expect("uninitialized process address space");
                 });
+            } else {
+                unsafe {
+                    KERNEL_ADDRESS_SPACE
+                        .activate()
+                        .expect("uninitialized kernel address space")
+                };
             }
 
+            // retain the active process until this CPU has switched to another thread
+            local_queue.current_process = next_process;
+            // rust still runs on the outgoing stack until exception return
+            // release it at the next switch, after leaving that stack
+            local_queue.retired_thread = prev_thread;
             local_queue.current_thread = Some(next.clone());
 
-            let next_ptr = next.with_ctx_mut(|next_ctx| next_ctx as *mut _);
-
-            // theoretically this is safe. nothing else should mutate the `ctx`
-            unsafe { RegisterFileRef(&mut *next_ptr) }
-        } else {
-            ctx
+            *ctx = next_context;
         }
     }
 }

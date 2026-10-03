@@ -8,7 +8,7 @@ name = "mars_generic_timer_driver"
 plugin = false
 
 [dependencies]
-aarch64-cpu.workspace = true
+hal.workspace = true
 atomic_refcell.workspace = true
 klib.workspace = true
 log.workspace = true

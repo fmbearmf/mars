@@ -15,6 +15,7 @@ mars_getters.workspace = true
 tock-registers.workspace = true
 mars-models.workspace = true
 mars-models-zerocopy = { workspace = true, features = ["derive"] }
+hal.workspace = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(hax)'] }

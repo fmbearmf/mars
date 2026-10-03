@@ -1,10 +1,8 @@
 use core::{
-    arch::asm,
     fmt::{self, Display},
     hash::BuildHasherDefault,
 };
 
-use aarch64_cpu::registers::{MPIDR_EL1, Readable, TPIDR_EL1};
 use alloc::vec::Vec;
 use atomic_refcell::AtomicRefCell;
 use hashbrown::HashMap;
@@ -12,96 +10,6 @@ use log::trace;
 use rustc_hash::FxHasher;
 
 use crate::this_cpu;
-
-use super::interrupt::InterruptInterface;
-
-#[derive(Debug, Copy, Clone)]
-pub struct Arm64InterruptInterface;
-
-impl Arm64InterruptInterface {
-    #[inline(always)]
-    pub fn read_iar0() -> u32 {
-        let val: u32;
-        unsafe {
-            asm!("mrs {0:x}, ICC_IAR0_EL1", out(reg) val);
-        }
-        val
-    }
-
-    #[inline(always)]
-    pub fn read_iar1() -> u32 {
-        let val: u32;
-        unsafe {
-            asm!("mrs {0:x}, ICC_IAR1_EL1", out(reg) val);
-        }
-        val
-    }
-
-    #[inline(always)]
-    pub fn write_eoir0(val: u32) {
-        unsafe {
-            asm!("msr ICC_EOIR0_EL1, {}", in(reg) val as u64);
-        }
-    }
-
-    #[inline(always)]
-    pub fn write_eoir1(val: u32) {
-        unsafe {
-            asm!("msr ICC_EOIR1_EL1, {}", in(reg) val as u64);
-        }
-    }
-
-    #[inline(always)]
-    pub fn write_dir(val: u32) {
-        unsafe {
-            asm!("msr ICC_DIR_EL1, {}", in(reg) val as u64);
-        }
-    }
-
-    #[inline(always)]
-    pub fn write_pmr(val: u8) {
-        unsafe {
-            asm!("msr ICC_PMR_EL1, {}", in(reg) val as u64);
-        }
-    }
-
-    #[inline(always)]
-    pub fn write_igrpen0(val: u64) {
-        unsafe {
-            asm!("msr ICC_IGRPEN0_EL1, {}", in(reg) val);
-        }
-    }
-
-    #[inline(always)]
-    pub fn write_igrpen1(val: u64) {
-        unsafe {
-            asm!("msr ICC_IGRPEN1_EL1, {}", in(reg) val);
-        }
-    }
-}
-
-impl InterruptInterface for Arm64InterruptInterface {
-    fn read_iar(&self) -> u32 {
-        Arm64InterruptInterface::read_iar1()
-    }
-
-    fn write_eoir(&self, int_id: u32) {
-        Arm64InterruptInterface::write_eoir1(int_id);
-        Arm64InterruptInterface::write_dir(int_id);
-    }
-
-    fn enable_group1(&self) {
-        Arm64InterruptInterface::write_igrpen1(1);
-    }
-
-    fn disable_group1(&self) {
-        Arm64InterruptInterface::write_igrpen1(0);
-    }
-
-    fn set_priority_mask(&self, mask: u8) {
-        Arm64InterruptInterface::write_pmr(mask);
-    }
-}
 
 /// packed integer of CPU core topology information. sparse.
 /// when a contiguous ID is needed (i.e. the highest ID is the total core count - 1), use `CpuIdLogical`
@@ -130,7 +38,7 @@ impl CpuTopologyId {
     }
 
     pub fn current() -> Self {
-        Self::from_mpidr(MPIDR_EL1.get())
+        Self::new(hal::cpu::current_cpu_identity().value() as u32)
     }
 
     pub const fn to_mpidr(&self) -> u64 {
@@ -196,8 +104,7 @@ impl CpuIdLogical {
 
     /// current CPU's logical ID.
     pub fn current() -> Self {
-        let tpidr = TPIDR_EL1.get();
-        if tpidr == 0 {
+        if hal::cpu::read_cpu_local::<()>().is_null() {
             CpuTopologyId::current()
                 .to_logical()
                 .unwrap_or(Self::new(0))

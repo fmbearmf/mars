@@ -1,14 +1,10 @@
-use core::{arch::global_asm, sync::atomic::Ordering};
-
-use aarch64_cpu::registers::{
-    CPACR_EL1, MAIR_EL1, Readable, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1, VBAR_EL1,
-};
 use alloc::boxed::Box;
+use core::sync::atomic::Ordering;
+use hal::interrupt::InterruptGuard;
 use klib::{
     allocator_support::KernelAddressTranslator,
     cache::clean_dcache_range,
     cpu_interface::{CpuIdLogical, CpuTopologyId},
-    guard::InterruptGuard,
     hardware::device::DeviceNode,
     per_cpu::PerCpu,
     pm::page::mapper::AddressTranslator,
@@ -26,111 +22,6 @@ use crate::{
     lut::{DEVICE_TABLE, DeviceCallback},
 };
 
-#[repr(C)]
-#[derive(Debug)]
-struct SecondaryBootArgs {
-    pub stack_top_v: *mut (),
-    pub entry_fn_v: *const (),
-    //
-    pub cpu_id: CpuIdLogical,
-    pub ttbr0: u64,
-    pub ttbr1: u64,
-    pub tcr: u64,
-    pub mair: u64,
-    pub sctlr: u64,
-    pub cpacr: u64,
-    pub vbar: u64,
-}
-
-global_asm!(
-    ".global smp_trampoline",
-    ".section .text.smp_trampoline, \"ax\"",
-    ".align 3",
-    //
-    "smp_trampoline:",
-    "mrs x9, CurrentEL",
-    "lsr x9, x9, #2",
-    "cmp x9, #2",
-    "b.ne .L_el2",
-    //
-    // [34] = E2H (VHE)
-    // [31] = RW (AArch64)
-    // [27] = TGE (route EL1 registers to EL2)
-    "movz x9, #0x8800, lsl #16",
-    "movk x9, #0x0004, lsl #32",
-    "msr hcr_el2, x9",
-    "isb",
-    //
-    "mov x9, #0x3c9",
-    "msr spsr_el1, x9",
-    "isb",
-    //
-    "adr x9, .L_el2",
-    "msr elr_el1, x9",
-    "isb",
-    //
-    "msr hstr_el2, xzr",
-    "isb",
-    //
-    // under VHE, CNTHCTL_EL2 has the same layout as CNTKCTL_EL1
-    // [1:0] = EL0 phys/virt counter accesses
-    // [11:10] = EL0 phys/virt timer accesses
-    "mov x9, #((3 << 10) | 3)",
-    "msr cnthctl_el2, x9",
-    "msr cntvoff_el2, xzr",
-    "isb",
-    //
-    "mov x9, #0xf",
-    "msr icc_sre_el2, x9",
-    "isb",
-    //
-    "dsb sy",
-    "isb",
-    //
-    "eret",
-    //
-    ".L_el2:",
-    "ldr x9, [x0, #0]",   // SecondaryBootArgs.stack_top (virtual)
-    "ldr x7, [x0, #8]",   // SecondaryBootArgs.entry_fn (virtual)
-    "ldr w8, [x0, #16]",  // SecondaryBootArgs.cpu_id
-    "ldr x1, [x0, #24]",  // SecondaryBootArgs.ttbr0
-    "ldr x2, [x0, #32]",  // SecondaryBootArgs.ttbr1
-    "ldr x3, [x0, #40]",  // SecondaryBootArgs.tcr
-    "ldr x4, [x0, #48]",  // SecondaryBootArgs.mair
-    "ldr x5, [x0, #56]",  // SecondaryBootArgs.sctlr
-    "ldr x6, [x0, #64]",  // SecondaryBootArgs.cpacr
-    "ldr x10, [x0, #72]", // SecondaryBootArgs.cpacr
-    //
-    "msr ttbr0_el1, x1",
-    "isb",
-    "msr ttbr1_el1, x2",
-    "isb",
-    "msr tcr_el1, x3",
-    "isb",
-    "msr mair_el1, x4",
-    "isb",
-    //
-    "tlbi vmalle1",
-    "dsb sy",
-    "isb",
-    //
-    "msr sctlr_el1, x5",
-    "isb",
-    "msr cpacr_el1, x6",
-    "isb",
-    "msr vbar_el1, x10",
-    "isb",
-    //
-    "mov sp, x9",
-    "mov w0, w8",
-    //
-    "br x7",
-);
-
-unsafe extern "C" {
-    pub fn smp_trampoline();
-}
-
 pub unsafe fn boot_secondary(
     core: CpuTopologyId,
     logical_id: CpuIdLogical,
@@ -141,28 +32,19 @@ pub unsafe fn boot_secondary(
 
     let stack_top = stack.as_ptr_range().end as usize;
 
-    let mut args = Box::new(SecondaryBootArgs {
-        stack_top_v: stack_top as _,
-        entry_fn_v: secondary_init as _,
-        cpu_id: logical_id,
-        ttbr0: TTBR0_EL1.get(),
-        ttbr1: TTBR1_EL1.get(),
-        tcr: TCR_EL1.get(),
-        mair: MAIR_EL1.get(),
-        sctlr: SCTLR_EL1.get(),
-        cpacr: CPACR_EL1.get(),
-        vbar: VBAR_EL1.get(),
+    let args = Box::new(unsafe {
+        hal::secondary::prepare(stack_top, secondary_init, logical_id.to_u32())
     });
 
-    let args_ptr = args.as_mut() as *mut SecondaryBootArgs;
+    let args_ptr = args.as_ref() as *const _ as *const u8;
     unsafe {
         clean_dcache_range(
             args_ptr as *const _ as _,
-            core::mem::size_of::<SecondaryBootArgs>(),
+            core::mem::size_of_val(args.as_ref()),
         )
     };
 
-    let trampoline_phys = addr_translator(smp_trampoline as *const () as usize) as u64;
+    let trampoline_phys = addr_translator(hal::secondary::entry_address()) as u64;
     let args_phys = KernelAddressTranslator.dmap_to_phys(args_ptr as _) as u64;
 
     info!(
@@ -178,6 +60,8 @@ pub unsafe fn boot_secondary(
     let pcpu = PerCpu::get(logical_id.to_usize()).expect("invalid logical_id passed");
 
     while pcpu.ready.load(Ordering::Acquire) != true {}
+    // idle_entry publishes readiness after switching away from the temporary stack
+    drop(stack);
 
     trace!(
         "SMP: CPU {} is confirmed to be ready. moving on...",
@@ -188,7 +72,8 @@ pub unsafe fn boot_secondary(
 }
 
 #[allow(dead_code, reason = "called indirectly")]
-pub unsafe extern "C" fn secondary_init(cpu_id: CpuIdLogical) -> ! {
+pub unsafe extern "C" fn secondary_init(cpu_id: u32) -> ! {
+    let cpu_id = CpuIdLogical::new(cpu_id);
     PerCpu::register_local(cpu_id.to_usize()).expect("invalid cpu_id passed to secondary core!");
     InterruptGuard::disable();
 

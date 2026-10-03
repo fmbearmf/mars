@@ -4,8 +4,8 @@ version = "0.0.1"
 edition = "2024"
 
 [dependencies]
+hal.workspace = true
 klib.workspace = true
 log.workspace = true
 mars_getters.workspace = true
 mars-pcie-driver.workspace = true
-aarch64-cpu-ext.workspace = true

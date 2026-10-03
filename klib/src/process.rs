@@ -1,6 +1,5 @@
 use core::fmt::Debug;
 
-
 use super::{
     sync::RwLock,
     thread::{Thread, ThreadId},

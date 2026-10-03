@@ -1,535 +1,376 @@
-use core::ptr::NonNull;
+use hal::paging::{Entry, GEOMETRY, Level, MappingOptions, PageTable, valid_virtual_address};
 
-use crate::{
-    cache::clean_dcache_range,
-    vm::{
-        L1_BLOCK_SIZE, L2_BLOCK_SIZE, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, TABLE_ENTRIES, TTENATIVE,
-        TTable,
-    },
-};
-use aarch64_cpu::asm::barrier::{self, dsb, isb};
-use aarch64_cpu_ext::{
-    asm::tlb::{VMALLE1IS, tlbi},
-    structures::tte::{AccessPermission, Shareability},
-};
+use crate::vm::{PAGE_MASK, PAGE_SIZE, VmError};
 
-#[inline]
-fn clean_entry<T>(entry: &T) {
-    unsafe {
-        clean_dcache_range(entry as *const _ as *const u8, core::mem::size_of::<T>());
-    }
+/// allocations must contain an initialized, unpublished table with the HAL's layout
+pub trait TableAllocator: Send + Sync {
+    fn alloc_table(&self) -> Result<PageTable, VmError>;
+    fn free_table(&self, table: PageTable);
 }
 
-#[inline]
-fn clean_table<T>(table_ptr: *const T) {
-    unsafe {
-        clean_dcache_range(table_ptr as _, core::mem::size_of::<T>());
-    }
-}
-
-#[inline]
-pub fn tlb_invalidate_all() {
-    dsb(barrier::SY);
-    tlbi(VMALLE1IS);
-    dsb(barrier::SY);
-    isb(barrier::SY);
-}
-
-#[inline]
-pub fn tlb_invalidate_page(va: usize) {
-    let val = (va >> 12) & 0x0000_0FFF_FFFF_FFFF;
-    dsb(barrier::SY);
-    unsafe {
-        core::arch::asm!(
-            "tlbi vaae1is, {val}",
-            val = in(reg) val,
-            options(nostack, preserves_flags)
-        );
-    }
-    dsb(barrier::SY);
-    isb(barrier::SY);
-}
-
-pub trait TableAllocator {
-    fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>>;
-    fn free_table(&self, table: NonNull<TTable<TABLE_ENTRIES>>);
-}
-
-pub trait AddressTranslator {
+pub trait AddressTranslator: Send + Sync {
     fn phys_to_dmap(&self, phys: usize) -> *mut u8;
     fn dmap_to_phys(&self, virt: *mut u8) -> usize;
 }
 
-pub fn map_region(
-    root: &mut TTable<TABLE_ENTRIES>,
-    pa: usize,
-    va: usize,
-    size: usize,
-    access: AccessPermission,
-    share: Shareability,
-    uxn: bool,
-    pxn: bool,
-    attr_index: u64,
-    allocator: &dyn TableAllocator,
-    translator: &dyn AddressTranslator,
-) {
-    assert_eq!(va & PAGE_MASK, 0, "VA must be page aligned");
-    assert_eq!(pa & PAGE_MASK, 0, "PA must be page aligned");
-    assert_eq!(size & PAGE_MASK, 0, "size must be page aligned");
-    assert!(size >= PAGE_SIZE, "can't map less than 1 page!");
-
-    let num_pages = size >> PAGE_SHIFT;
-
-    for i in 0..num_pages {
-        let vaddr = va + (i << PAGE_SHIFT);
-        let paddr = pa + (i << PAGE_SHIFT);
-        map_page(
-            root, paddr, vaddr, access, share, uxn, pxn, attr_index, allocator, translator,
-        );
-    }
+/// provide allocation to HAL's address-space builder
+pub struct MemoryProvider<'a> {
+    allocator: &'a dyn TableAllocator,
+    translator: &'a dyn AddressTranslator,
 }
 
-pub fn unmap_region(
-    root: &mut TTable<TABLE_ENTRIES>,
-    va: usize,
-    size: usize,
-    allocator: &dyn TableAllocator,
-    translator: &dyn AddressTranslator,
-) {
-    assert_eq!(va & PAGE_MASK, 0, "address must be page-aligned");
-    assert_eq!(size & PAGE_MASK, 0, "size must be page-aligned");
-
-    let num_pages = size >> PAGE_SHIFT;
-
-    for i in 0..num_pages {
-        let vaddr = va + (i << PAGE_SHIFT);
-        unmap_page(root, vaddr, allocator, translator);
-    }
-}
-
-pub fn id_map(
-    root: &mut TTable<TABLE_ENTRIES>,
-    access: AccessPermission,
-    share: Shareability,
-    uxn: bool,
-    pxn: bool,
-    attr_index: u64,
-    allocator: &dyn TableAllocator,
-    translator: &dyn AddressTranslator,
-) {
-    const BLOCKS_NEEDED: usize = L1_BLOCK_SIZE / L2_BLOCK_SIZE;
-
-    for i in 0..BLOCKS_NEEDED {
-        let current_addr = i * L2_BLOCK_SIZE;
-
-        map_l2_block(
-            root,
-            current_addr,
-            current_addr,
-            access,
-            share,
-            uxn,
-            pxn,
-            attr_index,
+impl<'a> MemoryProvider<'a> {
+    pub const fn new(
+        allocator: &'a dyn TableAllocator,
+        translator: &'a dyn AddressTranslator,
+    ) -> Self {
+        Self {
             allocator,
             translator,
-        );
-    }
-}
-
-pub fn clone_page_tables(
-    old: &TTable<TABLE_ENTRIES>,
-    allocator: &dyn TableAllocator,
-) -> NonNull<TTable<TABLE_ENTRIES>> {
-    clone_l0(old, allocator)
-}
-
-macro_rules! impl_clone_pt_level {
-    ($name:ident, $next: ident) => {
-        fn $name(
-            src: &TTable<TABLE_ENTRIES>,
-            allocator: &dyn TableAllocator,
-        ) -> NonNull<TTable<TABLE_ENTRIES>> {
-            let mut new_table_ptr = allocator.alloc_table();
-            let new_table = unsafe { new_table_ptr.as_mut() };
-
-            for i in 0..TABLE_ENTRIES {
-                let entry = &src.entries[i];
-                if !entry.is_valid() {
-                    continue;
-                }
-
-                if entry.is_table() {
-                    let child_src = unsafe { &*(entry.address() as *const TTable<TABLE_ENTRIES>) };
-                    let child_dst = $next(child_src, allocator);
-
-                    let mut new_entry = *entry;
-                    new_entry.set_address(child_dst.as_ptr() as _);
-                    new_table.entries[i] = new_entry;
-                } else {
-                    new_table.entries[i] = *entry;
-                }
-            }
-
-            clean_table(new_table_ptr.as_ptr());
-            dsb(barrier::SY);
-            new_table_ptr
         }
-    };
-}
-
-// base case
-fn clone_l3(
-    src: &TTable<TABLE_ENTRIES>,
-    allocator: &dyn TableAllocator,
-) -> NonNull<TTable<TABLE_ENTRIES>> {
-    let mut new_table_ptr = allocator.alloc_table();
-    let new_table = unsafe { new_table_ptr.as_mut() };
-
-    for i in 0..TABLE_ENTRIES {
-        new_table.entries[i] = src.entries[i];
     }
-
-    clean_table(new_table_ptr.as_ptr());
-    dsb(barrier::SY);
-    new_table_ptr
 }
 
-impl_clone_pt_level!(clone_l2, clone_l3);
-impl_clone_pt_level!(clone_l1, clone_l2);
-impl_clone_pt_level!(clone_l0, clone_l1);
+impl hal::paging::TableMemory for MemoryProvider<'_> {
+    fn alloc_table(&self) -> Result<PageTable, hal::paging::PagingError> {
+        self.allocator.alloc_table().map_err(Into::into)
+    }
+    fn free_table(&self, table: PageTable) {
+        self.allocator.free_table(table);
+    }
+    fn physical_address(&self, table: PageTable) -> usize {
+        self.translator.dmap_to_phys(table.as_ptr())
+    }
+    unsafe fn table_at(&self, physical: usize) -> PageTable {
+        unsafe { PageTable::from_ptr(self.translator.phys_to_dmap(physical)) }
+    }
+}
 
-pub fn map_l2_block(
-    root: &mut TTable<TABLE_ENTRIES>,
+pub(crate) fn validate_range(va: usize, size: usize) -> Result<(), VmError> {
+    if size == 0 {
+        return Err(VmError::InvalidSize);
+    }
+    if (va | size) & PAGE_MASK != 0 {
+        return Err(VmError::InvalidAlignment);
+    }
+    let last = va.checked_add(size - 1).ok_or(VmError::InvalidAddress)?;
+    if !valid_virtual_address(va)
+        || !valid_virtual_address(last)
+        || (va >> (usize::BITS - 1)) != (last >> (usize::BITS - 1))
+    {
+        return Err(VmError::InvalidAddress);
+    }
+    Ok(())
+}
+
+unsafe fn translated_table(pa: usize, translator: &dyn AddressTranslator) -> PageTable {
+    unsafe { PageTable::from_ptr(translator.phys_to_dmap(pa)) }
+}
+
+/// find or create a path. need exclusive access to the traversed subtree
+unsafe fn walk_to(
+    root: PageTable,
+    va: usize,
+    target: Level,
+    allocator: &dyn TableAllocator,
+    translator: &dyn AddressTranslator,
+) -> Result<PageTable, VmError> {
+    let mut table = root;
+    let mut level = Level::ROOT;
+    while level != target {
+        let index = level.index(va);
+        table = match unsafe { table.read(index, level) } {
+            Entry::Table { physical_address } => unsafe {
+                translated_table(physical_address, translator)
+            },
+            Entry::Invalid => {
+                let child = allocator.alloc_table()?;
+                let entry = Entry::Table {
+                    physical_address: translator.dmap_to_phys(child.as_ptr()),
+                };
+                if let Err(error) = unsafe { table.write(index, level, entry) } {
+                    allocator.free_table(child);
+                    return Err(error.into());
+                }
+                child
+            }
+            Entry::Mapping { .. } => return Err(VmError::Overlap),
+        };
+        level = level.child().ok_or(VmError::InvalidSize)?;
+    }
+    Ok(table)
+}
+
+unsafe fn mapping_at(
+    root: PageTable,
+    va: usize,
+    translator: &dyn AddressTranslator,
+) -> Option<(PageTable, Level, Entry)> {
+    let mut table = root;
+    let mut level = Level::ROOT;
+    loop {
+        match unsafe { table.read(level.index(va), level) } {
+            Entry::Invalid => return None,
+            Entry::Table { physical_address } => {
+                table = unsafe { translated_table(physical_address, translator) };
+                level = level.child()?;
+            }
+            entry @ Entry::Mapping { .. } => return Some((table, level, entry)),
+        }
+    }
+}
+
+/// map borrowed physical memory. on failure, remove the new mappings.
+///
+/// safety
+/// caller must exclude access to the affected subtree for the entire operation.
+/// the physical memory and translator must remain valid for the mapping's lifetime
+pub unsafe fn map_region(
+    root: PageTable,
     pa: usize,
     va: usize,
-    access: AccessPermission,
-    share: Shareability,
-    uxn: bool,
-    pxn: bool,
-    attr_index: u64,
+    size: usize,
+    options: MappingOptions,
     allocator: &dyn TableAllocator,
     translator: &dyn AddressTranslator,
-) {
-    let i0 = TTENATIVE::calculate_index(va as u64, 0);
-    let i1 = TTENATIVE::calculate_index(va as u64, 1);
-    let i2 = TTENATIVE::calculate_index(va as u64, 2);
-
-    let l0_entry = &mut (root.entries[i0]);
-
-    let l1_table = if l0_entry.address() != 0 && l0_entry.is_table() {
-        let l1_pa = l0_entry.address();
-        let l1_va = translator.phys_to_dmap(l1_pa as _);
-        let mut z = unsafe { NonNull::new_unchecked(l1_va as *mut _) };
-        unsafe { z.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-        clean_table(table.as_ptr());
-        dsb(barrier::SY);
-
-        l0_entry.set_is_valid(true);
-        l0_entry.set_is_table();
-        l0_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
-
-        clean_entry(l0_entry);
-        dsb(barrier::SY);
-
-        unsafe { table.as_mut() }
-    };
-
-    let l1_entry = &mut (l1_table.entries[i1]);
-
-    let l2_table = if l1_entry.address() != 0 && l1_entry.is_table() {
-        let l2_pa = l1_entry.address();
-        let l2_va = translator.phys_to_dmap(l2_pa as _);
-        let mut z = unsafe { NonNull::new_unchecked(l2_va as *mut _) };
-        unsafe { z.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-        clean_table(table.as_ptr());
-        dsb(barrier::SY);
-
-        l1_entry.set_is_valid(true);
-        l1_entry.set_is_table();
-        l1_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
-
-        clean_entry(l1_entry);
-        dsb(barrier::SY);
-
-        unsafe { table.as_mut() }
-    };
-
-    let l2_entry = &mut (l2_table.entries[i2]);
-
-    l2_entry.set_is_valid(true);
-    l2_entry.set_is_block();
-    l2_entry.set_address(pa as u64);
-    l2_entry.set_access();
-    l2_entry.set_access_permission(access);
-    l2_entry.set_shareability(share);
-    l2_entry.set_attr_index(attr_index);
-    l2_entry.set_executable(!uxn);
-    l2_entry.set_privileged_executable(!pxn);
-    clean_entry(l2_entry);
-    tlb_invalidate_page(va);
+) -> Result<(), VmError> {
+    validate_range(va, size)?;
+    if pa & PAGE_MASK != 0 {
+        return Err(VmError::InvalidAlignment);
+    }
+    pa.checked_add(size - 1).ok_or(VmError::InvalidAddress)?;
+    for offset in (0..size).step_by(PAGE_SIZE) {
+        if unsafe { mapping_at(root, va + offset, translator) }.is_some() {
+            return Err(VmError::Overlap);
+        }
+    }
+    for offset in (0..size).step_by(PAGE_SIZE) {
+        if let Err(error) = unsafe {
+            map_page(
+                root,
+                pa + offset,
+                va + offset,
+                options,
+                allocator,
+                translator,
+            )
+        } {
+            for installed in (0..offset).step_by(PAGE_SIZE) {
+                unsafe { unmap_page(root, va + installed, allocator, translator) }
+                    .expect("rollback of installed mapping failed");
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
-pub fn map_page(
-    root: &mut TTable<TABLE_ENTRIES>,
+/// safety:
+/// exclusive software access to the affected subtree and valid backing memory
+pub unsafe fn map_page(
+    root: PageTable,
     pa: usize,
     va: usize,
-    access: AccessPermission,
-    share: Shareability,
-    uxn: bool,
-    pxn: bool,
-    attr_index: u64,
+    options: MappingOptions,
     allocator: &dyn TableAllocator,
     translator: &dyn AddressTranslator,
-) {
-    let i0 = TTENATIVE::calculate_index(va as u64, 0);
-    let i1 = TTENATIVE::calculate_index(va as u64, 1);
-    let i2 = TTENATIVE::calculate_index(va as u64, 2);
-    let i3 = TTENATIVE::calculate_index(va as u64, 3);
-
-    let l0_entry = &mut (root.entries[i0]);
-
-    let l1_table = if l0_entry.address() != 0 && l0_entry.is_table() {
-        let l1_pa = l0_entry.address();
-        let l1_va = translator.phys_to_dmap(l1_pa as _);
-        let mut z = unsafe { NonNull::new_unchecked(l1_va as *mut _) };
-        unsafe { z.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-
-        clean_table(table.as_ptr());
-        dsb(barrier::SY);
-
-        l0_entry.set_is_valid(true);
-        l0_entry.set_is_table();
-        l0_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
-
-        clean_entry(l0_entry);
-        dsb(barrier::SY);
-
-        unsafe { table.as_mut() }
-    };
-
-    let l1_entry = &mut (l1_table.entries[i1]);
-
-    let l2_table = if l1_entry.address() != 0 && l1_entry.is_table() {
-        let l2_pa = l1_entry.address();
-        let l2_va = translator.phys_to_dmap(l2_pa as _);
-        let mut z = unsafe { NonNull::new_unchecked(l2_va as *mut _) };
-        unsafe { z.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-
-        clean_table(table.as_ptr());
-        dsb(barrier::SY);
-
-        l1_entry.set_is_valid(true);
-        l1_entry.set_is_table();
-        l1_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
-
-        clean_entry(l1_entry);
-        dsb(barrier::SY);
-
-        unsafe { table.as_mut() }
-    };
-
-    let l2_entry = &mut (l2_table.entries[i2]);
-
-    let l3_table = if l2_entry.is_valid() {
-        let l3_pa = l2_entry.address();
-        let l3_va = translator.phys_to_dmap(l3_pa as _);
-        let mut table: NonNull<TTable<TABLE_ENTRIES>> =
-            unsafe { NonNull::new_unchecked(l3_va as *mut _) };
-
-        unsafe { table.as_mut() }
-    } else {
-        let mut table = allocator.alloc_table();
-
-        clean_table(table.as_ptr());
-        dsb(barrier::SY);
-
-        l2_entry.set_is_valid(true);
-        l2_entry.set_is_table();
-        l2_entry.set_address(translator.dmap_to_phys(table.as_ptr() as _) as _);
-
-        clean_entry(l2_entry);
-        dsb(barrier::SY);
-
-        unsafe { table.as_mut() }
-    };
-    let l3_entry = &mut (l3_table.entries[i3]);
-
-    l3_entry.set_is_valid(true);
-    // the block/table bit acts counterintuitively at L3.
-    // an L3 PTE must be marked as a table for the MMU to treat it as a PTE
-    l3_entry.set_is_table();
-    l3_entry.set_address(pa as u64);
-    l3_entry.set_access();
-    l3_entry.set_access_permission(access);
-    l3_entry.set_shareability(share);
-    l3_entry.set_attr_index(attr_index);
-    l3_entry.set_executable(!uxn);
-    l3_entry.set_privileged_executable(!pxn);
-    clean_entry(l3_entry);
-    tlb_invalidate_page(va);
+) -> Result<(), VmError> {
+    unsafe { map_block(root, pa, va, Level::LEAF, options, allocator, translator) }
 }
 
-pub fn unmap_page(
-    root: &mut TTable<TABLE_ENTRIES>,
+/// safety:
+/// requires exclusive access to the affected subtree and valid backing memory
+pub unsafe fn map_block(
+    root: PageTable,
+    pa: usize,
+    va: usize,
+    level: Level,
+    options: MappingOptions,
+    allocator: &dyn TableAllocator,
+    translator: &dyn AddressTranslator,
+) -> Result<(), VmError> {
+    let size = level.coverage();
+    validate_range(va, size)?;
+    if (pa | va) & (size - 1) != 0 {
+        return Err(VmError::InvalidAlignment);
+    }
+    hal::paging::validate_mapping(pa, level, options)?;
+    let table = unsafe { walk_to(root, va, level, allocator, translator) }?;
+    let index = level.index(va);
+    let entry = Entry::Mapping {
+        physical_address: pa,
+        options,
+    };
+    let previous = unsafe { table.read(index, level) };
+    if previous == entry {
+        return Ok(());
+    }
+    if previous != Entry::Invalid {
+        return Err(VmError::Overlap);
+    }
+    unsafe { table.write(index, level, entry) }?;
+    Ok(())
+}
+
+/// setup identity map covering one second-level span using L1 blocks.
+///
+/// safety:
+/// root must be unpublished or owned exclusively by the caller
+pub unsafe fn id_map(
+    root: PageTable,
+    options: MappingOptions,
+    allocator: &dyn TableAllocator,
+    translator: &dyn AddressTranslator,
+) -> Result<(), VmError> {
+    let block = Level::LEAF.parent().ok_or(VmError::Unsupported)?;
+    let span = block.parent().ok_or(VmError::Unsupported)?.coverage();
+    for address in (0..span).step_by(block.coverage()) {
+        unsafe {
+            map_block(
+                root, address, address, block, options, allocator, translator,
+            )
+        }?;
+    }
+    Ok(())
+}
+
+/// safety:
+/// requires exclusive access to the affected subtree
+pub unsafe fn unmap_region(
+    root: PageTable,
+    va: usize,
+    size: usize,
+    allocator: &dyn TableAllocator,
+    translator: &dyn AddressTranslator,
+) -> Result<(), VmError> {
+    validate_range(va, size)?;
+    // make sure there isn't any partial block removal before changing mappings
+    for offset in (0..size).step_by(PAGE_SIZE) {
+        if let Some((_, level, _)) = unsafe { mapping_at(root, va + offset, translator) } {
+            let base = (va + offset) & !(level.coverage() - 1);
+            if base < va
+                || base
+                    .checked_add(level.coverage())
+                    .ok_or(VmError::InvalidAddress)?
+                    > va + size
+            {
+                return Err(VmError::InvalidSize);
+            }
+        }
+    }
+    let mut offset = 0;
+    while offset < size {
+        if let Some((table, level, _)) = unsafe { mapping_at(root, va + offset, translator) } {
+            unsafe { table.write(level.index(va + offset), level, Entry::Invalid) }?;
+            offset += level.coverage();
+        } else {
+            offset += PAGE_SIZE;
+        }
+    }
+    let _ = allocator;
+    Ok(())
+}
+
+/// safety:
+/// requires exclusive access to the affected subtree
+pub unsafe fn unmap_page(
+    root: PageTable,
     va: usize,
     allocator: &dyn TableAllocator,
     translator: &dyn AddressTranslator,
-) {
-    let i0 = TTENATIVE::calculate_index(va as u64, 0);
-    let i1 = TTENATIVE::calculate_index(va as u64, 1);
-    let i2 = TTENATIVE::calculate_index(va as u64, 2);
-    let i3 = TTENATIVE::calculate_index(va as u64, 3);
-
-    let l0_entry = &mut (root.entries[i0]);
-    if !l0_entry.is_valid() || !l0_entry.is_table() {
-        return;
-    }
-
-    let l1_pa = l0_entry.address();
-    let l1_va = translator.phys_to_dmap(l1_pa as _);
-    let mut l1_table_ptr = unsafe { NonNull::new_unchecked(l1_va as *mut TTable<TABLE_ENTRIES>) };
-    let l1_table = unsafe { l1_table_ptr.as_mut() };
-    let l1_entry = &mut (l1_table.entries[i1]);
-
-    if !l1_entry.is_valid() || !l1_entry.is_table() {
-        return;
-    }
-
-    let l2_pa = l1_entry.address();
-    let l2_va = translator.phys_to_dmap(l2_pa as _);
-    let mut l2_table_ptr = unsafe { NonNull::new_unchecked(l2_va as *mut TTable<TABLE_ENTRIES>) };
-    let l2_table = unsafe { l2_table_ptr.as_mut() };
-    let l2_entry = &mut (l2_table.entries[i2]);
-
-    if !l2_entry.is_valid() || !l2_entry.is_table() {
-        return;
-    }
-
-    let l3_pa = l2_entry.address();
-    let l3_va = translator.phys_to_dmap(l3_pa as _);
-    let mut l3_table_ptr = unsafe { NonNull::new_unchecked(l3_va as *mut TTable<TABLE_ENTRIES>) };
-    let l3_table = unsafe { l3_table_ptr.as_mut() };
-    let l3_entry = &mut (l3_table.entries[i3]);
-
-    if !l3_entry.is_valid() {
-        return;
-    }
-
-    l3_entry.set_is_valid(false);
-    l3_entry.set_address(0);
-    clean_entry(l3_entry);
-
-    let mut free_l3 = None;
-    let mut free_l2 = None;
-    let mut free_l1 = None;
-
-    if is_table_empty(l3_table) {
-        free_l3 = Some(l3_table_ptr);
-        l2_entry.set_is_valid(false);
-        l2_entry.set_address(0);
-        clean_entry(l2_entry);
-
-        if is_table_empty(l2_table) {
-            free_l2 = Some(l2_table_ptr);
-            l1_entry.set_is_valid(false);
-            l1_entry.set_address(0);
-            clean_entry(l1_entry);
-
-            if is_table_empty(l1_table) {
-                free_l1 = Some(l1_table_ptr);
-                l0_entry.set_is_valid(false);
-                l0_entry.set_address(0);
-                clean_entry(l0_entry);
-            }
-        }
-    }
-
-    tlb_invalidate_page(va);
-
-    if let Some(ptr) = free_l3 {
-        allocator.free_table(ptr);
-    }
-
-    if let Some(ptr) = free_l2 {
-        allocator.free_table(ptr);
-    }
-
-    if let Some(ptr) = free_l1 {
-        allocator.free_table(ptr);
-    }
+) -> Result<(), VmError> {
+    unsafe { unmap_region(root, va, PAGE_SIZE, allocator, translator) }
 }
 
-pub fn free_tables(
-    mut root: NonNull<TTable<TABLE_ENTRIES>>,
+/// copy table storage but retain borrowed leaf mappings. the source must be stable.
+///
+/// safety:
+/// caller must exclude tree mutations and provide a working translator
+pub unsafe fn clone_page_tables(
+    root: PageTable,
+    allocator: &dyn TableAllocator,
+    translator: &dyn AddressTranslator,
+) -> Result<PageTable, VmError> {
+    unsafe { clone_node(root, Level::ROOT, allocator, translator) }
+}
+
+unsafe fn clone_node(
+    source: PageTable,
+    level: Level,
+    allocator: &dyn TableAllocator,
+    translator: &dyn AddressTranslator,
+) -> Result<PageTable, VmError> {
+    let copy = allocator.alloc_table()?;
+    for index in 0..GEOMETRY.entries_at(level) {
+        let entry = unsafe { source.read(index, level) };
+        let copied = match entry {
+            Entry::Table { physical_address } => {
+                let child_level = level.child().ok_or(VmError::InvalidSize)?;
+                let source_child = unsafe { translated_table(physical_address, translator) };
+                match unsafe { clone_node(source_child, child_level, allocator, translator) } {
+                    Ok(child) => Entry::Table {
+                        physical_address: translator.dmap_to_phys(child.as_ptr()),
+                    },
+                    Err(error) => {
+                        unsafe { free_node(copy, level, allocator, translator) };
+                        return Err(error);
+                    }
+                }
+            }
+            leaf => leaf,
+        };
+        if let Err(error) = unsafe { copy.write(index, level, copied) } {
+            if let Entry::Table { physical_address } = copied {
+                unsafe {
+                    free_node(
+                        translated_table(physical_address, translator),
+                        level.child().unwrap(),
+                        allocator,
+                        translator,
+                    )
+                };
+            }
+            unsafe { free_node(copy, level, allocator, translator) };
+            return Err(error.into());
+        }
+    }
+    Ok(copy)
+}
+
+/// free the table storage, but not the borrowed mapped physical pages (that would be bad)
+///
+/// safety:
+/// the tree must not be active on any CPU or read by software
+pub unsafe fn free_tables(
+    root: PageTable,
     allocator: &dyn TableAllocator,
     translator: &dyn AddressTranslator,
 ) {
-    let root_table = unsafe { root.as_mut() };
-
-    for l0_entry in &mut root_table.entries {
-        if !l0_entry.is_valid() || !l0_entry.is_table() {
-            continue;
-        }
-
-        let l1_pa = l0_entry.address();
-
-        l0_entry.set_is_valid(false);
-        l0_entry.set_address(0);
-        clean_entry(l0_entry);
-        tlb_invalidate_all();
-
-        let l1_va = translator.phys_to_dmap(l1_pa as _) as *mut TTable<TABLE_ENTRIES>;
-        let l1_table = unsafe { &mut *l1_va };
-
-        for l1_entry in &mut l1_table.entries {
-            if !l1_entry.is_valid() || !l1_entry.is_table() {
-                continue;
-            }
-
-            let l2_va =
-                translator.phys_to_dmap(l1_entry.address() as _) as *mut TTable<TABLE_ENTRIES>;
-            let l2_table = unsafe { &mut *l2_va };
-
-            for l2_entry in &mut l2_table.entries {
-                if !l2_entry.is_valid() || !l2_entry.is_table() {
-                    continue;
-                }
-
-                let l3_va =
-                    translator.phys_to_dmap(l2_entry.address() as _) as *mut TTable<TABLE_ENTRIES>;
-
-                clean_table(l3_va);
-                allocator.free_table(unsafe { NonNull::new_unchecked(l3_va) });
-            }
-
-            clean_table(l2_va);
-            allocator.free_table(unsafe { NonNull::new_unchecked(l2_va) });
-        }
-
-        clean_table(l1_va);
-        allocator.free_table(unsafe { NonNull::new_unchecked(l1_va) });
-    }
-
-    clean_table(root.as_ptr());
-    dsb(barrier::SY);
-    allocator.free_table(root);
+    unsafe { free_node(root, Level::ROOT, allocator, translator) }
 }
 
-fn is_table_empty(table: &TTable<TABLE_ENTRIES>) -> bool {
-    for i in 0..TABLE_ENTRIES {
-        let entry = &table.entries[i];
-        if entry.is_valid() {
-            return false;
+unsafe fn free_node(
+    table: PageTable,
+    level: Level,
+    allocator: &dyn TableAllocator,
+    translator: &dyn AddressTranslator,
+) {
+    for index in 0..GEOMETRY.entries_at(level) {
+        let entry = unsafe { table.read(index, level) };
+        if entry != Entry::Invalid {
+            unsafe { table.write(index, level, Entry::Invalid) }
+                .expect("clearing valid entry failed");
+        }
+        if let Entry::Table { physical_address } = entry {
+            unsafe {
+                free_node(
+                    translated_table(physical_address, translator),
+                    level.child().expect("table at leaf level"),
+                    allocator,
+                    translator,
+                )
+            };
         }
     }
-    true
+    allocator.free_table(table);
 }

@@ -8,7 +8,6 @@ name = "mars_acpi_aml_driver"
 plugin = false
 
 [dependencies]
-aarch64-cpu.workspace = true
 klib.workspace = true
 log.workspace = true
 mars_getters.workspace = true

@@ -1,6 +1,5 @@
-use core::{fmt::Debug, mem::transmute};
-
-use aarch64_cpu_ext::structures::tte::{TTE4K48, TTE16K48};
+pub use hal::paging::{Access, Entry, Level, MappingOptions, MemoryType, PageTable};
+use hal::paging::{GEOMETRY, PagingError};
 
 use crate::{
     allocator_support::KernelAddressTranslator,
@@ -12,7 +11,7 @@ pub mod page_allocator;
 pub mod slab;
 pub mod user;
 
-// use `KALLOCATOR`
+/// use `KALLOCATOR`
 pub static KPAGE_ALLOCATOR: PageAllocator = PageAllocator::new(&KernelAddressTranslator);
 
 pub static KPT_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
@@ -20,53 +19,40 @@ pub static KPT_ALLOCATOR: KernelPTAllocator = KernelPTAllocator {};
 pub static KALLOCATOR: SlabAllocator =
     SlabAllocator::new(&KPAGE_ALLOCATOR, &KernelAddressTranslator);
 
-pub type TTENATIVE = TTE16K48;
-pub type TTEUEFI = TTE4K48;
+/// arbitrary policy
+pub const DMAP_START: usize = 0xFFFF_0000_0000_0000;
 
-pub const VA_WIDTH: usize = 48;
-pub const DMAP_START: usize = 0xFFFF_usize << VA_WIDTH;
-
-pub const PAGE_INDEX_BITS: usize = TABLE_ENTRIES.trailing_zeros() as usize;
-pub const PAGE_SHIFT: usize = 14; // 16kib
-pub const L2_BLOCK_SHIFT: usize = PAGE_SHIFT + PAGE_INDEX_BITS; // 32mib
-pub const L1_BLOCK_SHIFT: usize = L2_BLOCK_SHIFT + PAGE_INDEX_BITS; // 64gib
-pub const L0_BLOCK_SHIFT: usize = L1_BLOCK_SHIFT + PAGE_INDEX_BITS; // 128tib
-
-pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
-pub const L2_BLOCK_SIZE: usize = 1 << L2_BLOCK_SHIFT;
-pub const L1_BLOCK_SIZE: usize = 1 << L1_BLOCK_SHIFT;
-pub const L0_BLOCK_SIZE: usize = 1 << L0_BLOCK_SHIFT;
-
+pub const PAGE_SHIFT: usize = GEOMETRY.page_shift();
+pub const PAGE_SIZE: usize = GEOMETRY.page_size();
 pub const PAGE_MASK: usize = PAGE_SIZE - 1;
-pub const L2_BLOCK_MASK: usize = L2_BLOCK_SIZE - 1;
-pub const L1_BLOCK_MASK: usize = L1_BLOCK_SIZE - 1;
-pub const L0_BLOCK_MASK: usize = L0_BLOCK_SIZE - 1;
 
-pub const TABLE_ENTRIES: usize =
-    aarch64_cpu_ext::structures::tte::block_sizes::granule_16k::LEVEL3_PAGE_SIZE / 8usize;
+/// map a borrowed device region through dmap.
+/// identical existing mappings are retained and conflicting mappings are rejected.
+///
+/// safety:
+/// the range must be live mmio, not ram.
+/// usual mmio rules: device accesses must be serialized, and references should not be taken
+pub unsafe fn map_mmio(physical: usize, size: usize) -> Result<*mut u8, VmError> {
+    use crate::pm::page::mapper::AddressTranslator;
 
-pub const MAIR_NORMAL_WC_INDEX: u64 = 3;
-pub const MAIR_NORMAL_WT_INDEX: u64 = 2;
-pub const MAIR_NORMAL_INDEX: u64 = 1;
-pub const MAIR_DEVICE_INDEX: u64 = 0;
-
-#[derive(Copy, Clone)]
-#[repr(C, align(16384))]
-pub struct TTable<const N: usize> {
-    pub entries: [TTENATIVE; N],
-}
-
-impl<const N: usize> Debug for TTable<N> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let entries: &[u64; N] = unsafe { transmute(&self.entries) };
-        f.debug_struct("TTable").field("entries", entries).finish()
+    let end = physical.checked_add(size).ok_or(VmError::InvalidAddress)?;
+    if size == 0 {
+        return Err(VmError::InvalidSize);
     }
-}
 
-#[derive(Copy, Clone)]
-#[repr(C, align(4096))]
-pub struct TTableUEFI {
-    pub entries: [TTEUEFI; 512],
+    let first = align_down(physical, PAGE_SIZE);
+    let last = end.checked_add(PAGE_MASK).ok_or(VmError::InvalidAddress)? & !PAGE_MASK;
+    hal::paging::validate_mapping(first, Level::LEAF, MappingOptions::MMIO)?;
+    hal::paging::validate_mapping(last - PAGE_SIZE, Level::LEAF, MappingOptions::MMIO)?;
+    let virtual_start = KernelAddressTranslator.phys_to_dmap(first) as usize;
+    let virtual_end = virtual_start
+        .checked_add(last - first)
+        .ok_or(VmError::InvalidAddress)?;
+    let mut cursor =
+        unsafe { user::address_space::KERNEL_ADDRESS_SPACE.lock(virtual_start..virtual_end) }?;
+    unsafe { cursor.map(first, MappingOptions::MMIO) }?;
+
+    Ok(KernelAddressTranslator.phys_to_dmap(physical))
 }
 
 pub const fn align_down(addr: usize, align: usize) -> usize {
@@ -77,17 +63,7 @@ pub const fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
 }
 
-const INVALID_ENTRY: TTENATIVE = TTENATIVE::invalid();
-
-impl<const N: usize> TTable<N> {
-    pub const fn new() -> Self {
-        Self {
-            entries: [INVALID_ENTRY; N],
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum VmError {
     Overlap,
     InvalidAddress,
@@ -95,6 +71,37 @@ pub enum VmError {
     OutOfMemory,
     InvalidAlignment,
     NotMapped,
+    Unsupported,
+    AlreadyInitialized,
+    NotInitialized,
+}
+
+impl From<VmError> for PagingError {
+    fn from(error: VmError) -> Self {
+        match error {
+            VmError::Overlap | VmError::AlreadyInitialized => Self::AlreadyMapped,
+            VmError::InvalidAddress => Self::InvalidAddress,
+            VmError::InvalidSize => Self::InvalidSize,
+            VmError::OutOfMemory => Self::OutOfMemory,
+            VmError::InvalidAlignment => Self::InvalidAlignment,
+            VmError::NotMapped | VmError::NotInitialized => Self::NotMapped,
+            VmError::Unsupported => Self::Unsupported,
+        }
+    }
+}
+
+impl From<PagingError> for VmError {
+    fn from(error: PagingError) -> Self {
+        match error {
+            PagingError::InvalidAddress => Self::InvalidAddress,
+            PagingError::InvalidAlignment => Self::InvalidAlignment,
+            PagingError::InvalidSize => Self::InvalidSize,
+            PagingError::Unsupported => Self::Unsupported,
+            PagingError::OutOfMemory => Self::OutOfMemory,
+            PagingError::AlreadyMapped => Self::Overlap,
+            PagingError::NotMapped => Self::NotMapped,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -202,13 +209,6 @@ pub const fn dmap_addr_to_phys(dmap_addr: u64) -> u64 {
 }
 
 #[inline]
-pub const fn bsize_for_level(level: usize) -> usize {
-    let exp = 3usize.saturating_sub(level);
-    let fac = TABLE_ENTRIES.pow(exp as u32);
-    PAGE_SIZE * fac
-}
-
-#[inline]
 pub const fn is_kernel_address(addr: usize) -> bool {
-    ((addr >> 48) & 0x1) == 0x1
+    addr >= DMAP_START
 }

@@ -1,157 +1,55 @@
-use aarch64_cpu::registers::{DAIF, ESR_EL1, Readable, TTBR0_EL1, Writeable};
-use klib::{
-    context::RegisterFileRef,
-    cpu_interface::CpuTopologyId,
-    exception::ExceptionHandler,
-    interrupt::{InterruptController, singleton::get_interrupt_controller},
-    scheduler::GLOBAL_SCHEDULER,
-    this_cpu,
-};
-use log::{error, trace};
+use hal::{context::Context, exception::Exception};
+use klib::{interrupt::singleton::get_interrupt_controller, scheduler::GLOBAL_SCHEDULER, this_cpu};
+use log::error;
 use mars_generic_timer_driver::timer::{
     TIMER, TimerError, timer_disarm, timer_rearm, timer_schedule,
 };
 
-use crate::busy_loop_ret;
-
-/// preserve the previous state of preemption and restore it on drop.
-pub struct PreemptionGuard(u64);
-
-impl PreemptionGuard {
-    fn save() -> Self {
-        Self(DAIF.get())
+/// safety:
+/// enter with interrupts masked and a live exception frame
+pub unsafe fn handle(exception: Exception, context: &mut Context) {
+    match exception {
+        Exception::Reschedule => GLOBAL_SCHEDULER.schedule(context),
+        Exception::Interrupt => interrupt(context),
+        Exception::Fault { user } => {
+            error!(
+                "fault on cpu {}, user={}: {:?}",
+                this_cpu!().id,
+                user,
+                context
+            );
+            panic!("unhandled execution fault");
+        }
+        Exception::Fatal => panic!("fatal processor exception"),
     }
 }
 
-impl Drop for PreemptionGuard {
-    fn drop(&mut self) {
-        DAIF.set(self.0);
-    }
-}
-
-pub struct Exceptions;
-impl ExceptionHandler for Exceptions {
-    extern "C" fn sync_lower(register_file: RegisterFileRef) -> RegisterFileRef {
-        let _guard = PreemptionGuard::save();
-
-        let current = this_cpu!();
-
-        error!(
-            "Sync exception from CPU ID={} from lower: {:?} with ESR={:#x} and TTBR0={:#x}",
-            current.id,
-            register_file,
-            ESR_EL1.get(),
-            TTBR0_EL1.get(),
-        );
-
-        busy_loop_ret();
-
-        register_file
-    }
-
-    extern "C" fn irq_current(register_file: RegisterFileRef) -> RegisterFileRef {
-        let _guard = PreemptionGuard::save();
-
-        // trace!(
-        //     "irq (CPU {}): before scheduling: {:?}",
-        //     CpuTopologyId::current().to_mpidr(),
-        //     register_file
-        // );
-        let regs: RegisterFileRef = {
-            let gic = get_interrupt_controller();
-
-            let ack = gic.acknowledge_interrupt().expect("ack failure");
-
-            let regs = match ack {
-                Some(int) => {
-                    timer_disarm();
-                    timer_rearm();
-
-                    let timer_irq = TIMER.get_irq();
-                    let is_timer = match timer_irq {
-                        Err(TimerError::CouldntBorrow) => {
-                            use log::warn;
-                            warn!("interrupt handler invoked without an initialized timer IRQ");
-                            false
-                        }
-                        Err(e) => {
-                            use log::warn;
-                            warn!(
-                                "interrupt handler invoked with timer in unknown state. err: {:?}",
-                                e
-                            );
-                            false
-                        }
-                        Ok(irq) => {
-                            let irq = irq.map(|int| int as u32);
-
-                            if irq == Some(int) { true } else { false }
-                        }
-                    };
-
-                    let regs = if is_timer {
-                        GLOBAL_SCHEDULER.schedule(register_file)
-                    } else {
-                        register_file
-                    };
-
-                    gic.end_of_interrupt(int).expect("invalid int id");
-                    regs
-                }
-                None => register_file,
-            };
-
-            regs
+fn interrupt(context: &mut Context) {
+    let controller = get_interrupt_controller();
+    if let Some(id) = controller.acknowledge_interrupt().expect("ack failure") {
+        timer_disarm();
+        timer_rearm();
+        let is_timer = match TIMER.get_irq() {
+            Ok(irq) => irq.map(u32::from) == Some(id),
+            Err(TimerError::CouldntBorrow) => {
+                log::warn!("interrupt arrived before timer initialization");
+                false
+            }
+            Err(error) => {
+                log::warn!("timer irq unavailable: {:?}", error);
+                false
+            }
         };
-
-        //trace!(
-        //    "irq (CPU {}): after scheduling: {:?}",
-        //    CpuTopologyId::current().to_mpidr(),
-        //    regs
-        //);
-
-        timer_schedule();
-
-        regs
+        if is_timer {
+            GLOBAL_SCHEDULER.schedule(context);
+        } else {
+            controller
+                .on_interrupt(id)
+                .expect("interrupt dispatch failed");
+        }
+        controller
+            .end_of_interrupt(id)
+            .expect("invalid interrupt id");
     }
-
-    // extern "C" fn fiq_current(register_file: RegisterFileRef) -> RegisterFileRef {
-    //     let _guard = PreemptionGuard::save();
-
-    //     trace!("fiq: before scheduling: {:?}", register_file);
-    //     let regs: RegisterFileRef = {
-    //         let gic = get_interrupt_controller();
-
-    //         let ack = gic.acknowledge_interrupt().expect("ack failure");
-
-    //         let regs = match ack {
-    //             Some(int) => {
-    //                 timer_disarm();
-    //                 timer_rearm();
-
-    //                 let regs = if int == this_cpu!().timer_irq.load(Ordering::Relaxed) as u32 {
-    //                     GLOBAL_SCHEDULER.schedule(register_file)
-    //                 } else {
-    //                     register_file
-    //                 };
-
-    //                 gic.end_of_interrupt(int).expect("invalid int id");
-    //                 regs
-    //             }
-    //             None => register_file,
-    //         };
-
-    //         regs
-    //     };
-
-    //     trace!("fiq: after scheduling: {:?}", regs);
-
-    //     timer_schedule();
-
-    //     regs
-    // }
-
-    extern "C" fn irq_lower(register_file: RegisterFileRef) -> RegisterFileRef {
-        Self::irq_current(register_file)
-    }
+    timer_schedule();
 }

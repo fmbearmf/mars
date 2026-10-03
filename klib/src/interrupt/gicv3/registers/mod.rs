@@ -1,9 +1,6 @@
 use tock_registers::register_bitfields;
 
 pub mod gic;
-pub mod icc_igrpen1_el1;
-pub mod icc_pmr_el1;
-pub mod icc_sre_el1;
 
 register_bitfields![u32,
     pub GICD_CTLR [

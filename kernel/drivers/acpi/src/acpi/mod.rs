@@ -1,21 +1,56 @@
 pub mod fadt;
 pub mod gtdt;
 pub mod header;
+pub mod iort;
 pub mod madt;
 pub mod mcfg;
 pub mod spcr;
 pub mod xsdp;
 
+use alloc::boxed::Box;
 use hax_lib::{attributes, ensures, exclude, opaque, requires};
-use klib::hardware::device::DeviceTree;
 
-use fadt::Fadt;
-use gtdt::Gtdt;
 use header::SdtHeader;
-use madt::Madt;
-use mcfg::Mcfg;
 use spcr::Spcr;
-use xsdp::XsdtIter;
+use xsdp::{Xsdp, XsdtIter};
+
+/// locate and validate the SPCR PL011 UART base address
+/// safety: `xsdp_addr` and all physical ACPI table addresses must be readable as though identity mapped
+pub unsafe fn discover_pl011_uart(xsdp_addr: usize) -> Result<usize, &'static str> {
+    if xsdp_addr == 0 {
+        return Err("missing ACPI RSDP");
+    }
+
+    let xsdp = Xsdp::try_from_addr(xsdp_addr)?;
+    let xsdt = xsdp.xsdt(|addr| addr)?;
+    let tables = XsdtIter::new(xsdt, Box::new(|addr| addr));
+    for bytes in tables {
+        if bytes.len() < 4 || &bytes[..4] != b"SPCR" {
+            continue;
+        }
+
+        let table = Spcr::safe_table_cast(bytes)?;
+        if table.interface_type() != 0x03 {
+            log::info!("interface type: {:#x?}", table.interface_type());
+            return Err("unsupported SPCR serial interface (expected ARM PL011)");
+        }
+
+        let gas = table.base_addr();
+        if gas.address_space_id() != 0 || gas.register_bit_width() == 0 {
+            return Err("unsupported SPCR UART memory GAS");
+        }
+
+        let address = usize::try_from(gas.address())
+            .map_err(|_| "SPCR UART address exceeds physical address width")?;
+
+        address
+            .checked_add(0x1000)
+            .ok_or("SPCR UART range overflows")?;
+
+        return Ok(address);
+    }
+    Err("ACPI SPCR table not found")
+}
 
 #[exclude]
 pub(self) use zerocopy;

@@ -1,280 +1,220 @@
-use core::{
-    alloc::Layout,
-    ops::{Div, Range},
-    ptr::{NonNull, copy_nonoverlapping, write_volatile},
-    slice::from_raw_parts_mut,
-};
-
-use alloc::vec;
+use alloc::{vec, vec::Vec};
+use core::ptr::{copy_nonoverlapping, read_unaligned, write_bytes};
+use hal::paging::{Access, MappingOptions, MemoryType, valid_virtual_address};
 use klib::{
     cache::{clean_dcache_range, clean_icache_range},
-    vm::{PAGE_SIZE, TTENATIVE, align_down, align_up},
+    vm::{PAGE_SIZE, align_down},
 };
-use log::{debug, error};
 use uefi::{
     Status,
-    boot::{self, AllocateType, MemoryAttribute, MemoryType, PAGE_SIZE as UEFI_PAGE_SIZE},
-    proto::{
-        media::file::{File, FileInfo, RegularFile},
-        security::MemoryProtection,
-    },
+    proto::media::file::{File, FileInfo, RegularFile},
 };
 
-use crate::{Elf64Ehdr, Elf64Phdr, PT_LOAD, PhdrFlags, busy_loop_ret};
+use crate::{Elf64Ehdr, Elf64Phdr, PT_LOAD, PhdrFlags, allocator::allocate_aligned_pages};
 
-pub fn load_kernel(mut kernel: RegularFile) -> Result<(u64, u64, u64, u64), Status> {
+pub struct LoadedSegment {
+    pub virtual_address: usize,
+    pub physical_address: usize,
+    pub size: usize,
+    pub options: MappingOptions,
+}
+
+pub struct LoadedKernel {
+    pub entry: usize,
+    pub physical_address: usize,
+    pub size: usize,
+    pub segments: Vec<LoadedSegment>,
+}
+
+fn page_end(address: usize) -> Result<usize, Status> {
+    address
+        .checked_add(PAGE_SIZE - 1)
+        .map(|end| align_down(end, PAGE_SIZE))
+        .ok_or(Status::LOAD_ERROR)
+}
+
+pub fn load_kernel(mut kernel: RegularFile) -> Result<LoadedKernel, Status> {
     let mut info_buf = [0u8; 512];
-    let file_info: &FileInfo = match kernel.get_info(&mut info_buf) {
-        Ok(f) => f,
-        Err(e) => {
-            error!("file info failed: {:?}", e);
-            return Err(e.status());
+
+    let file_info: &FileInfo = kernel
+        .get_info(&mut info_buf)
+        .map_err(|error| error.status())?;
+
+    let file_size = usize::try_from(file_info.file_size()).map_err(|_| Status::LOAD_ERROR)?;
+    let mut bytes = vec![0u8; file_size];
+
+    kernel.set_position(0).map_err(|error| error.status())?;
+
+    let mut total_read = 0;
+    while total_read < bytes.len() {
+        let count = kernel
+            .read(&mut bytes[total_read..])
+            .map_err(|error| error.status())?;
+        if count == 0 {
+            return Err(Status::LOAD_ERROR);
         }
-    };
-
-    let mem_attr_proto = boot::get_handle_for_protocol::<MemoryProtection>()
-        .ok()
-        .and_then(|handle| boot::open_protocol_exclusive::<MemoryProtection>(handle).ok());
-
-    if mem_attr_proto.is_none() {
-        log::warn!("EFI_MEMORY_ATTRIBUTE_PROTOCOL not supported; attributes will not be applied");
+        total_read += count;
     }
 
-    let file_size = file_info.file_size() as usize;
-    debug!("kernel.elf size = {}", file_size);
-
-    let mut file_box = vec![0u8; file_size].into_boxed_slice();
-    let elf_bytes: &mut [u8] = &mut file_box;
-
-    match kernel.set_position(0) {
-        Err(e) => {
-            error!("failed to set file position");
-            return Err(e.status());
-        }
-        Ok(_) => {}
-    };
-
-    let mut total_read = 0usize;
-    while total_read < file_size {
-        match kernel.read(&mut elf_bytes[total_read..]) {
-            Ok(0) => break,
-            Ok(r) => total_read += r,
-            Err(e) => {
-                error!("read fail: {:?}", e);
-                return Err(e.status());
-            }
-        }
-    }
-
-    if total_read != file_size {
-        error!("read {} bytes but kernel is {}", total_read, file_size);
+    if bytes.len() < size_of::<Elf64Ehdr>() {
         return Err(Status::LOAD_ERROR);
     }
 
-    debug!("Read kernel.elf into RAM.");
-
-    if elf_bytes.len() < size_of::<Elf64Ehdr>() {
-        error!("ELF too small");
+    // file storage doesn't need to have the alignment of ELF structs
+    let header = unsafe { read_unaligned(bytes.as_ptr().cast::<Elf64Ehdr>()) };
+    if &header.e_ident[..4] != b"\x7fELF"
+        || header.e_ident[4] != 2
+        || header.e_ident[5] != 1
+        || header.e_ident[6] != 1
+        || header.e_type != 2
+        || header.e_machine != 0xb7
+        || header.e_version != 1
+        || header.e_ehsize as usize != size_of::<Elf64Ehdr>()
+        || header.e_phentsize as usize != size_of::<Elf64Phdr>()
+    {
         return Err(Status::LOAD_ERROR);
     }
 
-    let ehdr = unsafe { &*(elf_bytes.as_ptr() as *const Elf64Ehdr) };
+    let phoff = usize::try_from(header.e_phoff).map_err(|_| Status::LOAD_ERROR)?;
+    let phnum = header.e_phnum as usize;
+    let phbytes = phnum
+        .checked_mul(size_of::<Elf64Phdr>())
+        .ok_or(Status::LOAD_ERROR)?;
 
-    if &ehdr.e_ident[0..4] != b"\x7FELF" || ehdr.e_ident[4] != 2 || ehdr.e_ident[5] != 1 {
-        error!("Kernel isn't a 64-bit little endian ELF!");
+    if phoff.checked_add(phbytes).ok_or(Status::LOAD_ERROR)? > bytes.len() {
         return Err(Status::LOAD_ERROR);
     }
 
-    if ehdr.e_machine != 0xb7 {
-        error!("ELF not ARM64!: {:#x}", ehdr.e_machine)
-    }
+    let mut headers = Vec::new();
+    let mut segments: Vec<LoadedSegment> = Vec::new();
+    let mut minimum = usize::MAX;
+    let mut maximum = 0;
 
-    let phoff = ehdr.e_phoff as usize;
-    let phentsize = ehdr.e_phentsize as usize;
-    let phnum = ehdr.e_phnum as usize;
+    let entry = usize::try_from(header.e_entry).map_err(|_| Status::LOAD_ERROR)?;
 
-    debug!("phoff={} phentsize={} phnum={}", phoff, phentsize, phnum);
+    let mut executable_entry = false;
 
-    if phoff + phnum * phentsize > elf_bytes.len() {
-        error!("ELF headers out of range!");
-        return Err(Status::LOAD_ERROR);
-    }
+    for index in 0..phnum {
+        let segment = unsafe {
+            read_unaligned(
+                bytes
+                    .as_ptr()
+                    .add(phoff + index * size_of::<Elf64Phdr>())
+                    .cast::<Elf64Phdr>(),
+            )
+        };
 
-    let mut min_vaddr = u64::MAX;
-    let mut max_vaddr = 0u64;
-    for i in 0..phnum {
-        let ph = unsafe { &*(elf_bytes.as_ptr().add(phoff + i * phentsize) as *const Elf64Phdr) };
-        if ph.p_type == PT_LOAD {
-            if ph.p_vaddr < min_vaddr {
-                min_vaddr = ph.p_vaddr;
-            }
-
-            let end = ph.p_vaddr.saturating_add(ph.p_memsz);
-            if end > max_vaddr {
-                max_vaddr = end;
-            }
-        }
-    }
-
-    if min_vaddr == u64::MAX {
-        error!("No PT_LOAD segments!");
-        return Err(Status::LOAD_ERROR);
-    }
-
-    let load_span = max_vaddr - min_vaddr;
-    debug!("load span: {:#x} bytes", load_span);
-
-    let load_size = align_up(load_span as _, UEFI_PAGE_SIZE);
-    let pages = (load_size / UEFI_PAGE_SIZE) as usize;
-
-    // allocate extra page(s) so rounding up is safe
-    let extra = PAGE_SIZE / UEFI_PAGE_SIZE;
-
-    let alloc_result = boot::allocate_pages(
-        AllocateType::AnyPages,
-        MemoryType::LOADER_CODE,
-        pages + extra,
-    );
-
-    let alloc_ptr = match alloc_result {
-        Ok(ptr) => ptr.as_ptr() as u64,
-        Err(e) => {
-            error!("page allocation failed: {:?}", e);
-            return Err(e.status());
-        }
-    };
-
-    let base_phys = align_up(alloc_ptr as usize, PAGE_SIZE) as u64;
-
-    debug!(
-        "allocated {} UEFI pages ({} bytes) at {:#x}",
-        pages, load_size, base_phys
-    );
-
-    unsafe {
-        let slice = core::slice::from_raw_parts_mut(base_phys as *mut u8, pages * UEFI_PAGE_SIZE);
-        for i in slice {
-            write_volatile(i, 0);
-        }
-    }
-
-    for i in 0..phnum {
-        let ph = unsafe { &*(elf_bytes.as_ptr().add(phoff + i * phentsize) as *const Elf64Phdr) };
-        if ph.p_type != PT_LOAD {
+        if segment.p_type != PT_LOAD {
             continue;
         }
 
-        let file_off = ph.p_offset as usize;
-        let filesz = ph.p_filesz as usize;
-        let memsz = ph.p_memsz as usize;
-        let vaddr = TTENATIVE::align_down(ph.p_vaddr);
-
-        debug!(
-            "PT_LOAD vaddr={:#x} file_off={:#x} filesz={:#x} memsz={:#x}",
-            vaddr, file_off, filesz, memsz
-        );
-
-        let flags = PhdrFlags::from_bits_truncate(ph.p_flags);
-
-        let r = flags.contains(PhdrFlags::READ);
-        let w = flags.contains(PhdrFlags::WRITE);
-        let x = flags.contains(PhdrFlags::EXEC);
-
-        debug!(
-            "Perm: {}{}{}",
-            if r { 'R' } else { '-' },
-            if w { 'W' } else { '-' },
-            if x { 'X' } else { '-' }
-        );
-
-        if w && x {
-            panic!("Kernel must be W^X (because I said so). Bad news for JIT fans...");
-        }
-
-        if file_off + filesz > elf_bytes.len() {
-            error!("Segment file data out of bounds!");
+        if segment.p_filesz > segment.p_memsz {
             return Err(Status::LOAD_ERROR);
         }
 
-        let offset = (vaddr - min_vaddr) as usize;
-        let dst = (base_phys + offset as u64) as *mut u8;
-        //offset = dst as usize - base_phys as usize;
-        let src = unsafe { elf_bytes.as_ptr().add(file_off) };
+        let file_start = usize::try_from(segment.p_offset).map_err(|_| Status::LOAD_ERROR)?;
+        let file_size = usize::try_from(segment.p_filesz).map_err(|_| Status::LOAD_ERROR)?;
 
-        debug!(
-            "base_phys {:#x} rounded down to {:#x}",
-            base_phys, dst as usize
-        );
-
-        debug!(
-            "COPYING segment: src={:#x} dst={:#x} filesz={:#x}",
-            src as u64, dst as u64, filesz
-        );
-
-        let start_align = align_up(dst as usize, PAGE_SIZE);
-        let end_align = align_up(dst as usize + filesz as usize, PAGE_SIZE);
-
-        unsafe {
-            if filesz > 0 {
-                copy_nonoverlapping(src, dst, filesz);
-            }
-
-            if memsz > filesz {
-                let tail = dst.add(filesz);
-                for j in 0..(memsz - filesz) {
-                    write_volatile(tail.add(j), 0);
-                }
-            }
+        if file_start
+            .checked_add(file_size)
+            .ok_or(Status::LOAD_ERROR)?
+            > bytes.len()
+        {
+            return Err(Status::LOAD_ERROR);
         }
 
-        if let Some(ref proto) = mem_attr_proto {
-            let mut attrs = MemoryAttribute::empty();
-
-            if !r {
-                attrs |= MemoryAttribute::READ_PROTECT;
-            }
-
-            if !x {
-                attrs |= MemoryAttribute::EXECUTE_PROTECT;
-            }
-
-            debug!("attr: {:?}", attrs);
-
-            if !attrs.is_empty() {
-                if let Err(e) = proto.set_memory_attributes(
-                    Range {
-                        start: start_align as _,
-                        end: end_align as _,
-                    },
-                    attrs,
-                ) {
-                    log::warn!("failed to set memory protections for segment: {:?}", e);
-                }
-            }
+        if segment.p_align > 1
+            && (!segment.p_align.is_power_of_two()
+                || segment.p_vaddr % segment.p_align != segment.p_offset % segment.p_align)
+        {
+            return Err(Status::LOAD_ERROR);
         }
+
+        if segment.p_memsz == 0 {
+            continue;
+        }
+
+        let start = usize::try_from(segment.p_vaddr).map_err(|_| Status::LOAD_ERROR)?;
+        let size = usize::try_from(segment.p_memsz).map_err(|_| Status::LOAD_ERROR)?;
+        let end = start.checked_add(size).ok_or(Status::LOAD_ERROR)?;
+
+        // the bootstrap image belongs to the upper address half
+        if start >> 48 != 0xffff || !valid_virtual_address(end - 1) {
+            return Err(Status::LOAD_ERROR);
+        }
+
+        let flags = PhdrFlags::from_bits(segment.p_flags).ok_or(Status::LOAD_ERROR)?;
+        if !flags.contains(PhdrFlags::READ) || flags.contains(PhdrFlags::WRITE | PhdrFlags::EXEC) {
+            return Err(Status::LOAD_ERROR);
+        }
+
+        let aligned_start = align_down(start, PAGE_SIZE);
+        let aligned_end = page_end(end)?;
+
+        if segments.iter().any(|other| {
+            aligned_start < other.virtual_address + other.size
+                && other.virtual_address < aligned_end
+        }) {
+            return Err(Status::LOAD_ERROR);
+        }
+
+        let executable = flags.contains(PhdrFlags::EXEC);
+
+        executable_entry |= executable && start <= entry && entry < end;
+        minimum = minimum.min(aligned_start);
+        maximum = maximum.max(aligned_end);
+
+        segments.push(LoadedSegment {
+            virtual_address: aligned_start,
+            physical_address: 0,
+            size: aligned_end - aligned_start,
+            options: MappingOptions {
+                access: if flags.contains(PhdrFlags::WRITE) {
+                    Access::KernelReadWrite
+                } else {
+                    Access::KernelReadOnly
+                },
+                executable,
+                memory_type: MemoryType::Normal,
+            },
+        });
+        headers.push(segment);
     }
 
-    let entry_vaddr = ehdr.e_entry;
-    if entry_vaddr < min_vaddr || entry_vaddr >= max_vaddr {
-        error!(
-            "entrypoint {:#x} not in load span {:#x}..{:#x}",
-            entry_vaddr, min_vaddr, max_vaddr
-        );
+    if segments.is_empty() || !executable_entry {
         return Err(Status::LOAD_ERROR);
     }
 
-    let entry_offset = entry_vaddr - min_vaddr;
-    let entry_paddr = base_phys + entry_offset;
+    let size = maximum - minimum;
+    let allocation = allocate_aligned_pages(size, PAGE_SIZE)?;
+    let physical_address = allocation.as_ptr() as usize;
 
-    debug!(
-        "entrypoint at physical {:#x} virt {:#x} (offset {:#x})",
-        entry_paddr, entry_vaddr, entry_offset
-    );
+    unsafe { write_bytes(physical_address as *mut u8, 0, size) };
 
-    unsafe {
-        clean_icache_range(base_phys as _, load_size);
-        clean_dcache_range(base_phys as _, load_size);
+    for segment in headers {
+        let offset = segment.p_vaddr as usize - minimum;
+        unsafe {
+            copy_nonoverlapping(
+                bytes.as_ptr().add(segment.p_offset as usize),
+                (physical_address + offset) as *mut u8,
+                segment.p_filesz as usize,
+            );
+        }
     }
 
-    Ok((entry_offset, min_vaddr, base_phys, load_size as _))
+    for segment in &mut segments {
+        segment.physical_address = physical_address + segment.virtual_address - minimum;
+    }
+
+    unsafe {
+        clean_dcache_range(physical_address as *mut u8, size);
+        clean_icache_range(physical_address as *mut u8, size);
+    }
+
+    Ok(LoadedKernel {
+        entry,
+        physical_address,
+        size,
+        segments,
+    })
 }

@@ -1,9 +1,11 @@
 [workspace]
 members = [ "bootloader",
+            "directblock",
             "kernel",
             "kernel/drivers/acpi",
             "kernel/drivers/acpi-aml",
             "kernel/drivers/generic-timer",
+            "kernel/drivers/nvme",
             "kernel/drivers/pcie",
             "kernel/drivers/virtio",
             "kernel/drivers/xhci",
@@ -13,7 +15,8 @@ members = [ "bootloader",
             "klib/models/zerocopy-derive",
             "klib/getters",
             "protocol",
-            "runner"
+            "runner",
+            "hal"
 ]
 resolver = "3"
 
@@ -35,6 +38,7 @@ rustc-hash = { version = "2.1.2", default-features = false }
 phf = { version = "0.13.1", default-features = false }
 atomic_enum = "0.3.0"
 smccc = "0.2.3"
+vstd = { git = "https://github.com/verus-lang/verus", default-features = false }
 
 # self
 mars_getters = { path = "./klib/getters" }
@@ -47,8 +51,11 @@ mars-acpi-driver = { path = "./kernel/drivers/acpi" }
 mars-acpi-aml-driver = { path = "./kernel/drivers/acpi-aml" }
 mars-generic-timer-driver = { path = "./kernel/drivers/generic-timer" }
 mars-pcie-driver = { path = "./kernel/drivers/pcie" }
+mars-nvme-driver = { path = "./kernel/drivers/nvme" }
 mars-virtio-driver = { path = "./kernel/drivers/virtio" }
 mars-xhci-driver.path = "./kernel/drivers/xhci"
+directblock.path = "./directblock"
+hal.path = "./hal"
 
 # procedural
 syn = "2.0.117"

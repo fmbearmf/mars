@@ -1,5 +1,10 @@
 use alloc::collections::vec_deque::VecDeque;
-use core::arch::asm;
+use core::time::Duration;
+
+use hal::{
+    memory::{acquire_from_device, publish_to_device},
+    timer,
+};
 
 use crate::{
     dma::DmaBuffer,
@@ -188,15 +193,14 @@ impl HostController {
         expected: bool,
         timeout_ms: u64,
     ) -> Result<(), &'static str> {
-        let frequency = timer_frequency();
-        let start = timer_counter();
-        let timeout_ticks = frequency.saturating_mul(timeout_ms) / 1000;
+        let start = timer::counter();
+        let timeout_ticks = timer::ticks_for(Duration::from_millis(timeout_ms)).unwrap_or(u64::MAX);
 
         for _ in 0..FALLBACK_POLL_LIMIT {
             if (register.read() & mask != 0) == expected {
                 return Ok(());
             }
-            if frequency != 0 && timer_counter().wrapping_sub(start) >= timeout_ticks {
+            if timer::counter().wrapping_sub(start) >= timeout_ticks {
                 return Err("xHCI register timeout");
             }
             core::hint::spin_loop();
@@ -237,9 +241,9 @@ impl HostController {
             portsc.write((status & PORTSC_CONFIGURATION_MASK) | previous_changes);
         }
         portsc.write((status & PORTSC_CONFIGURATION_MASK) | reset_bit);
-        let frequency = timer_frequency();
-        let start = timer_counter();
-        let timeout_ticks = frequency.saturating_mul(PORT_RESET_TIMEOUT_MS) / 1000;
+        let start = timer::counter();
+        let timeout_ticks =
+            timer::ticks_for(Duration::from_millis(PORT_RESET_TIMEOUT_MS)).unwrap_or(u64::MAX);
         let mut reset_complete = false;
 
         for _ in 0..FALLBACK_POLL_LIMIT {
@@ -251,7 +255,7 @@ impl HostController {
                 reset_complete = true;
                 break;
             }
-            if frequency != 0 && timer_counter().wrapping_sub(start) >= timeout_ticks {
+            if timer::counter().wrapping_sub(start) >= timeout_ticks {
                 break;
             }
             core::hint::spin_loop();
@@ -411,6 +415,7 @@ impl HostController {
 
     fn execute_command(&mut self, command: Trb) -> Result<Trb, &'static str> {
         let command_phys = self.cmd_ring.enqueue(command)?;
+        publish_to_device();
         self.regs.ring_doorbell(0, 0);
         let event = self.wait_for_event(
             |event| {
@@ -435,9 +440,8 @@ impl HostController {
         mut matches: impl FnMut(&Trb) -> bool,
         timeout_ms: u64,
     ) -> Result<Trb, &'static str> {
-        let frequency = timer_frequency();
-        let start = timer_counter();
-        let timeout_ticks = frequency.saturating_mul(timeout_ms) / 1000;
+        let start = timer::counter();
+        let timeout_ticks = timer::ticks_for(Duration::from_millis(timeout_ms)).unwrap_or(u64::MAX);
 
         for _ in 0..FALLBACK_POLL_LIMIT {
             self.process_events();
@@ -447,7 +451,7 @@ impl HostController {
                     .remove(index)
                     .ok_or("xHCI event disappeared from queue");
             }
-            if frequency != 0 && timer_counter().wrapping_sub(start) >= timeout_ticks {
+            if timer::counter().wrapping_sub(start) >= timeout_ticks {
                 return Err("xHCI event timed out");
             }
             core::hint::spin_loop();
@@ -526,6 +530,7 @@ impl HostController {
         let status_pointer = device
             .ep0_ring
             .enqueue(Trb::status_stage(length == 0 || !setup.direction_in()))?;
+        publish_to_device();
         self.regs.ring_doorbell(device.slot_id, 1);
 
         let event = self.wait_for_event(
@@ -576,6 +581,7 @@ impl HostController {
                 chunk.len() as u32,
                 false,
             ))?;
+            publish_to_device();
             self.regs.ring_doorbell(slot_id, endpoint.dci);
             let transferred =
                 self.wait_for_transfer(slot_id, endpoint.dci, trb_phys, chunk.len())?;
@@ -611,6 +617,7 @@ impl HostController {
                 chunk.len() as u32,
                 true,
             ))?;
+            publish_to_device();
             self.regs.ring_doorbell(slot_id, endpoint.dci);
             let transferred =
                 self.wait_for_transfer(slot_id, endpoint.dci, trb_phys, chunk.len())?;
@@ -647,6 +654,7 @@ impl HostController {
         }
 
         let mut count = 0;
+        acquire_from_device();
         while let Some(event) = self.event_ring.next_event() {
             count += 1;
             self.handle_event(event);
@@ -689,42 +697,10 @@ fn write_endpoint_context(
     input_context[start + 4] = u32::from(endpoint.max_packet_size);
 }
 
-fn timer_counter() -> u64 {
-    let value;
-    unsafe {
-        asm!(
-            "mrs {value}, cntpct_el0",
-            value = out(reg) value,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-    value
-}
-
-fn timer_frequency() -> u64 {
-    let value;
-    unsafe {
-        asm!(
-            "mrs {value}, cntfrq_el0",
-            value = out(reg) value,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-    value
-}
-
 fn delay_ms(milliseconds: u64) {
-    let frequency = timer_frequency();
-    if frequency == 0 {
+    if !timer::delay(Duration::from_millis(milliseconds)) {
         for _ in 0..(FALLBACK_POLL_LIMIT / 100) {
             core::hint::spin_loop();
         }
-        return;
-    }
-
-    let start = timer_counter();
-    let ticks = frequency.saturating_mul(milliseconds) / 1000;
-    while timer_counter().wrapping_sub(start) < ticks {
-        core::hint::spin_loop();
     }
 }

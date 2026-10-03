@@ -5,6 +5,5 @@ edition = "2024"
 license = "BSD-2-Clause"
 
 [dependencies]
-klib.workspace = true
 uefi = { workspace = true, default-features = false }
 uefi-raw.workspace = true

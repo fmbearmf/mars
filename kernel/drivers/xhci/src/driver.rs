@@ -1,13 +1,12 @@
 use alloc::{boxed::Box, format, vec::Vec};
 use core::ptr::NonNull;
 
-use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use klib::{
     allocator_support::KernelAddressTranslator,
     block::registry::register_hardware_device,
     hardware::{
         device::{DeviceNode, IrqFn},
-        resource::Resource,
+        resource::{Resource, pci_bar_range},
     },
     interrupt::{
         InterruptError,
@@ -17,7 +16,7 @@ use klib::{
     pm::page::mapper::AddressTranslator,
     strange::KernelPtr48,
     sync::FairSpinlock,
-    vm::{MAIR_DEVICE_INDEX, user::address_space::KERNEL_ADDRESS_SPACE},
+    vm::map_mmio,
 };
 use mars_pcie_driver::{
     address::Bdf,
@@ -105,9 +104,9 @@ fn try_handle(device: &DeviceNode, enable_irq: IrqFn) -> Result<(), &'static str
         log::info!("xhci: found platform controller at {phys_base:#x}");
     }
 
-    let virt_base = KernelAddressTranslator.phys_to_dmap(phys_base) as usize;
     let size = mmio_resource.end - mmio_resource.start;
-    map_mmio(phys_base, virt_base, size)?;
+    let virt_base =
+        unsafe { map_mmio(phys_base, size) }.map_err(|_| "failed to map xHCI MMIO")? as usize;
 
     let registers = unsafe {
         XhciRegisters::new(
@@ -168,14 +167,7 @@ fn register_controller_interrupts(
 ) -> Result<Vec<u32>, &'static str> {
     if let Some((ecam, bdf)) = pci {
         if let Some(msix_info) = get_msix_info(ecam, *bdf) {
-            let table_resource = device
-                .resources
-                .iter()
-                .filter_map(|resource| match resource {
-                    Resource::Mmio { range } => Some(range),
-                    _ => None,
-                })
-                .nth(msix_info.table_bir as usize)
+            let table_resource = pci_bar_range(&device.resources, msix_info.table_bir)
                 .ok_or("xHCI MSI-X table BAR is missing")?;
             let table_size = msix_info.table_size as usize * 16;
             let table_end = msix_info
@@ -194,11 +186,8 @@ fn register_controller_interrupts(
                 .checked_add(msix_info.table_offset as usize)
                 .ok_or("xHCI MSI-X table address overflow")?;
             if table_resource.start != mapped_bar.start || table_resource.end != mapped_bar.end {
-                map_mmio(
-                    table_resource.start,
-                    KernelAddressTranslator.phys_to_dmap(table_resource.start) as usize,
-                    bar_size,
-                )?;
+                unsafe { map_mmio(table_resource.start, bar_size) }
+                    .map_err(|_| "failed to map xHCI MSI-X table")?;
             }
 
             let mut table = unsafe {
@@ -238,21 +227,4 @@ fn register_irq(irq: u32) -> Result<(), &'static str> {
     get_interrupt_controller()
         .register_handler(irq, handler)
         .map_err(|_| "failed to register xHCI interrupt handler")
-}
-
-fn map_mmio(phys: usize, virt: usize, size: usize) -> Result<(), &'static str> {
-    if size == 0 {
-        return Err("xHCI MMIO range is empty");
-    }
-    let end = virt.checked_add(size).ok_or("xHCI MMIO range overflow")?;
-    let mut cursor = KERNEL_ADDRESS_SPACE.lock(core::range::Range::from(virt..end));
-    cursor.map(
-        phys as _,
-        AccessPermission::PrivilegedReadWrite,
-        Shareability::OuterShareable,
-        true,
-        true,
-        MAIR_DEVICE_INDEX,
-    );
-    Ok(())
 }

@@ -1,10 +1,10 @@
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
 
-use aarch64_cpu::registers::{Readable, TPIDR_EL1, Writeable};
 use alloc::vec::Vec;
 
 use crate::cpu_interface::CpuIdLogical;
 
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static REGISTRY_PTR: AtomicPtr<PerCpuData> = AtomicPtr::new(core::ptr::null_mut());
 static REGISTRY_LEN: AtomicUsize = AtomicUsize::new(0);
 
@@ -27,9 +27,16 @@ pub struct PerCpu;
 
 impl PerCpu {
     pub fn init(cores: usize) {
-        debug_assert_eq!(
-            REGISTRY_PTR.load(core::sync::atomic::Ordering::Acquire),
-            core::ptr::null_mut()
+        assert!(
+            INITIALIZED
+                .compare_exchange(
+                    false,
+                    true,
+                    core::sync::atomic::Ordering::AcqRel,
+                    core::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok(),
+            "cpu registry already initialized"
         );
 
         let mut cpus = Vec::with_capacity(cores);
@@ -42,15 +49,13 @@ impl PerCpu {
 
         let leaked: &'static mut [PerCpuData] = cpus.leak();
 
+        REGISTRY_LEN.store(leaked.len(), core::sync::atomic::Ordering::Relaxed);
         REGISTRY_PTR.store(leaked.as_mut_ptr(), core::sync::atomic::Ordering::Release);
-        REGISTRY_LEN.store(leaked.len(), core::sync::atomic::Ordering::Release);
     }
 
     pub fn all() -> &'static [PerCpuData] {
-        // a store should only be ran once (at boot, on one core),
-        // and this path could be hot,
-        // so Relaxed is optimal
-        let ptr = REGISTRY_PTR.load(core::sync::atomic::Ordering::Relaxed);
+        // acquire the slice and its length together
+        let ptr = REGISTRY_PTR.load(core::sync::atomic::Ordering::Acquire);
         let len = REGISTRY_LEN.load(core::sync::atomic::Ordering::Relaxed);
 
         if ptr.is_null() {
@@ -65,18 +70,19 @@ impl PerCpu {
     }
 
     pub fn register_local(id: usize) -> Result<(), ()> {
-        debug_assert_eq!(TPIDR_EL1.get(), 0);
+        assert!(hal::cpu::read_cpu_local::<PerCpuData>().is_null());
 
         let pcpu = Self::get(id).ok_or(())?;
-        TPIDR_EL1.set(pcpu as *const _ as u64);
+        // the registry leaks its data and exposes only shared access
+        unsafe { hal::cpu::write_cpu_local(core::ptr::NonNull::from(pcpu)) };
 
         Ok(())
     }
 
-    /// the assumption is that the caller has an initialized TPIDR_EL1
+    /// return this cpu's registered data
     pub fn local() -> &'static PerCpuData {
-        let ptr = TPIDR_EL1.get() as *const PerCpuData;
-        debug_assert!(!ptr.is_null());
+        let ptr = hal::cpu::read_cpu_local::<PerCpuData>();
+        assert!(!ptr.is_null(), "cpu-local data is not registered");
         unsafe { &*ptr }
     }
 }

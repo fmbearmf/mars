@@ -84,6 +84,7 @@ impl<'a> DeviceProperties<'a> {
 pub struct TreeBuilder<'a> {
     tree: &'a mut DeviceTree,
     scope_map: HashMap<String, DeviceId>,
+    has_dma_translation: bool,
 }
 
 impl<'a> TreeBuilder<'a> {
@@ -91,7 +92,12 @@ impl<'a> TreeBuilder<'a> {
         Self {
             tree,
             scope_map: HashMap::new(),
+            has_dma_translation: false,
         }
+    }
+
+    pub fn has_dma_translation(&self) -> bool {
+        self.has_dma_translation
     }
 
     pub fn join_path(parent: &str, child: &str) -> String {
@@ -112,6 +118,11 @@ impl<'a> TreeBuilder<'a> {
     ) -> Result<(), &'static str> {
         for term in terms {
             match term {
+                AmlTerm::Name { name, .. } | AmlTerm::Method { name, .. }
+                    if name.to_string().ends_with("_DMA") =>
+                {
+                    self.has_dma_translation = true;
+                }
                 AmlTerm::Scope { name, mut contents } => {
                     let path = Self::join_path(current_path, &name.to_string());
                     let target_parent = self.scope_map.get(&path).copied().or(parent_id);

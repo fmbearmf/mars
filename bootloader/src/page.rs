@@ -1,20 +1,17 @@
-use aarch64_cpu::{
-    asm::barrier::{self, dsb, isb},
-    registers::{
-        CNTHCTL_EL2, CNTVOFF_EL2, CPACR_EL1, CPTR_EL2, CurrentEL, ELR_EL2, HCR_EL2, ICC_SRE_EL2,
-        MAIR_EL1, SCTLR_EL1, SCTLR_EL2, SP, SP_EL1, SP_EL2, SPSR_EL2, TCR_EL1, TTBR0_EL1,
-        TTBR0_EL2, TTBR1_EL1,
-    },
+use alloc::vec::Vec;
+use hal::paging::{
+    AddressSpaceContext, Level, MappingOptions, MemoryType, PageTable, supports_mapping,
 };
-use aarch64_cpu_ext::asm::tlb::{ALLE2, ALLE2IS, VMALLE1, VMALLE1IS, tlbi};
 use klib::{
-    cache::clean_dcache_range,
-    pm::page::mapper::AddressTranslator,
-    vm::{TABLE_ENTRIES, TTable},
+    pm::page::mapper::{AddressTranslator, map_block},
+    vm::{PAGE_SIZE, VmError, align_down},
 };
-use tock_registers::interfaces::*;
+use uefi::{
+    boot::{self, MemoryAttribute, MemoryType as UefiMemoryType},
+    mem::memory_map::MemoryMap,
+};
 
-use crate::busy_loop_ret;
+use crate::TABLE_ALLOC;
 
 #[derive(Debug)]
 pub struct UefiAddressTranslator;
@@ -29,111 +26,119 @@ impl AddressTranslator for UefiAddressTranslator {
     }
 }
 
-pub fn cpu_init() {
-    if CurrentEL.read(CurrentEL::EL) == 2 {
-        dsb(barrier::SY);
-        SCTLR_EL2.modify(
-            SCTLR_EL2::M::Disable + SCTLR_EL2::C::NonCacheable + SCTLR_EL2::I::NonCacheable,
+/// # safety
+/// the unpublished root uses the uefi allocator and identity translation
+pub unsafe fn map_identity(root: PageTable, uart_page: usize) -> Result<(), VmError> {
+    let map = boot::memory_map(UefiMemoryType::LOADER_DATA).map_err(|_| VmError::OutOfMemory)?;
+    let mut ranges = Vec::new();
+    let mut boundaries = Vec::new();
+    for descriptor in map.entries() {
+        if matches!(
+            descriptor.ty,
+            UefiMemoryType::RESERVED | UefiMemoryType::UNUSABLE
+        ) {
+            continue;
+        }
+        let start = usize::try_from(descriptor.phys_start).map_err(|_| VmError::InvalidAddress)?;
+        let bytes = usize::try_from(descriptor.page_count)
+            .map_err(|_| VmError::InvalidSize)?
+            .checked_mul(uefi::boot::PAGE_SIZE)
+            .ok_or(VmError::InvalidSize)?;
+        if bytes == 0 {
+            continue;
+        }
+        let end = start.checked_add(bytes).ok_or(VmError::InvalidAddress)?;
+        let end = end
+            .checked_add(PAGE_SIZE - 1)
+            .ok_or(VmError::InvalidAddress)?;
+        let start = align_down(start, PAGE_SIZE);
+        let end = align_down(end, PAGE_SIZE);
+        let device = matches!(
+            descriptor.ty,
+            UefiMemoryType::MMIO | UefiMemoryType::MMIO_PORT_SPACE
         );
-        isb(barrier::SY);
-
-        HCR_EL2.write(
-            HCR_EL2::RW::EL1IsAarch64
-                + HCR_EL2::E2H::EnableOsAtEl2
-                + HCR_EL2::TGE::EnableTrapGeneralExceptionsToEl2,
+        let executable = matches!(
+            descriptor.ty,
+            UefiMemoryType::LOADER_CODE
+                | UefiMemoryType::BOOT_SERVICES_CODE
+                | UefiMemoryType::RUNTIME_SERVICES_CODE
         );
-        isb(barrier::SY);
-
-        CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
-        CNTVOFF_EL2.set(0);
-    } else {
-        SCTLR_EL1.modify(
-            SCTLR_EL1::M::Disable + SCTLR_EL1::C::NonCacheable + SCTLR_EL1::I::NonCacheable,
-        );
-    }
-
-    // MAIR_EL1.modify(
-    //     MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck
-    //         + MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
-    //         + MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc
-    //         + MAIR_EL1::Attr2_Normal_Outer::WriteThrough_NonTransient_ReadWriteAlloc
-    //         + MAIR_EL1::Attr2_Normal_Inner::WriteThrough_NonTransient_ReadWriteAlloc
-    //         + MAIR_EL1::Attr3_Normal_Outer::NonCacheable
-    //         + MAIR_EL1::Attr3_Normal_Inner::NonCacheable,
-    // );
-
-    CPACR_EL1.modify(CPACR_EL1::FPEN::TrapNothing);
-    CPACR_EL1.modify(CPACR_EL1::ZEN::TrapNothing);
-    CPACR_EL1.modify(CPACR_EL1::TTA::NoTrap);
-    isb(barrier::SY);
-    dsb(barrier::SY);
-}
-
-pub fn mmu_init(ttbr0: *const TTable<TABLE_ENTRIES>, ttbr1: *const TTable<TABLE_ENTRIES>) {
-    TCR_EL1.modify(
-        TCR_EL1::TBI1::Ignored
-            + TCR_EL1::IPS::Bits_48
-            + TCR_EL1::TG1::KiB_16
-            + TCR_EL1::SH1::Inner
-            + TCR_EL1::ORGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-            + TCR_EL1::IRGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-            + TCR_EL1::EPD1::EnableTTBR1Walks
-            + TCR_EL1::T1SZ.val(16),
-    );
-
-    //TTBR0_EL1.set_baddr(ttbr0 as _);
-    TTBR1_EL1.set_baddr(ttbr1 as _);
-
-    if CurrentEL.read(CurrentEL::EL) == 2 {
-        tlbi(ALLE2IS);
-    } else {
-        tlbi(VMALLE1IS);
-    }
-
-    dsb(barrier::ISHST);
-    isb(barrier::SY);
-
-    SCTLR_EL1.modify(SCTLR_EL1::M::Enable + SCTLR_EL1::C::Cacheable + SCTLR_EL1::I::Cacheable);
-
-    dsb(barrier::SY);
-    isb(barrier::SY);
-}
-
-pub unsafe fn drop_to_kernel(entry: usize, arg: usize) -> ! {
-    use tock_registers::interfaces::{Readable, Writeable};
-
-    let el = CurrentEL.read(CurrentEL::EL);
-
-    if el == 2 {
-        // all exceptions masked by default
-        SPSR_EL2.write(
-            SPSR_EL2::D::Masked
-                + SPSR_EL2::A::Masked
-                + SPSR_EL2::I::Masked
-                + SPSR_EL2::F::Masked
-                + SPSR_EL2::M::EL2h,
-        );
-        isb(barrier::SY);
-
-        ICC_SRE_EL2.write(ICC_SRE_EL2::SRE::SET + ICC_SRE_EL2::ENABLE::SET);
-        isb(barrier::SY);
-
-        //SP_EL2.set(SP.get());
-        ELR_EL2.set(entry as u64);
-
-        dsb(barrier::SY);
-        isb(barrier::SY);
-
-        unsafe {
-            core::arch::asm!(
-                "mov x0, {arg}",
-                "eret",
-                arg = in(reg) arg,
-                options(noreturn)
-            )
+        let memory_type = if device {
+            MemoryType::Device
+        } else if descriptor.att.contains(MemoryAttribute::WRITE_BACK) {
+            MemoryType::Normal
+        } else if descriptor.att.contains(MemoryAttribute::WRITE_THROUGH) {
+            MemoryType::WriteThrough
+        } else {
+            MemoryType::Uncached
         };
-    } else {
-        let f: extern "C" fn(usize) -> ! = unsafe { core::mem::transmute(entry) };
-        f(arg)
+        // firmware code allocations can also contain writable pe sections
+        // these bootstrap aliases must be retired before entering application contexts
+        let options = MappingOptions {
+            executable,
+            memory_type,
+            ..MappingOptions::KERNEL_RW
+        };
+        ranges.push((start, end, options));
+        boundaries.extend([start, end]);
     }
+    boundaries.extend([uart_page, uart_page + PAGE_SIZE]);
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    for span in boundaries.windows(2) {
+        let start = span[0];
+        let end = span[1];
+        let mut selected: Option<MappingOptions> = None;
+        for &(first, last, options) in &ranges {
+            if first <= start && end <= last {
+                if let Some(current) = &mut selected {
+                    if current.memory_type != options.memory_type {
+                        return Err(VmError::Unsupported);
+                    }
+                    current.executable |= options.executable;
+                } else {
+                    selected = Some(options);
+                }
+            }
+        }
+        let options = if start == uart_page {
+            MappingOptions::MMIO
+        } else if let Some(options) = selected {
+            options
+        } else {
+            continue;
+        };
+        let mut address = start;
+        while address < end {
+            let mut level = Level::LEAF;
+            while let Some(parent) = level.parent() {
+                if !supports_mapping(parent)
+                    || address & (parent.coverage() - 1) != 0
+                    || parent.coverage() > end - address
+                {
+                    break;
+                }
+                level = parent;
+            }
+            unsafe {
+                map_block(
+                    root,
+                    address,
+                    address,
+                    level,
+                    options,
+                    &TABLE_ALLOC,
+                    &UefiAddressTranslator,
+                )
+            }?;
+            address += level.coverage();
+        }
+    }
+    Ok(())
+}
+
+/// # safety
+/// the context must map the current code and stack until the kernel takes over
+pub unsafe fn mmu_init(context: AddressSpaceContext) {
+    unsafe { context.activate() };
 }

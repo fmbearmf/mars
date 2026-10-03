@@ -1,10 +1,6 @@
-use core::{range::Range, sync::atomic::AtomicPtr};
-
-use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{boxed::Box, vec::Vec};
+use core::sync::atomic::AtomicPtr;
 use klib::{
-    allocator_support::KernelAddressTranslator,
-    cpu_interface::Arm64InterruptInterface,
     hardware::{
         device::{DeviceClass, DeviceNode, IrqFn},
         resource::Resource,
@@ -14,9 +10,8 @@ use klib::{
         gicv3::GicV3,
         singleton::{get_interrupt_controller, set_interrupt_controller},
     },
-    pm::page::mapper::AddressTranslator,
     this_cpu,
-    vm::{MAIR_DEVICE_INDEX, user::address_space::KERNEL_ADDRESS_SPACE},
+    vm::map_mmio,
 };
 use zerocopy::FromBytes;
 
@@ -64,21 +59,17 @@ pub fn handle(node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
             }
         };
 
-        let virt_start = KernelAddressTranslator.phys_to_dmap(range.start) as *mut u8;
-
-        let size = range.end - range.start;
-
-        let mut cursor = KERNEL_ADDRESS_SPACE.lock(Range::from(
-            (virt_start as usize)..(virt_start as usize + size),
-        ));
-        cursor.map(
-            range.start as _,
-            AccessPermission::PrivilegedReadWrite,
-            Shareability::OuterShareable,
-            true,
-            true,
-            MAIR_DEVICE_INDEX,
-        );
+        let Some(size) = range.end.checked_sub(range.start).filter(|size| *size != 0) else {
+            error!("gicv3: invalid distributor range");
+            return;
+        };
+        let virt_start = match unsafe { map_mmio(range.start, size) } {
+            Ok(pointer) => pointer,
+            Err(error) => {
+                error!("gicv3: failed to map distributor: {error:?}");
+                return;
+            }
+        };
 
         let slice = unsafe { core::slice::from_raw_parts_mut(virt_start, size) };
 
@@ -94,20 +85,17 @@ pub fn handle(node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
         .take(redistributor_count as usize)
         .filter_map(|redist| match redist {
             Resource::Mmio { range } => {
-                let size = range.end - range.start;
-
-                let virt_start = KernelAddressTranslator.phys_to_dmap(range.start) as *mut u8;
-                let mut cursor = KERNEL_ADDRESS_SPACE.lock(Range::from(
-                    (virt_start as usize)..(virt_start as usize + size),
-                ));
-                cursor.map(
-                    range.start as _,
-                    AccessPermission::PrivilegedReadWrite,
-                    Shareability::OuterShareable,
-                    true,
-                    true,
-                    MAIR_DEVICE_INDEX,
-                );
+                let size = range
+                    .end
+                    .checked_sub(range.start)
+                    .filter(|size| *size != 0)?;
+                let virt_start = match unsafe { map_mmio(range.start, size) } {
+                    Ok(pointer) => pointer,
+                    Err(error) => {
+                        error!("gicv3: failed to map redistributor: {error:?}");
+                        return None;
+                    }
+                };
 
                 let slice = unsafe { core::slice::from_raw_parts_mut(virt_start, size) };
 
@@ -131,19 +119,17 @@ pub fn handle(node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
         .skip(1 + redistributor_count as usize)
         .filter_map(|res| match res {
             Resource::Mmio { range } => {
-                let size = range.end - range.start;
-                let virt_start = KernelAddressTranslator.phys_to_dmap(range.start) as *mut u8;
-                let mut cursor = KERNEL_ADDRESS_SPACE.lock(Range::from(
-                    (virt_start as usize)..(virt_start as usize + size),
-                ));
-                cursor.map(
-                    range.start as _,
-                    AccessPermission::PrivilegedReadWrite,
-                    Shareability::OuterShareable,
-                    true,
-                    true,
-                    MAIR_DEVICE_INDEX,
-                );
+                let size = range
+                    .end
+                    .checked_sub(range.start)
+                    .filter(|size| *size != 0)?;
+                let virt_start = match unsafe { map_mmio(range.start, size) } {
+                    Ok(pointer) => pointer,
+                    Err(error) => {
+                        error!("gicv3: failed to map ITS: {error:?}");
+                        return None;
+                    }
+                };
 
                 let slice = unsafe { core::slice::from_raw_parts_mut(virt_start, size) };
                 GitsRegisters::mut_from_bytes(slice).ok()
@@ -154,12 +140,13 @@ pub fn handle(node: &DeviceNode, _enable_irq: IrqFn, _disable_irq: IrqFn) {
 
     let its = itses.into_iter().next();
 
-    let gicv3: Box<GicV3<'_, Arm64InterruptInterface>> = Box::new(GicV3::new(
-        distributor,
-        redistributors,
-        its,
-        Arm64InterruptInterface,
-    ));
+    let gicv3: Box<GicV3<'_, hal::local_interrupt::PlatformLocalInterruptController>> =
+        Box::new(GicV3::new(
+            distributor,
+            redistributors,
+            its,
+            hal::local_interrupt::PlatformLocalInterruptController,
+        ));
 
     debug!("set interrupt controller to GicV3");
 
