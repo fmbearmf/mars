@@ -40,20 +40,20 @@ static LAST_CHANGE: AtomicUsize = AtomicUsize::new(0);
 pub fn start() {
     let launcher = Arc::new(Thread::new_kernel(
         Stack::default(),
-        launcher as *const (),
+        launcher,
         1,
     ));
     GLOBAL_SCHEDULER.spawn(launcher);
 }
 
-extern "C" fn launcher() -> ! {
+extern "C" fn launcher(_: usize) -> ! {
     while CPU0_TICKS.load(Ordering::Acquire) < START_DELAY_TICKS {
         klib::scheduler::Scheduler::yield_now();
     }
 
     for i in 0..WORKERS {
-        let worker = Arc::new(Thread::new_kernel(Stack::default(), worker as *const (), 1));
-        worker.with_ctx_mut(|ctx| ctx.registers[0] = i as u64);
+        let worker = Arc::new(Thread::new_kernel(Stack::default(), worker, 1));
+        worker.with_ctx_mut(|ctx| unsafe { ctx.set_argument(i) });
         GLOBAL_SCHEDULER.spawn(worker);
     }
     STARTED.store(true, Ordering::Release);

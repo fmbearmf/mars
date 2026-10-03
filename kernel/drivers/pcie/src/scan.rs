@@ -9,7 +9,7 @@ use klib::{
         device::{DeviceClass, DeviceInitPriority, DeviceTree},
         resource::Resource,
     },
-    interrupt::{InterruptController, InterruptInterface, singleton::get_interrupt_controller},
+    interrupt::{InterruptController, singleton::get_interrupt_controller},
     this_cpu,
 };
 use log::*;
@@ -130,28 +130,26 @@ fn scan_function(
             ecam_end_bus,
         });
 
-        for bar in &bars {
-            let Some(bar) = bar else {
-                continue; // none
+        for (index, bar) in bars.iter().enumerate() {
+            let (address, size) = match bar {
+                Some(BarType::Memory32 { address, size, .. }) => (*address as u64, *size as u64),
+                Some(BarType::Memory64 { address, size, .. }) => (*address, *size),
+                _ => continue,
             };
-
-            match bar {
-                BarType::Memory32 { address, size, .. } => {
-                    let address = *address as usize;
-                    let size = *size as usize;
-                    resources.push(Resource::Mmio {
-                        range: address..(address + size),
-                    });
-                }
-                BarType::Memory64 { address, size, .. } => {
-                    let address = *address as usize;
-                    let size = *size as usize;
-                    resources.push(Resource::Mmio {
-                        range: address..(address + size),
-                    });
-                }
-                _ => {}
-            }
+            let range = usize::try_from(address)
+                .ok()
+                .zip(usize::try_from(size).ok())
+                .filter(|(address, size)| *address != 0 && *size != 0)
+                .and_then(|(address, size)| address.checked_add(size).map(|end| address..end));
+            let Some(range) = range else {
+                warn!("{bdf}: BAR{index} is unassigned, empty, or overflows the address space");
+                continue;
+            };
+            resources.push(Resource::PciBar {
+                index: index as u8,
+                range: range.clone(),
+            });
+            resources.push(Resource::Mmio { range });
         }
 
         let irq = try_get_legacy_irq(ecam, bdf);

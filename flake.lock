@@ -211,11 +211,11 @@
     },
     "nixpkgs_3": {
       "locked": {
-        "lastModified": 1788746152,
-        "narHash": "sha256-RaKngusl5I8pNi8RfrVvsHq3NZe7eFWzDlb01+hEVqY=",
+        "lastModified": 1790652569,
+        "narHash": "sha256-641r7xrlSOHYoktL9/aArPIYNgZJ9eM5URzSEOtPJDY=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "42f17a57f4f6e33b3de3dca0a2a5ea5233169d02",
+        "rev": "b6c8664de9b6cc07fe5666a29f91884ba81197c4",
         "type": "github"
       },
       "original": {
@@ -231,7 +231,8 @@
         "hacl-star": "hacl-star",
         "hax": "hax",
         "naersk": "naersk",
-        "nixpkgs": "nixpkgs_3"
+        "nixpkgs": "nixpkgs_3",
+        "verus-src": "verus-src"
       }
     },
     "rust-analyzer-src": {
@@ -332,6 +333,22 @@
       "original": {
         "owner": "nix-systems",
         "repo": "default",
+        "type": "github"
+      }
+    },
+    "verus-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790717229,
+        "narHash": "sha256-thF3WMLXLksSRcidy7kDvLQFk1u5j8uugPXEByzl5gY=",
+        "owner": "verus-lang",
+        "repo": "verus",
+        "rev": "d85f75780de687461a30e7771985c4a3e9ea0e58",
+        "type": "github"
+      },
+      "original": {
+        "owner": "verus-lang",
+        "repo": "verus",
         "type": "github"
       }
     }

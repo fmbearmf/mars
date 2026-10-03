@@ -4,7 +4,6 @@ use crate::{stack::Stack, sync::FairSpinlock};
 
 use super::{context::RegisterFile, process::Process, sync::RwLock};
 
-use aarch64_cpu::registers::{CurrentEL, Readable, SPSR_EL1, SPSR_EL2};
 use alloc::sync::{Arc, Weak};
 use derivative::Derivative;
 
@@ -49,7 +48,7 @@ struct ThreadInner<'a> {
     thread_id: ThreadId,
     state: ThreadState,
     priority: u8,
-    kernel_sp: u64,
+    context: RegisterFile,
     stack: Option<Stack>,
     process: Weak<Process<'a>>, // avoids a ref count
     is_kernel: bool,
@@ -74,31 +73,17 @@ impl<'a> Thread<'a> {
         process: Weak<Process<'a>>,
         is_kernel: bool,
         stack: Stack,
-        pc: usize,
+        context: RegisterFile,
         priority: u8,
-        spsr_value: u64,
         // translator: &'a dyn AddressTranslator,
     ) -> Self {
-        let stack_range = stack.as_ptr_range();
-        let stack_top_va = stack_range.end;
-        // let stack_top_pa = translator.dmap_to_phys(stack_top_va as *mut u8) as _;
-
-        let ctx_ptr = stack_top_va as usize - size_of::<RegisterFile>();
-        debug_assert_eq!(ctx_ptr, ctx_ptr & !0xF, "ctx_ptr not 16 aligned");
-        let ctx = unsafe { &mut *(ctx_ptr as *mut RegisterFile) };
-
-        ctx.registers = [0; 31];
-        ctx.elr = pc as u64;
-        ctx.spsr = spsr_value;
-        ctx.sp = stack_top_va as u64;
-
         let thread_id = THREAD_ID_ALLOC.alloc();
 
         let inner = ThreadInner {
             thread_id,
             state: ThreadState::Ready,
             priority,
-            kernel_sp: ctx_ptr as u64,
+            context,
             stack: Some(stack),
             process,
             is_kernel,
@@ -110,58 +95,40 @@ impl<'a> Thread<'a> {
         }
     }
 
-    pub fn new(
+    /// safety
+    /// `entry` must be a valid user entry point compatible with the ABI used to start it,
+    /// and the process must retain all mappings and backing memory needed by the entry and stack
+    pub unsafe fn new(
         process: &Arc<Process<'a>>,
         stack: Stack,
-        pc: usize,
+        entry: usize,
         priority: u8,
         // translator: &'a dyn AddressTranslator,
     ) -> Self {
-        Self::new_inner(
-            Arc::downgrade(process),
-            false,
-            stack,
-            pc,
-            priority,
-            SPSR_EL1::M::EL0t.value,
-            // translator,
-        )
+        let stack_top = stack.top() as usize;
+        assert_eq!(
+            stack_top % hal::context::Context::stack_alignment(),
+            0,
+            "user stack top must satisfy the architecture stack alignment"
+        );
+        let context = unsafe { hal::context::Context::user(entry, stack_top) };
+        Self::new_inner(Arc::downgrade(process), false, stack, context, priority)
     }
 
     pub fn new_kernel(
         stack: Stack,
-        entry: *const (),
+        entry: extern "C" fn(usize) -> !,
         priority: u8,
         // translator: &'a dyn AddressTranslator,
     ) -> Self {
-        let kernel_mode = match CurrentEL.read(CurrentEL::EL) {
-            2 => {
-                (SPSR_EL2::D::Masked
-                    + SPSR_EL2::A::Masked
-                    + SPSR_EL2::I::Masked
-                    + SPSR_EL2::F::Masked
-                    + SPSR_EL2::M::EL2h)
-                    .value
-            }
-            _ => {
-                (SPSR_EL1::D::Masked
-                    + SPSR_EL1::A::Masked
-                    + SPSR_EL1::I::Masked
-                    + SPSR_EL1::F::Masked
-                    + SPSR_EL1::M::EL1h)
-                    .value
-            }
-        };
-
-        Self::new_inner(
-            Weak::new(),
-            true,
-            stack,
-            entry as _,
-            priority,
-            kernel_mode,
-            // translator,
-        )
+        let stack_top = stack.top() as usize;
+        assert_eq!(
+            stack_top % hal::context::Context::stack_alignment(),
+            0,
+            "kernel stack top must satisfy the architecture stack alignment"
+        );
+        let context = unsafe { hal::context::Context::kernel(entry as usize, stack_top) };
+        Self::new_inner(Weak::new(), true, stack, context, priority)
     }
 
     pub fn is_kernel(&self) -> bool {
@@ -184,7 +151,7 @@ impl<'a> Thread<'a> {
     where
         F: FnOnce(&mut RegisterFile) -> R,
     {
-        let guard = self.inner.write();
+        let mut guard = self.inner.write();
 
         assert_ne!(
             guard.state,
@@ -192,8 +159,11 @@ impl<'a> Thread<'a> {
             "can't access context of a running thread"
         );
 
-        let ctx_ptr = guard.kernel_sp as *mut RegisterFile;
-        unsafe { f(&mut *ctx_ptr) }
+        f(&mut guard.context)
+    }
+
+    pub(crate) fn save_running_context(&self, context: RegisterFile) {
+        self.inner.write().context = context;
     }
 
     pub fn with_ctx<F, R>(&self, f: F) -> R
@@ -208,9 +178,7 @@ impl<'a> Thread<'a> {
             "can't access context of a running thread"
         );
 
-        let ctx_ptr = guard.kernel_sp as *const RegisterFile;
-
-        unsafe { f(&*ctx_ptr) }
+        f(&guard.context)
     }
 
     pub fn process(&self) -> Option<Arc<Process<'a>>> {

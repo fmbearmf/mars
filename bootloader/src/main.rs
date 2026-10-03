@@ -1,7 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(stdarch_arm_hints)]
-#![feature(fn_traits)]
 
 extern crate alloc;
 
@@ -9,17 +7,12 @@ mod allocator;
 mod elf;
 mod page;
 
-use core::{
-    arch::aarch64::__wfe,
-    mem::{MaybeUninit, transmute},
-};
-
-use aarch64_cpu::asm::barrier::{self, dsb};
-use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
+use core::mem::MaybeUninit;
+use hal::paging::{AddressSpaceContext, MappingOptions};
 use klib::{
     allocator_support::KernelAddressTranslator,
-    pm::page::mapper::{AddressTranslator, TableAllocator, id_map, map_region},
-    vm::{MAIR_DEVICE_INDEX, MAIR_NORMAL_INDEX, PAGE_SIZE, align_down, align_up},
+    pm::page::mapper::{AddressTranslator, MemoryProvider, map_region},
+    vm::{PAGE_SIZE, align_down},
 };
 use log::{debug, error, info};
 use protocol::BootInfo;
@@ -30,12 +23,11 @@ use uefi::{
     entry,
     proto::media::file::{File, FileAttribute, FileMode},
 };
-use uefi_raw::table::system::SystemTable;
 
 use crate::{
     allocator::UefiTableAlloc,
     elf::load_kernel,
-    page::{UefiAddressTranslator, cpu_init, drop_to_kernel, mmu_init},
+    page::{UefiAddressTranslator, map_identity, mmu_init},
 };
 
 #[global_allocator]
@@ -88,16 +80,14 @@ bitflags::bitflags! {
 #[allow(dead_code)]
 fn busy_loop_ret() {
     loop {
-        dsb(barrier::SY);
-        unsafe { __wfe() };
+        hal::boot::wait();
     }
 }
 
 #[allow(dead_code)]
 fn busy_loop_noret() -> ! {
     loop {
-        dsb(barrier::SY);
-        unsafe { __wfe() }
+        hal::boot::wait();
     }
 }
 
@@ -150,106 +140,68 @@ fn main() -> Status {
 
     let kernel = fh.into_regular_file().unwrap();
 
-    let (entry_offset, base_virt, base_phys, load_size) = match load_kernel(kernel) {
+    let kernel = match load_kernel(kernel) {
         Ok(v) => v,
         Err(e) => return e,
     };
 
-    let base_virt_align = align_down(base_virt as _, PAGE_SIZE);
-    let base_phys_align = align_down(base_phys as _, PAGE_SIZE);
-    let load_size_align = align_up(load_size as _, PAGE_SIZE);
-    let entry_vaddr = base_virt_align + entry_offset as usize;
-    let entry_paddr = base_phys_align + entry_offset as usize;
-
-    debug!(
-        "map {:#x}..{:#x} to {:#x}..{:#x}",
-        base_virt_align,
-        base_virt_align + load_size_align,
-        base_phys_align,
-        base_phys_align + load_size_align,
-    );
-
-    let mut root_ttbr1 = TABLE_ALLOC.alloc_table();
-    debug!("root_ttbr1: {:p}", root_ttbr1);
-    map_region(
-        unsafe { root_ttbr1.as_mut() },
-        base_phys_align,
-        base_virt_align,
-        load_size_align,
-        AccessPermission::PrivilegedReadWrite,
-        Shareability::InnerShareable,
-        true,
-        false,
-        MAIR_NORMAL_INDEX,
-        &TABLE_ALLOC,
-        &UefiAddressTranslator,
-    );
-
-    let mut root_ttbr0 = TABLE_ALLOC.alloc_table();
-    debug!("root_ttbr0: {:p}", root_ttbr0);
-    id_map(
-        unsafe { root_ttbr0.as_mut() },
-        AccessPermission::PrivilegedReadWrite,
-        Shareability::InnerShareable,
-        true,
-        false,
-        MAIR_DEVICE_INDEX,
-        &TABLE_ALLOC,
-        &UefiAddressTranslator,
-    );
-
-    let uart_phys = 0x040d_0000;
+    let memory = MemoryProvider::new(&TABLE_ALLOC, &UefiAddressTranslator);
+    let context = unsafe { AddressSpaceContext::create(&memory) }.unwrap();
+    for segment in &kernel.segments {
+        let root = context.table_for(segment.virtual_address, &memory).unwrap();
+        unsafe {
+            map_region(
+                root,
+                segment.physical_address,
+                segment.virtual_address,
+                segment.size,
+                segment.options,
+                &TABLE_ALLOC,
+                &UefiAddressTranslator,
+            )
+        }
+        .unwrap();
+    }
     let uart_phys = 0x0900_0000;
     let uart_phys_page = align_down(uart_phys, PAGE_SIZE);
-    map_region(
-        unsafe { root_ttbr0.as_mut() },
-        uart_phys_page,
-        uart_phys_page,
-        PAGE_SIZE,
-        AccessPermission::PrivilegedReadWrite,
-        Shareability::OuterShareable,
-        true,
-        false,
-        MAIR_DEVICE_INDEX,
-        &TABLE_ALLOC,
-        &UefiAddressTranslator,
-    );
-    map_region(
-        unsafe { root_ttbr1.as_mut() },
-        uart_phys_page,
-        KernelAddressTranslator.phys_to_dmap(uart_phys_page) as _,
-        PAGE_SIZE,
-        AccessPermission::PrivilegedReadWrite,
-        Shareability::OuterShareable,
-        true,
-        false,
-        MAIR_DEVICE_INDEX,
-        &TABLE_ALLOC,
-        &UefiAddressTranslator,
-    );
+    let root_ttbr0 = context.table_for(0, &memory).unwrap();
+    let root_ttbr1 = context.table_for(usize::MAX, &memory).unwrap();
+    unsafe { map_identity(root_ttbr0, uart_phys_page) }.unwrap();
+    let entry_vaddr = kernel.entry;
+    unsafe {
+        map_region(
+            root_ttbr1,
+            uart_phys_page,
+            KernelAddressTranslator.phys_to_dmap(uart_phys_page) as _,
+            PAGE_SIZE,
+            MappingOptions::MMIO,
+            &TABLE_ALLOC,
+            &UefiAddressTranslator,
+        )
+        .unwrap()
+    };
 
-    let entry_fn: fn(boot_info: *mut BootInfo) -> ! = unsafe { transmute(entry_vaddr) };
-    debug!("entry_fn: {:p}", entry_fn as *const ());
+    debug!("kernel entry: {:#x}", entry_vaddr);
 
     let mut boot_info = MaybeUninit::<BootInfo>::uninit();
 
     let mem_map_final = unsafe { boot::exit_boot_services(None) };
 
     unsafe {
-        cpu_init();
-        mmu_init(root_ttbr0.as_ptr(), root_ttbr1.as_ptr());
+        hal::boot::leave_firmware();
+        mmu_init(context);
     }
 
     let st = uefi::table::system_table_raw().expect("no system table?");
 
     boot_info.write(BootInfo {
-        kernel_load_physical_address: base_phys as usize,
-        kernel_size: load_size as usize,
+        kernel_load_physical_address: kernel.physical_address,
+        kernel_size: kernel.size,
         serial_uart_address: uart_phys,
         memory_map: mem_map_final,
         system_table_raw: st,
-        page_table_root: Some(root_ttbr0.as_ptr()),
+        page_table_root: Some(root_ttbr0.as_ptr() as usize),
     });
 
-    unsafe { drop_to_kernel(entry_vaddr, boot_info.as_mut_ptr() as usize) }
+    unsafe { hal::boot::enter_kernel(entry_vaddr, boot_info.as_mut_ptr() as usize) }
 }

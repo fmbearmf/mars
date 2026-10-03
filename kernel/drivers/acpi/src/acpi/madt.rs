@@ -1,8 +1,7 @@
 use core::{fmt::Debug, iter::FusedIterator, marker::PhantomData, ptr, slice, u32, u64};
 
 use hax_lib::{attributes, ensures, opaque, requires};
-use klib::{interrupt::GicrRegisters, vm::phys_addr_to_dmap};
-use tock_registers::interfaces::Debuggable;
+use klib::interrupt::GicrRegisters;
 
 use crate::{acpi::AcpiTableTrait, impl_table};
 

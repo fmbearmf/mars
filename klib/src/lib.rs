@@ -18,8 +18,6 @@ pub mod cache;
 pub mod console;
 pub mod context;
 pub mod cpu_interface;
-pub mod exception;
-pub mod guard;
 pub mod hardware;
 pub mod interrupt;
 pub mod per_cpu;

@@ -1,6 +1,7 @@
 pub mod fadt;
 pub mod gtdt;
 pub mod header;
+pub mod iort;
 pub mod madt;
 pub mod mcfg;
 pub mod spcr;

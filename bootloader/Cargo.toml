@@ -10,9 +10,8 @@ default-target = "aarch64-unknown-uefi"
 log.workspace = true
 protocol.workspace = true
 klib.workspace = true
+hal = { path = "../hal" }
 uefi-raw.workspace = true
 uefi = { workspace = true, features = ["logger", "panic_handler", "alloc"] }
-aarch64-cpu.workspace = true
-aarch64-cpu-ext.workspace = true
 tock-registers.workspace = true
 bitflags.workspace = true

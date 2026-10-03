@@ -1,48 +1,30 @@
 use core::sync::atomic::Ordering;
 
-use aarch64_cpu::asm::{
-    barrier::{self, dsb},
-    sev,
-};
 use alloc::sync::Arc;
-use klib::{
-    context::RegisterFileRef, guard::InterruptGuard, scheduler::GLOBAL_SCHEDULER, stack::Stack,
-    this_cpu, thread::Thread,
-};
+use hal::interrupt::InterruptGuard;
+use klib::{scheduler::GLOBAL_SCHEDULER, stack::Stack, this_cpu, thread::Thread};
 
 use crate::busy_loop;
-
-unsafe extern "C" {
-    fn el1_load_register_file(regs: RegisterFileRef<'_>) -> !;
-}
 
 /// call per-core
 pub fn idle_init() -> ! {
     let idle_stack = Stack::default();
 
-    let idle_thread = Arc::new(Thread::new_kernel(
-        idle_stack,
-        idle_entry as *const (),
-        u8::MIN,
-    ));
+    let idle_thread = Arc::new(Thread::new_kernel(idle_stack, idle_entry, u8::MIN));
 
-    let regs = idle_thread.with_ctx_mut(|next| next as *mut _);
-
-    GLOBAL_SCHEDULER.spawn(idle_thread);
-
-    unsafe {
-        let regs = RegisterFileRef(&mut *regs);
-        el1_load_register_file(regs)
-    }
+    // bind this stack to its processor before enabling preemption
+    let mut context = unsafe { GLOBAL_SCHEDULER.start_kernel(idle_thread) };
+    unsafe { hal::exception::resume(&mut context) }
 }
 
-fn idle_entry() -> ! {
+extern "C" fn idle_entry(_: usize) -> ! {
     use log::*;
 
     this_cpu!().ready.store(true, Ordering::Release);
 
     debug!("Core {} online & going idle.", this_cpu!().id);
-    InterruptGuard::enable();
+    // device initialization installs interrupt delivery before entering idle
+    unsafe { InterruptGuard::enable() };
 
     busy_loop()
 }

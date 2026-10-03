@@ -99,24 +99,6 @@ pub trait InterruptController: Send + Sync {
     fn msi_get_doorbell(&self) -> Result<u64>;
 }
 
-/// abstract interface
-pub trait InterruptInterface {
-    /// read interrupt ack register
-    fn read_iar(&self) -> u32;
-
-    /// write end of interrupt (EOI) register
-    fn write_eoir(&self, int_id: u32);
-
-    /// enable group 1 interrupts
-    fn enable_group1(&self);
-
-    /// disable group 1 interrupts
-    fn disable_group1(&self);
-
-    /// set priority mask
-    fn set_priority_mask(&self, mask: u8);
-}
-
 declare_structs!(
     #[derive(KnownLayout, FromBytes, IntoBytes)]
     pub GicdRegisters {

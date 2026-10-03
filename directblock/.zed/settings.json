@@ -1,0 +1,24 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "procMacro": {
+          "enable": true,
+        },
+        "cargo": {
+          "cfgs": ["verus_keep_ghost"],
+        },
+        "check": {
+          "overrideCommand": [
+            "cargo",
+            "verus",
+            "check",
+            "-p",
+            "directblock",
+            "--message-format=json",
+          ],
+        },
+      },
+    },
+  },
+}

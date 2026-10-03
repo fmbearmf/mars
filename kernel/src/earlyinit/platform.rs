@@ -1,7 +1,6 @@
 use alloc::vec::Vec;
 use core::{borrow::Borrow, mem::MaybeUninit};
 
-use aarch64_cpu::asm::barrier::{self, dsb, isb};
 use klib::{
     allocator_support::KernelAddressTranslator,
     console::set_backend,
@@ -23,10 +22,7 @@ use klib::{
     },
 };
 use protocol::BootInfo;
-use uefi::{
-    boot::MemoryType,
-    mem::memory_map::{MemoryMap, MemoryMapMut},
-};
+use uefi::mem::memory_map::{MemoryMap, MemoryMapMut};
 
 use crate::{
     __KBASE, DEVICE_TREE,
@@ -37,7 +33,6 @@ use crate::{
             create_page_descriptors, populate_alloc_stage0, populate_alloc_stage1,
             switch_to_new_page_tables,
         },
-        mmu::init_mmu,
         smp::boot_secondary,
     },
     log::LOGGER,
@@ -157,8 +152,7 @@ pub use sealed::*;
 pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     use log::*;
 
-    let sp: usize;
-    unsafe { core::arch::asm!("mov {}, sp", out(reg) sp) };
+    let sp = hal::boot::stack_pointer();
 
     let boot_info = boot_info_token.get_mut();
     let load_addr = boot_info.kernel_load_physical_address;
@@ -191,19 +185,8 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
 
     populate_alloc_stage0();
 
-    dsb(barrier::SY);
-    isb(barrier::SY);
-
-    let new_pt = unsafe {
-        switch_to_new_page_tables(
-            || {
-                uefi_mmap
-                    .entries()
-                    .filter(|&x| x.ty != MemoryType::RESERVED)
-            },
-            &KALLOCATOR,
-        )
-    };
+    let context = unsafe { switch_to_new_page_tables(uefi_mmap.entries(), &KALLOCATOR) }
+        .expect("failed to construct kernel address space");
 
     unsafe { KALLOCATOR.transition_dmap() };
 
@@ -212,11 +195,8 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     let (page_descriptors, range) = create_page_descriptors();
     PAGE_DESCRIPTORS.init(page_descriptors, range.into());
 
-    KERNEL_ADDRESS_SPACE.init_from_table(new_pt);
-
-    trace!("init_mmu addr: {:#p}", init_mmu as *const ());
-    init_mmu(boot_info.page_table_root);
-    trace!("init_mmu done");
+    unsafe { KERNEL_ADDRESS_SPACE.init_from_context(context) }
+        .expect("kernel address space already initialized");
 
     acpi_init(&boot_info_token);
 

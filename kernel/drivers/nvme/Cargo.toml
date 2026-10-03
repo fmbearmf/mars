@@ -1,0 +1,14 @@
+[package]
+name = "mars-nvme-driver"
+version = "0.0.1"
+edition = "2024"
+license = "BSD-2-Clause"
+
+[features]
+self-test = []
+
+[dependencies]
+hal.workspace = true
+klib.workspace = true
+log.workspace = true
+mars-pcie-driver.workspace = true

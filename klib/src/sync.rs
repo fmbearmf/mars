@@ -5,10 +5,10 @@ use core::{
     sync::atomic::{Atomic, AtomicBool, AtomicUsize, Ordering},
 };
 
-use aarch64_cpu::asm::{sev, wfe};
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
 
-use crate::{guard::InterruptGuard, scheduler::Scheduler, thread::Thread};
+use crate::{scheduler::Scheduler, thread::Thread};
+use hal::interrupt::InterruptGuard;
 
 pub struct SleepingMutex<'a, T: ?Sized> {
     locked: AtomicBool,
@@ -137,15 +137,12 @@ impl TicketLock {
     #[inline]
     pub fn lock(&self) {
         let ticket = self.ticket.fetch_add(1, Ordering::AcqRel);
-        while self.users.load(Ordering::Acquire) != ticket {
-            wfe();
-        }
+        while self.users.load(Ordering::Acquire) != ticket {}
     }
 
     #[inline]
     pub fn unlock(&self) {
         self.users.fetch_add(1, Ordering::AcqRel);
-        sev();
     }
 }
 
@@ -161,7 +158,7 @@ unsafe impl<T: ?Sized + Send> Send for UnfairSpinlock<T> {}
 
 pub struct UnfairSpinlockGuard<'a, T: ?Sized> {
     mutex: &'a UnfairSpinlock<T>,
-    guard: InterruptGuard,
+    _guard: InterruptGuard,
 }
 
 impl<T> UnfairSpinlock<T> {
@@ -182,11 +179,12 @@ impl<T: ?Sized> UnfairSpinlock<T> {
             .lock
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
             .is_err()
-        {
-            wfe();
-        }
+        {}
 
-        UnfairSpinlockGuard { mutex: self, guard }
+        UnfairSpinlockGuard {
+            mutex: self,
+            _guard: guard,
+        }
     }
 
     #[inline]
@@ -198,7 +196,10 @@ impl<T: ?Sized> UnfairSpinlock<T> {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
         {
-            Some(UnfairSpinlockGuard { mutex: self, guard })
+            Some(UnfairSpinlockGuard {
+                mutex: self,
+                _guard: guard,
+            })
         } else {
             None
         }
@@ -209,13 +210,15 @@ impl<T: ?Sized> UnfairSpinlock<T> {
         let guard = InterruptGuard::new();
         self.lock.store(true, Ordering::Release);
 
-        UnfairSpinlockGuard { mutex: self, guard }
+        UnfairSpinlockGuard {
+            mutex: self,
+            _guard: guard,
+        }
     }
 
     #[inline]
     fn unlock(&self) {
         self.lock.store(false, Ordering::Release);
-        sev();
     }
 }
 
@@ -236,7 +239,6 @@ impl<'a, T: ?Sized> DerefMut for UnfairSpinlockGuard<'a, T> {
 impl<'a, T: ?Sized> Drop for UnfairSpinlockGuard<'a, T> {
     fn drop(&mut self) {
         self.mutex.unlock();
-        sev();
     }
 }
 
@@ -252,7 +254,7 @@ unsafe impl<T: ?Sized + Send> Send for FairSpinlock<T> {}
 
 pub struct FairSpinlockGuard<'a, T: ?Sized> {
     mutex: &'a FairSpinlock<T>,
-    guard: InterruptGuard,
+    _guard: InterruptGuard,
 }
 
 impl<T> FairSpinlock<T> {
@@ -271,14 +273,20 @@ impl<T: ?Sized> FairSpinlock<T> {
 
         self.lock.lock();
 
-        FairSpinlockGuard { mutex: self, guard }
+        FairSpinlockGuard {
+            mutex: self,
+            _guard: guard,
+        }
     }
 
     #[inline]
     pub fn try_lock(&self) -> Option<FairSpinlockGuard<'_, T>> {
         let guard = InterruptGuard::new();
         if self.lock.try_lock() {
-            Some(FairSpinlockGuard { mutex: self, guard })
+            Some(FairSpinlockGuard {
+                mutex: self,
+                _guard: guard,
+            })
         } else {
             None
         }
@@ -291,7 +299,10 @@ impl<T: ?Sized> FairSpinlock<T> {
         let ticket = self.lock.ticket.fetch_add(1, Ordering::AcqRel);
         self.lock.users.store(ticket, Ordering::Release);
 
-        FairSpinlockGuard { mutex: self, guard }
+        FairSpinlockGuard {
+            mutex: self,
+            _guard: guard,
+        }
     }
 
     #[inline]
@@ -331,7 +342,7 @@ pub struct RwLock<T: ?Sized> {
     data: UnsafeCell<T>,
 }
 
-unsafe impl<T: ?Sized + Sync> Sync for RwLock<T> {}
+unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
 
 impl<T> RwLock<T> {
@@ -363,7 +374,6 @@ impl<T: ?Sized> RwLock<T> {
                 }
             }
 
-            wfe();
             state = self.state.load(Ordering::Relaxed);
         }
     }
@@ -384,9 +394,7 @@ impl<T: ?Sized> RwLock<T> {
                             return RwLockWriteGuard { lock: self };
                         }
 
-                        while self.state.load(Ordering::Acquire) != WRITER {
-                            wfe();
-                        }
+                        while self.state.load(Ordering::Acquire) != WRITER {}
 
                         return RwLockWriteGuard { lock: self };
                     }
@@ -404,7 +412,7 @@ pub struct RwLockReadGuard<'a, T: ?Sized> {
 }
 
 unsafe impl<T: ?Sized + Sync> Sync for RwLockReadGuard<'_, T> {}
-unsafe impl<T: ?Sized + Send> Send for RwLockReadGuard<'_, T> {}
+unsafe impl<T: ?Sized + Sync> Send for RwLockReadGuard<'_, T> {}
 
 impl<'a, T: ?Sized> Deref for RwLockReadGuard<'a, T> {
     type Target = T;
@@ -416,7 +424,6 @@ impl<'a, T: ?Sized> Deref for RwLockReadGuard<'a, T> {
 impl<'a, T: ?Sized> Drop for RwLockReadGuard<'a, T> {
     fn drop(&mut self) {
         self.lock.state.fetch_sub(1, Ordering::Release);
-        sev();
     }
 }
 
@@ -448,7 +455,6 @@ impl<'a, T: ?Sized> DerefMut for RwLockWriteGuard<'a, T> {
 impl<'a, T: ?Sized> Drop for RwLockWriteGuard<'a, T> {
     fn drop(&mut self) {
         self.lock.state.store(0, Ordering::Release);
-        sev();
     }
 }
 

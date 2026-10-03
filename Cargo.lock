@@ -108,9 +108,8 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 name = "bootloader"
 version = "0.0.1"
 dependencies = [
- "aarch64-cpu 11.2.0",
- "aarch64-cpu-ext",
  "bitflags 2.13.1",
+ "hal",
  "klib",
  "log",
  "protocol",
@@ -167,6 +166,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "convert_case"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -181,6 +186,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "directblock"
+version = "0.0.1"
+dependencies = [
+ "verus_state_machines_macros",
+ "vstd",
 ]
 
 [[package]]
@@ -265,6 +278,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hal"
+version = "0.0.1"
+dependencies = [
+ "aarch64-cpu 11.2.0",
+ "aarch64-cpu-ext",
+ "mars-models",
+ "mars-models-zerocopy",
+ "vstd",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -333,6 +357,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "indexmap"
+version = "2.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
+dependencies = [
+ "equivalent",
+ "hashbrown",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -353,11 +387,10 @@ dependencies = [
 name = "kernel"
 version = "0.0.1"
 dependencies = [
- "aarch64-cpu 11.2.0",
- "aarch64-cpu-ext",
  "arm-pl011-uart",
  "atomic_enum",
  "atomic_refcell",
+ "hal",
  "klib",
  "log",
  "mars-acpi-aml-driver",
@@ -365,6 +398,7 @@ dependencies = [
  "mars-generic-timer-driver",
  "mars-models",
  "mars-models-zerocopy",
+ "mars-nvme-driver",
  "mars-pcie-driver",
  "mars-virtio-driver",
  "mars-xhci-driver",
@@ -379,11 +413,10 @@ dependencies = [
 name = "klib"
 version = "0.0.1"
 dependencies = [
- "aarch64-cpu 11.2.0",
- "aarch64-cpu-ext",
  "arm-pl011-uart",
  "atomic_refcell",
  "derivative",
+ "hal",
  "hashbrown",
  "log",
  "mars-models",
@@ -418,7 +451,6 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 name = "mars-acpi-aml-driver"
 version = "0.0.1"
 dependencies = [
- "aarch64-cpu 11.2.0",
  "hashbrown",
  "klib",
  "log",
@@ -443,8 +475,8 @@ dependencies = [
 name = "mars-generic-timer-driver"
 version = "0.0.1"
 dependencies = [
- "aarch64-cpu 11.2.0",
  "atomic_refcell",
+ "hal",
  "klib",
  "log",
  "mars_getters",
@@ -478,6 +510,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mars-nvme-driver"
+version = "0.0.1"
+dependencies = [
+ "hal",
+ "klib",
+ "log",
+ "mars-pcie-driver",
+]
+
+[[package]]
 name = "mars-pcie-driver"
 version = "0.0.1"
 dependencies = [
@@ -491,7 +533,6 @@ dependencies = [
 name = "mars-virtio-driver"
 version = "0.0.1"
 dependencies = [
- "aarch64-cpu-ext",
  "klib",
  "log",
  "mars-models",
@@ -503,7 +544,7 @@ dependencies = [
 name = "mars-xhci-driver"
 version = "0.0.1"
 dependencies = [
- "aarch64-cpu-ext",
+ "hal",
  "klib",
  "log",
  "mars-pcie-driver",
@@ -626,7 +667,6 @@ dependencies = [
 name = "protocol"
 version = "0.0.1"
 dependencies = [
- "klib",
  "uefi",
  "uefi-raw",
 ]
@@ -814,6 +854,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "synstructure"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -925,6 +976,65 @@ dependencies = [
  "getrandom",
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "verus_builtin"
+version = "0.0.0-2026-09-16-0054"
+source = "git+https://github.com/verus-lang/verus#d85f75780de687461a30e7771985c4a3e9ea0e58"
+
+[[package]]
+name = "verus_builtin_macros"
+version = "0.0.0-2026-09-20-0158"
+source = "git+https://github.com/verus-lang/verus#d85f75780de687461a30e7771985c4a3e9ea0e58"
+dependencies = [
+ "convert_case",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "synstructure",
+ "verus_prettyplease",
+ "verus_syn",
+]
+
+[[package]]
+name = "verus_prettyplease"
+version = "0.0.0-2026-09-06-0133"
+source = "git+https://github.com/verus-lang/verus#d85f75780de687461a30e7771985c4a3e9ea0e58"
+dependencies = [
+ "proc-macro2",
+ "verus_syn",
+]
+
+[[package]]
+name = "verus_state_machines_macros"
+version = "0.0.0-2026-09-06-0133"
+source = "git+https://github.com/verus-lang/verus#d85f75780de687461a30e7771985c4a3e9ea0e58"
+dependencies = [
+ "indexmap",
+ "proc-macro2",
+ "quote",
+ "verus_syn",
+]
+
+[[package]]
+name = "verus_syn"
+version = "0.0.0-2026-09-06-0133"
+source = "git+https://github.com/verus-lang/verus#d85f75780de687461a30e7771985c4a3e9ea0e58"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
+name = "vstd"
+version = "0.0.0-2026-09-20-0158"
+source = "git+https://github.com/verus-lang/verus#d85f75780de687461a30e7771985c4a3e9ea0e58"
+dependencies = [
+ "verus_builtin",
+ "verus_builtin_macros",
+ "verus_state_machines_macros",
 ]
 
 [[package]]

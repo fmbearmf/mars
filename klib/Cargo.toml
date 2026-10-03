@@ -10,8 +10,7 @@ plugin = false
 crate-type = [ "rlib" ]
 
 [dependencies]
-aarch64-cpu.workspace = true
-aarch64-cpu-ext.workspace = true
+hal.workspace = true
 arm-pl011-uart = { version = "0.4.0", default-features = false }
 tock-registers.workspace = true
 mars_getters.workspace = true

@@ -17,6 +17,7 @@ pub static DEVICE_TABLE: phf::Map<&str, DeviceCallback> = phf_map! {
 
     "pci1af4,1050" => DeviceCallback::Once(mars_virtio_driver::handle),
 
+    "pci-class-010802" => DeviceCallback::Once(mars_nvme_driver::driver::handle),
     "pci-class-0c0330" => DeviceCallback::Once(mars_xhci_driver::driver::handle),
     "PNP0D10" => DeviceCallback::Once(mars_xhci_driver::driver::handle),
     "CIXH2031" => DeviceCallback::Once(mars_xhci_driver::driver::handle)

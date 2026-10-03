@@ -7,6 +7,7 @@ Mars is a WIP kernel for ARMv8 (aka AArch64).
 
 ## Prerequisites
 * Rust nightly compiler with support for `aarch64-unknown-none` and `aarch64-unknown-uefi`
+* Verus (formal verification toolchain)
 * Nix (recommended)
 
 ## Features
@@ -19,8 +20,10 @@ Mars is a WIP kernel for ARMv8 (aka AArch64).
 * Preemptive Scheduling
 * Block Devices
 * PCIe
+* Partial formal verification
 
 ## Planned Features (in order of priority)
+* Multi-queue block I/O
 * Filesystem
 * Mach-O binary support
 * Syscall Layer

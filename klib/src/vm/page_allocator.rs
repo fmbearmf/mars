@@ -1,13 +1,11 @@
-use core::ptr::NonNull;
+use core::alloc::GlobalAlloc;
+use hal::paging::{GEOMETRY, PageTable};
 
-use crate::{
-    pm::page::mapper::TableAllocator,
-    vm::{KALLOCATOR, TABLE_ENTRIES, TTable},
-};
+use crate::{pm::page::mapper::TableAllocator, vm::KALLOCATOR};
 
 use super::VmError;
 
-pub trait PhysicalPageAllocator {
+pub trait PhysicalPageAllocator: Send + Sync {
     fn alloc_phys_page(&self) -> Result<usize, VmError>;
     fn free_phys_page(&self, pa: usize);
 }
@@ -21,17 +19,18 @@ pub trait DmapPageAllocator {
 pub struct KernelPTAllocator;
 
 impl TableAllocator for KernelPTAllocator {
-    fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>> {
-        let raw_ptr: usize = KALLOCATOR.alloc_dmap_page().expect("page alloc fail");
-        let raw_ptr = raw_ptr as *mut TTable<TABLE_ENTRIES>;
-
-        unsafe { (raw_ptr as *mut [u64; TABLE_ENTRIES]).write_bytes(0, 1) };
-
-        NonNull::new(raw_ptr).expect("null pointer from `alloc_page()` on `KALLOCATOR`")
+    fn alloc_table(&self) -> Result<PageTable, VmError> {
+        let layout = GEOMETRY.table_layout();
+        let pointer = unsafe { KALLOCATOR.alloc(layout) };
+        if pointer.is_null() {
+            return Err(VmError::OutOfMemory);
+        }
+        let table = unsafe { PageTable::from_ptr(pointer) };
+        unsafe { table.zero() };
+        Ok(table)
     }
 
-    fn free_table(&self, table: NonNull<TTable<TABLE_ENTRIES>>) {
-        let va = table.as_ptr() as usize;
-        KALLOCATOR.free_page(va);
+    fn free_table(&self, table: PageTable) {
+        unsafe { KALLOCATOR.dealloc(table.as_ptr(), GEOMETRY.table_layout()) };
     }
 }

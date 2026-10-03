@@ -7,7 +7,6 @@ use core::{
     sync::atomic::{Ordering, fence},
 };
 
-use aarch64_cpu_ext::structures::tte::{AccessPermission, Shareability};
 use alloc::{
     alloc::{alloc_zeroed, dealloc},
     boxed::Box,
@@ -20,7 +19,7 @@ use klib::{
         resource::Resource,
     },
     pm::page::mapper::AddressTranslator,
-    vm::{MAIR_DEVICE_INDEX, PAGE_SIZE, align_up, user::address_space::KERNEL_ADDRESS_SPACE},
+    vm::{PAGE_SIZE, VmError, align_up, map_mmio},
 };
 use mars_pcie_driver::{
     address::Bdf,
@@ -95,6 +94,7 @@ pub enum VirtioError {
     WrongDeviceType,
     CapabilityNotFound(VirtioCapType),
     InvalidBar,
+    MappingFailed(VmError),
     FeatureNegotiationFailed,
     ZeroQueueSize,
     InsufficientDescriptors,
@@ -223,6 +223,9 @@ pub fn parse_virtio_caps(ecam: &Ecam, bdf: Bdf) -> Vec<VirtioPciCap> {
             let offset = offset as u16;
 
             let cap_len = ecam.read_u8(bdf, offset + 2);
+            if cap_len < 16 {
+                return None;
+            }
             let cfg_type = VirtioCapType::try_from(ecam.read_u8(bdf, offset + 3)).ok()?;
             let bar = ecam.read_u8(bdf, offset + 4);
             let id_reg = ecam.read_u8(bdf, offset + 5);
@@ -256,6 +259,7 @@ pub struct VirtioPciTransport {
     isr_cfg: *mut u8,
     device_cfg: *mut u8,
     notify_off_multiplier: u32,
+    notify_size: usize,
 }
 
 // SAFETY: all ptrs map to seperate MMIO segments exclusively owned by this instance
@@ -283,22 +287,29 @@ impl VirtioPciTransport {
                 _ => return Err(VirtioError::InvalidBar),
             };
 
-            let base_vaddr = KernelAddressTranslator.phys_to_dmap(address) as usize;
-            let vaddr =
-                KernelAddressTranslator.phys_to_dmap(address + cap.offset as usize) as *mut u8;
-
-            let mut cursor = KERNEL_ADDRESS_SPACE.lock(core::range::Range::from(
-                base_vaddr..(base_vaddr + bar_size),
-            ));
-
-            cursor.map(
-                address as _,
-                AccessPermission::PrivilegedReadWrite,
-                Shareability::OuterShareable,
-                true,
-                true,
-                MAIR_DEVICE_INDEX,
-            );
+            let end = (cap.offset as usize)
+                .checked_add(cap.length as usize)
+                .filter(|end| *end <= bar_size)
+                .ok_or(VirtioError::InvalidBar)?;
+            let (minimum, alignment) = match target_cfg_type {
+                VirtioCapType::CommonCfg => (
+                    size_of::<VirtioPciCommonCfg>(),
+                    align_of::<VirtioPciCommonCfg>(),
+                ),
+                VirtioCapType::NotifyCfg => (2, 2),
+                _ => (1, 1),
+            };
+            if end - (cap.offset as usize) < minimum {
+                return Err(VirtioError::InvalidBar);
+            }
+            let physical = address
+                .checked_add(cap.offset as usize)
+                .ok_or(VirtioError::InvalidBar)?;
+            if physical % alignment != 0 {
+                return Err(VirtioError::InvalidBar);
+            }
+            let vaddr = unsafe { map_mmio(physical, cap.length as usize) }
+                .map_err(VirtioError::MappingFailed)?;
 
             Ok((vaddr, *cap))
         };
@@ -321,6 +332,7 @@ impl VirtioPciTransport {
             isr_cfg,
             device_cfg,
             notify_off_multiplier: notify_cap.notify_off_multiplier,
+            notify_size: notify_cap.length as usize,
         })
     }
 
@@ -410,7 +422,15 @@ impl VirtioPciTransport {
     }
 
     pub fn notify_queue(&self, queue_index: u16, notify_off: u16) {
-        let offset = (notify_off as u32) * self.notify_off_multiplier;
+        let offset = (notify_off as usize)
+            .checked_mul(self.notify_off_multiplier as usize)
+            .filter(|offset| {
+                offset
+                    .checked_add(2)
+                    .is_some_and(|end| end <= self.notify_size)
+            })
+            .expect("virtio notification exceeds capability");
+        assert_eq!(offset % 2, 0, "unaligned virtio notification");
         unsafe {
             write_volatile(
                 self.notify_cfg.add(offset as usize) as *mut u16,

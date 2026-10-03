@@ -11,6 +11,10 @@
       url = "github:nix-community/fenix/monthly";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    verus-src = {
+      url = "github:verus-lang/verus";
+      flake = false;
+    };
     hax = {
       url = "github:cryspen/hax/release-0.3.6";
       inputs.hacl-star.follows = "hacl-star";
@@ -29,6 +33,7 @@
       hax,
       naersk,
       nixpkgs,
+      verus-src,
     }:
     let
       inherit (nixpkgs) lib;
@@ -73,6 +78,7 @@
                   latest.rustc
                   latest.rust-analyzer
                   latest.rust-src
+                  latest.rustc-dev
                 ]
                 ++ stds
               );
@@ -89,6 +95,133 @@
 
             #OVMF = pkgs.callPackage ./ovmf.nix { };
             OVMF = pkgs.OVMF;
+
+            verus'toolchain = (
+              fenix.packages.${system}.fromToolchainFile {
+                file = "${verus-src}/rust-toolchain.toml";
+                sha256 = "sha256-p8h3Sl/YRByZfZTAKXdsvF6xEenXKrXSVvpphmZENH4=";
+              }
+            );
+
+            verus'toml = (fromTOML (builtins.readFile "${verus-src}/rust-toolchain.toml"));
+            verus'toolchain'version = verus'toml.toolchain.channel;
+            verus'toolchain'triple = "${verus'toolchain'version}-${pkgs.stdenv.hostPlatform.rust.rustcTargetSpec}";
+
+            verus'env = {
+              VERUS_Z3_PATH = "${pkgs.z3}/bin/z3";
+              VERUS_USE_RUSTUP = "0";
+              VERUS_TOOLCHAIN = verus'toolchain'triple;
+            };
+
+            verus =
+              let
+
+                rustPlatform = pkgs.makeRustPlatform {
+                  cargo = verus'toolchain;
+                  rustc = verus'toolchain;
+                };
+
+                kosherRustup = pkgs.writeShellScriptBin "rustup" ''
+                  case "$*" in
+                    *"show active-toolchain"*)
+                      echo "${verus'toolchain'triple} (env override)"
+                      exit 0
+                      ;;
+                    *)
+                      echo "bad invocation: rustup $*" >&2
+                      exit 1
+                      ;;
+                  esac
+                '';
+              in
+
+              rustPlatform.buildRustPackage (
+                {
+                  pname = "verus"; # wow
+                  version = "0-unstable";
+                  src = verus-src;
+                  cargoRoot = "source";
+
+                  cargoLock = {
+                    lockFile = "${verus-src}/source/Cargo.lock";
+                    allowBuiltinFetchGit = true;
+                  };
+
+                  nativeBuildInputs = [
+                    pkgs.makeWrapper
+                    pkgs.pkg-config
+                    pkgs.gitMinimal
+                    kosherRustup
+                  ];
+                  buildInputs = [
+                    pkgs.z3
+                    pkgs.libz
+                  ];
+
+                  preBuildPhases = [
+                    "initGitRepoPhase"
+                  ];
+
+                  initGitRepoPhase = ''
+                    git init -q .
+                    git config user.email "nix@build.local"
+                    git config user.name "nix"
+                    git add -A
+                    git commit -q -m "nix build" --allow-empty
+                  '';
+
+                  buildPhase = ''
+                    runHook preBuild
+
+                    cd source
+                    cargo build --release --offline
+                    cargo run --release --offline -p cargo-verus -- \
+                      build --release --manifest-path vstd/Cargo.toml
+                    cd ..
+
+                    runHook postBuild
+                  '';
+
+                  postPatch = ''
+                    for crate in rust_verify verus; do
+                        if [ -f "source/$crate/Cargo.toml" ]; then
+                            substituteInPlace "source/$crate/Cargo.toml" \
+                              --replace-warn 'build = "build.rs"' 'build = false' || true
+                        fi
+                        rm -f "source/$crate/build.rs"
+                    done
+                  '';
+
+                  installPhase = ''
+                    runHook preInstall
+
+                    mkdir -p $out/opt/verus
+                    cp -r source/target-verus/release/. $out/opt/verus/
+                    mkdir -p $out/bin
+
+                    runHook postInstall
+                  '';
+
+                  postInstall = ''
+                    makeWrapper $out/opt/verus/verus $out/bin/verus \
+                      --set VERUS_Z3_PATH "${pkgs.z3}/bin/z3" \
+                      --set VERUS_USE_RUSTUP "0" \
+                      --prefix DYLD_FALLBACK_LIBRARY_PATH : "${verus'toolchain}/lib" \
+                      --prefix LD_LIBRARY_PATH : "${verus'toolchain}/lib"
+
+                    makeWrapper $out/opt/verus/cargo-verus $out/bin/cargo-verus \
+                      --set VERUS_Z3_PATH "${pkgs.z3}/bin/z3" \
+                      --set VERUS_USE_RUSTUP "0" \
+                      --prefix DYLD_FALLBACK_LIBRARY_PATH : "${verus'toolchain}/lib" \
+                      --prefix LD_LIBRARY_PATH : "${verus'toolchain}/lib"
+                  '';
+
+                  doCheck = false;
+                  auditable = false;
+                }
+                // verus'env
+              );
+
           in
           fn rec {
             inherit
@@ -97,6 +230,7 @@
               OVMF
               pkgs
               pkgsHax
+              verus
               pkgsCross
               stdenv
               toolchain
@@ -115,6 +249,7 @@
           toolchain,
           stdenv,
           pkgsHax,
+          verus,
           naersk',
           ...
         }:
@@ -124,6 +259,7 @@
           };
           inherit toolchain stdenv;
           inherit (pkgsHax) hax;
+          inherit verus;
           default = kernel;
         }
       );
@@ -132,6 +268,7 @@
         {
           pkgs,
           pkgsHax,
+          verus,
           mkShell,
           OVMF,
           toolchain,
@@ -141,25 +278,30 @@
           OVMF_DIR = "${OVMF.fd}/FV";
           OVMF_CODE_PATH = "${OVMF_DIR}/AAVMF_CODE.fd";
 
-          DYLD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+          lib_path = pkgs.lib.makeLibraryPath [
             pkgs.libz
             pkgsHax.rustc
+            "${toolchain}/lib"
           ];
 
           RUST_TARGET_PATH = ./target-specs;
 
           FSTAR_HOME = "${pkgsHax.fstar}";
           HAX_HOME = ./.;
+          VERUS_Z3_PATH = "${pkgs.z3}/bin/z3";
         in
         mkShell {
           inherit
             OVMF_DIR
             OVMF_CODE_PATH
-            DYLD_LIBRARY_PATH
             FSTAR_HOME
             RUST_TARGET_PATH
             HAX_HOME
+            VERUS_Z3_PATH
             ;
+
+          DYLD_LIBRARY_PATH = lib_path;
+          LD_LIBRARY_PATH = lib_path;
 
           packages =
             (with pkgs; [
@@ -170,12 +312,14 @@
               cargo-bloat
               #(callPackage ./gdb/package.nix { })
               gdb
+              z3
             ])
             ++ [
               toolchain
               pkgsHax.hax
               pkgsHax.fstar
               pkgsHax.hax-env
+              verus
             ];
 
           shellHook = ''

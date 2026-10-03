@@ -1,0 +1,12 @@
+[package]
+name = "directblock"
+version = "0.0.1"
+edition = "2024"
+license = "BSD-2-Clause"
+
+[package.metadata.verus]
+verify = true
+
+[dependencies]
+vstd = { workspace = true, default-features = false, features = ["alloc"] }
+verus_state_machines_macros = { git = "https://github.com/verus-lang/verus", default-features = false }

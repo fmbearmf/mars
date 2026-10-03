@@ -9,22 +9,12 @@ mod earlyinit;
 mod log;
 mod lut;
 
-use aarch64_cpu::{
-    asm::{
-        barrier::{self, dsb},
-        wfe,
-    },
-    registers::{CurrentEL, Readable},
-};
 use atomic_refcell::AtomicRefCell;
-use core::{
-    alloc::GlobalAlloc,
-    arch::{asm, naked_asm},
-    panic::PanicInfo,
-};
+use core::{alloc::GlobalAlloc, panic::PanicInfo};
+use hal::interrupt::InterruptGuard;
 use klib::{
-    cpu_interface::CpuTopologyId, guard::InterruptGuard, hardware::device::DeviceTree,
-    register_drivers, unsafe_println_panic_only_unsafe, vm::KALLOCATOR,
+    cpu_interface::CpuTopologyId, hardware::device::DeviceTree, register_drivers,
+    unsafe_println_panic_only_unsafe, vm::KALLOCATOR,
 };
 use protocol::BootInfo;
 
@@ -34,9 +24,7 @@ use crate::earlyinit::{
     platform::{BootInfoInitToken, uefi_arm64_bootstrap},
 };
 
-use self::earlyinit::exception::Exceptions;
-
-klib::exception_handlers!(Exceptions);
+hal::kernel_entry!(kentry);
 
 static DEVICE_TREE: AtomicRefCell<DeviceTree> = AtomicRefCell::new(DeviceTree::new());
 
@@ -84,15 +72,14 @@ register_drivers!([]);
 #[allow(dead_code)]
 fn busy_loop() -> ! {
     loop {
-        wfe();
-        dsb(barrier::SY); // YIELD (i.e. core::hint::spin_loop())
+        hal::boot::wait();
     }
 }
 
 #[allow(dead_code)]
 fn busy_loop_ret() {
     loop {
-        wfe();
+        hal::boot::wait();
     }
 }
 
@@ -100,61 +87,10 @@ unsafe extern "C" {
     static __KBASE: usize;
 }
 
-const STACK_SIZE: usize = 32 * 1024;
-
-#[allow(dead_code)]
-#[repr(align(16))]
-struct KStack([u8; STACK_SIZE]);
-
-impl KStack {
-    const fn new() -> Self {
-        Self([0u8; STACK_SIZE])
-    }
-}
-
-//#[unsafe(link_section = ".reclaimable.bss")]
-static mut KSTACK: KStack = KStack::new();
-
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn _start(_boot_info_ref: *mut BootInfo) {
-    naked_asm!(
-        "adrp x9, {stack_base}",
-        "add x9, x9, :lo12:{stack_base}",
-        "add x9, x9, {stack_size}",
-        "and x9, x9, #~0xF",
-        "mov sp, x9",
-        //
-        "bl {entry}",
-        stack_base = sym KSTACK,
-        stack_size = const STACK_SIZE,
-        entry = sym kentry,
-    );
-}
-
-fn kentry(boot_info_ref: *mut BootInfo) -> ! {
-    match CurrentEL.read(CurrentEL::EL) {
-        2 => unsafe {
-            asm!(
-                "adr {x}, vector_table_el1",
-                "msr vbar_el2, {x}",
-                "msr vbar_el1, {x}",
-                "isb",
-                x = out(reg) _,
-                options(nomem, nostack),
-            );
-        },
-        _ => unsafe {
-            asm!(
-                "adr {x}, vector_table_el1",
-                "msr vbar_el1, {x}",
-                "isb",
-                x = out(reg) _,
-                options(nomem, nostack),
-            );
-        },
-    }
+unsafe extern "C" fn kentry(boot_info_address: usize) -> ! {
+    let boot_info_ref = boot_info_address as *mut BootInfo;
     init_cpu();
+    unsafe { hal::exception::install(earlyinit::exception::handle) };
 
     let boot_info_init_token = BootInfoInitToken::new().unwrap();
     let boot_info_token = unsafe { boot_info_init_token.init(boot_info_ref) }.unwrap();

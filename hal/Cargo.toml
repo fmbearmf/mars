@@ -1,0 +1,19 @@
+[package]
+name = "hal"
+version = "0.0.1"
+edition = "2024"
+
+[package.metadata.verus]
+verify = true
+
+[features]
+kernel-entry = []
+
+[dependencies]
+vstd.workspace = true
+mars-models.workspace = true
+mars-models-zerocopy = { workspace = true, features = ["derive"] }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+aarch64-cpu.workspace = true
+aarch64-cpu-ext.workspace = true

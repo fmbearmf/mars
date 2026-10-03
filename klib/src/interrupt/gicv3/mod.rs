@@ -3,30 +3,27 @@ pub mod registers;
 
 use core::{
     alloc::Layout,
-    arch::asm,
     fmt::Debug,
     ptr::NonNull,
     sync::atomic::{AtomicPtr, AtomicU8, Ordering},
 };
 
-use aarch64_cpu::{
-    asm::{
-        barrier::{self, dsb, isb},
-        sev, wfe,
-    },
-    registers::ReadWriteable as TRW,
-};
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, vec, vec::Vec};
 use atomic_refcell::AtomicRefCell;
+use hal::cache::clean_dcache_range;
 use mars_models::memory::registers::volatile::{
     PureReadable, PureWriteable, RPureReadWrite, Readable, Writeable,
 };
 
+use hal::{
+    interrupt::InterruptGuard,
+    local_interrupt::LocalInterruptController,
+    memory::{acquire_from_device, publish_to_device},
+};
+
 use crate::{
     allocator_support::KernelAddressTranslator,
-    cache::clean_dcache_range,
     cpu_interface::{CpuIdLogical, CpuTopologyId},
-    guard::InterruptGuard,
     interrupt::{
         GicrRegisters, GitsRegisters,
         gicv3::{
@@ -46,11 +43,9 @@ use crate::{
 };
 
 use super::{
-    GicdRegisters, InterruptController, InterruptError, InterruptInterface, Result,
+    GicdRegisters, InterruptController, InterruptError, Result,
     gicv3::registers::gic::{GicdCtlr, GicrCtlr, GicrWaker},
 };
-
-use self::registers::icc_sre_el1::ICC_SRE_EL1;
 
 pub const ITS_CACHEABILITY: u8 = 0b101; // normal wb
 pub const ITS_SHAREABILITY: u8 = 0b01; // inner shareable
@@ -92,7 +87,7 @@ struct IttAllocation(pub (NonNull<u8>, Layout));
 unsafe impl Send for IttAllocation {}
 unsafe impl Sync for IttAllocation {}
 
-pub struct GicV3<'a, I: InterruptInterface + Send + Sync> {
+pub struct GicV3<'a, I: LocalInterruptController + Send + Sync> {
     pub distributor: &'a GicdRegisters,
     pub redistributors: Vec<AtomicPtr<GicrRegisters>>,
     pub its: Option<AtomicPtr<GitsRegisters>>,
@@ -108,13 +103,13 @@ pub struct GicV3<'a, I: InterruptInterface + Send + Sync> {
     event_mappings: FairSpinlock<BTreeMap<(u32, u32), u32>>,
 }
 
-impl<I: InterruptInterface + Send + Sync> Debug for GicV3<'_, I> {
+impl<I: LocalInterruptController + Send + Sync> Debug for GicV3<'_, I> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GicV3").finish()
     }
 }
 
-impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
+impl<'a, I: LocalInterruptController + Send + Sync> GicV3<'a, I> {
     pub fn new(
         distributor: &'a mut GicdRegisters,
         redists: Vec<AtomicPtr<GicrRegisters>>,
@@ -176,7 +171,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
     }
 
     fn wait_for_distributor_rwp(&self) {
-        dsb(barrier::ST);
+        publish_to_device();
 
         while self
             .distributor
@@ -189,7 +184,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
     }
 
     fn wait_for_redistributor_rwp(&self) {
-        dsb(barrier::ISHST);
+        publish_to_device();
 
         let redist = self.redistributor_mut();
 
@@ -213,7 +208,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
                 update_fn(&mut *target_ptr);
                 clean_dcache_range(target_ptr as _, 1);
             }
-            dsb(barrier::ISH);
+            publish_to_device();
 
             if self.its.is_some() {
                 let mapping = self.lpi_to_event.lock().get(&int_id).copied();
@@ -268,7 +263,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
         build_cmd(cmd_words);
 
         unsafe { clean_dcache_range(ptr as *const u8, 32) };
-        dsb(barrier::ISHST);
+        publish_to_device();
 
         queue.write_offset = next_write_offset;
 
@@ -457,7 +452,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
                     let phys = KernelAddressTranslator.dmap_to_phys(ptr as _) as u64;
 
                     unsafe { clean_dcache_range(ptr, pages * ITS_PAGE_SIZE) };
-                    dsb(barrier::ISH);
+                    publish_to_device();
 
                     let builder = baser
                         .builder_pure()
@@ -482,7 +477,7 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
             let cmd_phys = KernelAddressTranslator.dmap_to_phys(cmd_ptr as _) as u64;
 
             unsafe { clean_dcache_range(cmd_ptr, cmd_pages * ITS_PAGE_SIZE) };
-            dsb(barrier::ISH);
+            publish_to_device();
 
             let builder = its
                 .cbaser
@@ -507,16 +502,11 @@ impl<'a, I: InterruptInterface + Send + Sync> GicV3<'a, I> {
     }
 }
 
-impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, I> {
+impl<'a, I: LocalInterruptController + Send + Sync> InterruptController for GicV3<'a, I> {
     fn init(&self) -> Result<()> {
-        ICC_SRE_EL1.modify(ICC_SRE_EL1::SRE::Enabled);
-        {
-            let value = 0;
-            unsafe { asm!("msr icc_bpr1_el1, {0:x}", in(reg) value) };
-        }
-        self.iface.enable_group1();
-        self.iface.set_priority_mask(0xFF); // unmask every level
-        isb(barrier::SY);
+        self.iface.initialize();
+        self.iface.enable();
+        self.iface.set_priority_limit(0xFF);
 
         match INIT_STATE.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed) {
             Ok(_) => {
@@ -556,7 +546,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
                         core::ptr::write_bytes(prop_ptr, 0xA0, prop_pages * ITS_PAGE_SIZE);
                         clean_dcache_range(prop_ptr, prop_pages * ITS_PAGE_SIZE);
                     };
-                    dsb(barrier::ISH);
+                    publish_to_device();
 
                     self.init_its();
                 }
@@ -568,11 +558,10 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
                 self.wait_for_distributor_rwp();
 
                 INIT_STATE.store(2, Ordering::Release);
-                sev();
             }
             Err(_) => {
                 while INIT_STATE.load(Ordering::Acquire) != 2 {
-                    wfe();
+                    core::hint::spin_loop();
                 }
             }
         }
@@ -580,7 +569,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
         let redist = self.redistributor_mut();
 
         redist.wake.modify_field(GicrWaker::ProcessorSleep, false);
-        dsb(barrier::SY);
+        publish_to_device();
 
         while redist.wake.read_field_pure(GicrWaker::ProcessorSleep) == true {
             core::hint::spin_loop();
@@ -604,7 +593,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
             let pend_phys = KernelAddressTranslator.dmap_to_phys(pend_ptr as _) as u64;
 
             unsafe { clean_dcache_range(pend_ptr, 16 * ITS_PAGE_SIZE) };
-            dsb(barrier::ISH);
+            publish_to_device();
 
             let prop_phys = self.lpi_prop_table.borrow().unwrap();
 
@@ -644,7 +633,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
             redist.ipriority[i].write(0xA0); // default priority
         }
 
-        isb(barrier::SY);
+        publish_to_device();
 
         Ok(())
     }
@@ -690,19 +679,12 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
     }
 
     fn acknowledge_interrupt(&self) -> Result<Option<u32>> {
-        let int_id = self.iface.read_iar();
-
-        // id 1023 is defined as spurious
-        if int_id == 1023 {
-            Ok(None)
-        } else {
-            Ok(Some(int_id))
-        }
+        Ok(self.iface.acknowledge())
     }
 
     fn end_of_interrupt(&self, int_id: u32) -> Result<()> {
         if int_id < 1020 || (LPI_START..=MAX_LPI_ID).contains(&int_id) {
-            self.iface.write_eoir(int_id);
+            self.iface.complete(int_id);
             Ok(())
         } else {
             Err(InterruptError::InvalidInterruptId)
@@ -802,7 +784,7 @@ impl<'a, I: InterruptInterface + Send + Sync> InterruptController for GicV3<'a, 
         let itt_phys = KernelAddressTranslator.dmap_to_phys(itt_ptr as _) as u64;
 
         unsafe { clean_dcache_range(itt_ptr, itt_size) };
-        dsb(barrier::ISH);
+        publish_to_device();
 
         self.push_mapd(device_id, itt_phys, num_events_log2, true)?;
 

@@ -2,7 +2,6 @@
 
 use core::ptr::NonNull;
 
-use klib::vm::{TABLE_ENTRIES, TTable};
 use uefi::mem::memory_map::MemoryMapOwned;
 use uefi_raw::table::system::SystemTable;
 
@@ -14,8 +13,8 @@ pub struct BootInfo {
     /// size of the kernel in bytes
     pub kernel_size: usize,
 
-    /// what TTBR0 the kernel should load, if any
-    pub page_table_root: Option<*const TTable<TABLE_ENTRIES>>,
+    /// physical TTBR0 page-table root, if any.
+    pub page_table_root: Option<usize>,
 
     /// serial uart
     pub serial_uart_address: usize,

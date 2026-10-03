@@ -1,123 +1,110 @@
-//! pages as they exist within virtual address spaces,
-//! as opposed to backing pages (within RAM)
-
 pub mod address_space;
 pub mod allocator;
 pub mod cursor;
 
-use core::{ops::Range, usize};
+pub use address_space::AddressSpace;
 
-use aarch64_cpu_ext::structures::tte::AccessPermission;
-use alloc::boxed::Box;
+use crate::{
+    sync::RwLock,
+    vm::{PAGE_MASK, PAGE_SHIFT, VmError},
+};
+use alloc::{boxed::Box, vec::Vec};
+use core::ops::Range;
+use hal::paging::{GEOMETRY, Level, MappingOptions};
 
-use super::{PAGE_SHIFT, TABLE_ENTRIES};
-use crate::sync::RwLock;
-
-#[repr(transparent)]
 pub struct PageDescriptors(RwLock<Option<(&'static [PageDescriptor], Range<usize>)>>);
 
 impl PageDescriptors {
     pub const fn new() -> Self {
         Self(RwLock::new(None))
     }
-
     pub fn init(&self, descriptors: Box<[PageDescriptor]>, range: Range<usize>) {
+        assert!(range.start < range.end && (range.start | range.end) & PAGE_MASK == 0);
+        assert_eq!(descriptors.len(), (range.end - range.start) >> PAGE_SHIFT);
         let mut guard = self.0.write();
-        assert!(guard.is_none(), "double init on `PageDescriptors`");
-
-        // memory will live for the lifetime of the kernel. ie "leaking" isn't an issue
+        assert!(guard.is_none(), "page descriptors already initialized");
         *guard = Some((Box::leak(descriptors), range));
     }
-
-    pub fn get_page_descriptor(&self, pa: usize) -> &PageDescriptor {
+    pub fn get_page_descriptor(&self, physical: usize) -> &'static PageDescriptor {
         let guard = self.0.read();
-
-        let descs = guard.as_ref().expect("`PageDescriptors` uninitialized");
-
-        if !descs.1.contains(&pa) {
-            log::error!(
-                "get_page_descriptor failed for PA: {:#018x} (valid range: {:#018x}..{:#018x}",
-                pa,
-                descs.1.start,
-                descs.1.end
-            );
-            panic!("no page descriptor exists for required address");
-        }
-
-        let pa = pa - descs.1.start;
-
-        let pfn = pa >> PAGE_SHIFT;
-        &descs.0[pfn]
+        let (descriptors, range) = guard.as_ref().expect("page descriptors not initialized");
+        assert_eq!(physical & PAGE_MASK, 0, "unaligned table address");
+        assert!(
+            range.contains(&physical),
+            "physical address outside descriptor range"
+        );
+        &descriptors[(physical - range.start) >> PAGE_SHIFT]
+    }
+}
+impl Default for PageDescriptors {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 pub static PAGE_DESCRIPTORS: PageDescriptors = PageDescriptors::new();
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub enum Status {
-    /// Invalid entry.
+    #[default]
     Invalid,
-
-    /// Currently mapped to some PA with some permissions.
-    Mapped { pa: usize, perm: AccessPermission },
-
-    /// Allocated but unbacked memory.
-    PrivateAnonymous(AccessPermission),
+    Mapped {
+        pa: usize,
+        options: MappingOptions,
+    },
+    PrivateAnonymous(MappingOptions),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StatusCategory {
-    /// Page has been virtually allocated but backing memory hasn't been created.
     Allocated,
-    /// Page is currently mapped to backing memory.
     Mapped,
-    /// Page was mapped, but has been unmapped (swap, etc.)
-    TemporarilyUnmapped,
 }
 
 impl Status {
-    pub fn category(&self) -> Option<StatusCategory> {
+    pub fn category(self) -> Option<StatusCategory> {
         match self {
             Self::Mapped { .. } => Some(StatusCategory::Mapped),
-            Self::PrivateAnonymous(..) => Some(StatusCategory::Allocated),
+            Self::PrivateAnonymous(_) => Some(StatusCategory::Allocated),
             Self::Invalid => None,
         }
     }
 }
 
-impl Default for Status {
-    fn default() -> Self {
-        Self::Invalid
-    }
-}
-
-/// adapted from CortenMM (https://zhou-diyu.github.io/files/cortenmm-sosp25.pdf)
+/// software state of a PTE. resident mapping properties are read from HAL-provided snapshots
 #[derive(Debug, Copy, Clone, Default)]
-#[repr(transparent)]
 pub struct PteMeta {
     pub status: Status,
 }
 
-type PteMetaArray = [PteMeta; TABLE_ENTRIES];
-
-/// state protected by a page table page's lock
-/// adapted from CortenMM (https://zhou-diyu.github.io/files/cortenmm-sosp25.pdf)
-#[repr(transparent)]
+#[derive(Default)]
 pub struct PtState {
-    pub meta: Option<Box<PteMetaArray>>,
+    pub meta: Option<Box<[PteMeta]>>,
 }
 
-#[repr(transparent)]
 pub struct PageDescriptor {
     pub lock: RwLock<PtState>,
 }
 
-#[inline]
-pub fn entry_index(addr: usize, level: usize) -> usize {
-    (addr >> (PAGE_SHIFT + level * TABLE_ENTRIES.trailing_zeros() as usize)) & (TABLE_ENTRIES - 1)
+impl PageDescriptor {
+    pub fn new() -> Self {
+        Self {
+            lock: RwLock::new(PtState::default()),
+        }
+    }
 }
 
-#[inline]
-pub fn entry_cover(level: usize) -> usize {
-    1 << (PAGE_SHIFT + level * TABLE_ENTRIES.trailing_zeros() as usize)
+impl Default for PageDescriptor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub(crate) fn new_meta(level: Level, status: Status) -> Result<Box<[PteMeta]>, VmError> {
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(GEOMETRY.entries_at(level))
+        .map_err(|_| VmError::OutOfMemory)?;
+    entries.resize(GEOMETRY.entries_at(level), PteMeta { status });
+    Ok(entries.into_boxed_slice())
 }

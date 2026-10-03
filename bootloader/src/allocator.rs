@@ -1,44 +1,55 @@
-use core::{alloc::Layout, ptr::NonNull};
-
-use alloc::alloc::{alloc_zeroed, dealloc};
+use core::ptr::NonNull;
+use hal::paging::{GEOMETRY, PageTable};
 use klib::{
     pm::page::mapper::TableAllocator,
-    vm::{PAGE_SIZE, TABLE_ENTRIES, TTable, align_down, align_up},
+    vm::{VmError, align_up},
 };
-use log::debug;
-use uefi::boot::{self, MemoryType, PAGE_SIZE as UEFI_PS};
+use uefi::{
+    Status,
+    boot::{self, MemoryType, PAGE_SIZE as UEFI_PS},
+};
 
 #[derive(Debug)]
 pub struct UefiTableAlloc;
 
-const SIZE: usize = size_of::<TTable<TABLE_ENTRIES>>();
+pub fn allocate_aligned_pages(size: usize, alignment: usize) -> Result<NonNull<u8>, Status> {
+    if size == 0 || size % UEFI_PS != 0 || alignment < UEFI_PS || !alignment.is_power_of_two() {
+        return Err(Status::INVALID_PARAMETER);
+    }
+    let pages = size / UEFI_PS;
+    let extra = alignment / UEFI_PS - 1;
+    let count = pages.checked_add(extra).ok_or(Status::OUT_OF_RESOURCES)?;
+    let allocation =
+        boot::allocate_pages(boot::AllocateType::AnyPages, MemoryType::LOADER_CODE, count)
+            .map_err(|error| error.status())?;
+    let address = allocation.as_ptr() as usize;
+    let aligned = align_up(address, alignment);
+    let prefix = (aligned - address) / UEFI_PS;
+    let suffix = extra - prefix;
+    if suffix != 0 {
+        let tail = NonNull::new((aligned + size) as *mut u8).unwrap();
+        unsafe { boot::free_pages(tail, suffix) }.expect("failed to release alignment suffix");
+    }
+    if prefix != 0 {
+        unsafe { boot::free_pages(allocation, prefix) }
+            .expect("failed to release alignment prefix");
+    }
+    Ok(NonNull::new(aligned as *mut u8).unwrap())
+}
 
 impl TableAllocator for UefiTableAlloc {
-    fn alloc_table(&self) -> NonNull<TTable<TABLE_ENTRIES>> {
-        let pages = SIZE / UEFI_PS;
-        let extra = PAGE_SIZE / UEFI_PS;
-
-        let alloc = boot::allocate_pages(
-            boot::AllocateType::AnyPages,
-            MemoryType::LOADER_CODE,
-            pages + extra,
-        )
-        .expect("alloc fail")
-        .as_ptr();
-
-        let start = alloc as usize;
-        let start = align_up(start, PAGE_SIZE);
-
-        let ptr = start as *mut TTable<TABLE_ENTRIES>;
-
-        // zero
-        unsafe { ptr.write(TTable::new()) };
-
-        NonNull::new(ptr).expect("unable to allocate table")
+    fn alloc_table(&self) -> Result<PageTable, VmError> {
+        let layout = GEOMETRY.table_layout();
+        let allocation = allocate_aligned_pages(layout.size(), layout.align())
+            .map_err(|_| VmError::OutOfMemory)?;
+        let table = unsafe { PageTable::from_ptr(allocation.as_ptr()) };
+        unsafe { table.zero() };
+        Ok(table)
     }
 
-    // more trouble than it's worth
-    fn free_table(&self, _table: NonNull<TTable<TABLE_ENTRIES>>) {
-        unimplemented!()
+    fn free_table(&self, table: PageTable) {
+        let pointer = NonNull::new(table.as_ptr()).unwrap();
+        unsafe { boot::free_pages(pointer, GEOMETRY.table_layout().size() / UEFI_PS) }
+            .expect("failed to release bootstrap table");
     }
 }
