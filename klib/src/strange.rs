@@ -52,6 +52,7 @@ impl<A, R> KernelPtr48<fn(A) -> R> {
         // safety: new() enforces the requirements (pointer with 0xFFFF in top bytes).
         // because we can guarantee that get() always returns the original memory address,
         // this transmute is safe.
-        unsafe { core::mem::transmute(self.get()) }
+        let ptr = self.get() as *const ();
+        unsafe { core::mem::transmute::<*const (), fn(A) -> R>(ptr) }
     }
 }
