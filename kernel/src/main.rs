@@ -13,8 +13,7 @@ use atomic_refcell::AtomicRefCell;
 use core::{alloc::GlobalAlloc, panic::PanicInfo};
 use hal::interrupt::InterruptGuard;
 use klib::{
-    cpu_interface::CpuTopologyId, hardware::device::DeviceTree, register_drivers,
-    unsafe_println_panic_only_unsafe, vm::KALLOCATOR,
+    cpu_interface::CpuTopologyId, hardware::device::DeviceTree, register_drivers, vm::KALLOCATOR,
 };
 use protocol::BootInfo;
 
@@ -31,10 +30,11 @@ static DEVICE_TREE: AtomicRefCell<DeviceTree> = AtomicRefCell::new(DeviceTree::n
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     InterruptGuard::disable();
-    unsafe {
-        let core = CpuTopologyId::current();
-        unsafe_println_panic_only_unsafe!("CPU MPIDR={} PANIC: {}", core, info);
-    }
+    let core = CpuTopologyId::current();
+    earlyinit::earlycon::earlycon_panic_write(format_args!(
+        "CPU MPIDR={} PANIC: {}\r\n",
+        core, info
+    ));
     busy_loop()
 }
 
@@ -90,6 +90,9 @@ unsafe extern "C" {
 unsafe extern "C" fn kentry(boot_info_address: usize) -> ! {
     let boot_info_ref = boot_info_address as *mut BootInfo;
     init_cpu();
+
+    earlyinit::shell::initialize_uptime();
+
     unsafe { hal::exception::install(earlyinit::exception::handle) };
 
     let boot_info_init_token = BootInfoInitToken::new().unwrap();

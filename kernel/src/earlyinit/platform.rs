@@ -33,6 +33,7 @@ use crate::{
             create_page_descriptors, populate_alloc_stage0, populate_alloc_stage1,
             reserve_page_descriptors, switch_to_new_page_tables, validate_page_descriptor_backing,
         },
+        shell,
         smp::boot_secondary,
     },
     log::LOGGER,
@@ -157,12 +158,10 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     let boot_info = boot_info_token.get_mut();
     let load_addr = boot_info.kernel_load_physical_address;
 
-    unsafe {
-        let vaddr = KernelAddressTranslator.phys_to_dmap(boot_info.serial_uart_address) as usize;
-        *EARLYCON.get() = Some(EarlyCon::new(vaddr));
-    }
+    let vaddr = KernelAddressTranslator.phys_to_dmap(boot_info.serial_uart_address) as usize;
+    *EARLYCON.lock() = Some(EarlyCon::new(vaddr));
 
-    set_backend(klib::console::BackendSlot::UnsafeFn(earlycon_write_impl));
+    set_backend(klib::console::BackendSlot::Fn(earlycon_write_impl));
 
     LOGGER
         .init(LevelFilter::Trace)
@@ -272,6 +271,8 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
             };
         }
     }
+
+    shell::start();
 
     GLOBAL_SCHEDULER.register_cpu(this_cpu!().id);
 }

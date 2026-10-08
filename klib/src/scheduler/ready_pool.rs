@@ -46,6 +46,13 @@ impl<T> ReadyPool<T> {
         Err(unsafe { Arc::from_raw(pointer) })
     }
 
+    pub(super) fn len(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| !slot.load(Ordering::Acquire).is_null())
+            .count()
+    }
+
     pub(super) fn has_work(&self) -> bool {
         self.slots
             .iter()

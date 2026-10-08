@@ -2,6 +2,7 @@
 members = [ "bootloader",
             "directblock",
             "kernel",
+            "kernel_shell",
             "kernel/drivers/acpi",
             "kernel/drivers/acpi-aml",
             "kernel/drivers/generic-timer",
@@ -56,6 +57,7 @@ mars-virtio-driver = { path = "./kernel/drivers/virtio" }
 mars-xhci-driver.path = "./kernel/drivers/xhci"
 directblock.path = "./directblock"
 hal.path = "./hal"
+kernel_shell.path = "./kernel_shell"
 
 # procedural
 syn = "2.0.117"

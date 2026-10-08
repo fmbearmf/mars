@@ -23,6 +23,7 @@ arm-pl011-uart = { version = "0.4.0", default-features = false }
 tock-registers.workspace = true
 protocol.workspace = true
 klib.workspace = true
+kernel_shell.workspace = true
 hal = { path = "../hal", features = ["kernel-entry"] }
 uefi = { workspace = true, default-features = false }
 uefi-raw.workspace = true

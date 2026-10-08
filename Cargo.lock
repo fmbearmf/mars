@@ -392,6 +392,7 @@ dependencies = [
  "atomic_enum",
  "atomic_refcell",
  "hal",
+ "kernel_shell",
  "klib",
  "log",
  "mars-acpi-aml-driver",
@@ -409,6 +410,10 @@ dependencies = [
  "uefi",
  "uefi-raw",
 ]
+
+[[package]]
+name = "kernel_shell"
+version = "0.0.1"
 
 [[package]]
 name = "klib"

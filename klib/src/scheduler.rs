@@ -12,7 +12,7 @@ use ready_pool::ReadyPool;
 use super::{
     context::RegisterFile,
     sync::{RwLock, UnfairSpinlock},
-    thread::{Thread, ThreadState},
+    thread::{Thread, ThreadMonitorSnapshot, ThreadState},
 };
 
 use crate::{process::Process, vm::user::address_space::KERNEL_ADDRESS_SPACE};
@@ -59,6 +59,11 @@ pub struct Scheduler<'a> {
     injector: UnfairSpinlock<VecDeque<Arc<Thread<'a>>>>,
     spawn_counter: AtomicUsize,
     dequeue_counter: AtomicUsize,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct CpuSchedulerSnapshot {
+    pub thread: ThreadMonitorSnapshot,
 }
 
 unsafe impl Send for Scheduler<'_> {}
@@ -241,6 +246,29 @@ impl<'a> Scheduler<'a> {
         local.current_thread = Some(thread);
 
         context
+    }
+
+    pub fn try_queue_snapshot(&self) -> Option<(usize, usize)> {
+        let _interrupts = hal::interrupt::InterruptGuard::new();
+        let queues = self.queues.try_read()?;
+        let ready = queues.iter().map(|queue| queue.ready.len()).sum();
+        let injector = self.injector.try_lock()?;
+        Some((ready, injector.len()))
+    }
+
+    /// copy a cpu's live scheduler state without waiting for scheduler locks
+    pub fn try_cpu_snapshot(&self, cpu_id: CpuIdLogical) -> Option<CpuSchedulerSnapshot> {
+        let _interrupts = hal::interrupt::InterruptGuard::new();
+        let queues = self.queues.try_read()?;
+        let local = queues.get(cpu_id.to_usize())?.local.try_lock()?;
+        let current = local.current_thread.as_ref()?;
+        let idle = local
+            .idle
+            .as_ref()
+            .is_some_and(|idle| Arc::ptr_eq(idle, current));
+        let mut thread = current.try_monitor_snapshot()?;
+        thread.idle = idle;
+        Some(CpuSchedulerSnapshot { thread })
     }
 
     pub fn spawn(&self, thread: Arc<Thread<'a>>) {

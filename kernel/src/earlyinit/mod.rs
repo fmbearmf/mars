@@ -6,5 +6,6 @@ pub mod idle;
 pub mod mem;
 pub mod mmu;
 pub mod platform;
+pub mod shell;
 pub mod smp;
 pub mod uefi;

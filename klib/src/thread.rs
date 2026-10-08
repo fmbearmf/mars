@@ -305,4 +305,22 @@ impl<'a> Thread<'a> {
     pub fn thread_id(&self) -> ThreadId {
         self.inner.lock().thread_id
     }
+
+    pub(crate) fn try_monitor_snapshot(&self) -> Option<ThreadMonitorSnapshot> {
+        let inner = self.inner.try_lock()?;
+        Some(ThreadMonitorSnapshot {
+            id: inner.thread_id,
+            state: inner.state,
+            is_kernel: inner.is_kernel,
+            idle: inner.idle,
+        })
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct ThreadMonitorSnapshot {
+    pub id: ThreadId,
+    pub state: ThreadState,
+    pub is_kernel: bool,
+    pub idle: bool,
 }
