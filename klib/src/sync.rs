@@ -347,14 +347,25 @@ impl<T> RwLock<T> {
 impl<T: ?Sized> RwLock<T> {
     pub fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
         let _interrupts = InterruptGuard::new();
-        let state = self.state.load(Ordering::Relaxed);
-        if state & WRITER != 0 || state == READERS {
-            return None;
+        let mut state = self.state.load(Ordering::Relaxed);
+
+        loop {
+            if state & WRITER != 0 || state == READERS {
+                return None;
+            }
+
+            match self.state.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(RwLockReadGuard { lock: self }),
+                Err(next) => state = next,
+            }
+
+            core::hint::spin_loop();
         }
-        self.state
-            .compare_exchange(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
-            .ok()
-            .map(|_| RwLockReadGuard { lock: self })
     }
 
     pub fn read(&self) -> RwLockReadGuard<'_, T> {

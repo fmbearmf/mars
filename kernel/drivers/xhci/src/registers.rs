@@ -65,6 +65,7 @@ impl XhciRegisters {
                     .ok_or("xHCI doorbell range overflow")?,
             )
             .ok_or("xHCI doorbell range overflow")?;
+
         if op_end > mmio_size || runtime_end > mmio_size || doorbell_end > mmio_size {
             return Err("xHCI register offsets exceed the MMIO resource");
         }

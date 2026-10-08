@@ -194,7 +194,8 @@ fn main() -> Status {
         }
         Err(reason) => {
             error!("could not discover supported SPCR UART: {}", reason);
-            return Status::UNSUPPORTED;
+
+            0x40d_0000_usize
         }
     };
 

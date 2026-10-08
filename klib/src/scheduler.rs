@@ -250,9 +250,11 @@ impl<'a> Scheduler<'a> {
 
     pub fn try_queue_snapshot(&self) -> Option<(usize, usize)> {
         let _interrupts = hal::interrupt::InterruptGuard::new();
+
         let queues = self.queues.try_read()?;
         let ready = queues.iter().map(|queue| queue.ready.len()).sum();
         let injector = self.injector.try_lock()?;
+
         Some((ready, injector.len()))
     }
 
