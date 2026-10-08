@@ -1,8 +1,11 @@
 use core::fmt::Debug;
 
-use crate::{stack::Stack, sync::FairSpinlock};
+use crate::{
+    stack::Stack,
+    sync::{FairSpinlock, UnfairSpinlock},
+};
 
-use super::{context::RegisterFile, process::Process, sync::RwLock};
+use super::{context::RegisterFile, process::Process};
 
 use alloc::sync::{Arc, Weak};
 use derivative::Derivative;
@@ -47,6 +50,9 @@ pub enum ThreadState {
 struct ThreadInner<'a> {
     thread_id: ThreadId,
     state: ThreadState,
+    scheduled: bool,
+    queued: bool,
+    idle: bool,
     priority: u8,
     context: RegisterFile,
     stack: Option<Stack>,
@@ -58,12 +64,12 @@ struct ThreadInner<'a> {
 
 #[derive(Clone)]
 pub struct Thread<'a> {
-    inner: Arc<RwLock<ThreadInner<'a>>>,
+    inner: Arc<UnfairSpinlock<ThreadInner<'a>>>,
 }
 
 impl Debug for Thread<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let guard = self.inner.read();
+        let guard = self.inner.lock();
         f.debug_tuple("Thread").field(&*guard).finish()
     }
 }
@@ -82,6 +88,9 @@ impl<'a> Thread<'a> {
         let inner = ThreadInner {
             thread_id,
             state: ThreadState::Ready,
+            scheduled: false,
+            queued: false,
+            idle: false,
             priority,
             context,
             stack: Some(stack),
@@ -91,7 +100,7 @@ impl<'a> Thread<'a> {
         };
 
         Self {
-            inner: Arc::new(RwLock::new(inner)),
+            inner: Arc::new(UnfairSpinlock::new(inner)),
         }
     }
 
@@ -132,26 +141,131 @@ impl<'a> Thread<'a> {
     }
 
     pub fn is_kernel(&self) -> bool {
-        self.inner.read().is_kernel
+        self.inner.lock().is_kernel
     }
 
-    pub fn set_state(&self, state: ThreadState) {
-        self.inner.write().state = state;
+    pub(crate) fn set_state(&self, state: ThreadState) {
+        let mut inner = self.inner.lock();
+
+        assert!(
+            !inner.idle || state != ThreadState::Blocked,
+            "idle thread cannot block"
+        );
+        assert!(
+            inner.scheduled,
+            "only a scheduled thread may change its state"
+        );
+
+        inner.state = state;
+    }
+
+    pub(crate) fn schedule_fresh(&self) -> bool {
+        let mut inner = self.inner.lock();
+        if inner.idle || inner.state != ThreadState::Ready || inner.queued || inner.scheduled {
+            return false;
+        }
+
+        inner.queued = true;
+
+        true
+    }
+
+    pub(crate) fn claim_queued(&self) -> bool {
+        let mut inner = self.inner.lock();
+        if inner.state != ThreadState::Ready || !inner.queued || inner.scheduled {
+            return false;
+        }
+
+        inner.queued = false;
+        inner.scheduled = true;
+        inner.state = ThreadState::Running;
+
+        true
+    }
+
+    pub(crate) fn block_scheduled(&self) {
+        let mut inner = self.inner.lock();
+
+        assert!(
+            inner.scheduled && !inner.idle,
+            "only a scheduled non-idle thread may block"
+        );
+
+        inner.state = ThreadState::Blocked;
+    }
+
+    pub(crate) fn wake(&self) -> bool {
+        let mut inner = self.inner.lock();
+        if inner.state != ThreadState::Blocked {
+            return false;
+        }
+
+        inner.state = ThreadState::Ready;
+
+        if inner.scheduled || inner.queued {
+            false
+        } else {
+            inner.queued = true;
+            true
+        }
+    }
+
+    pub(crate) fn finish_switch(&self) -> bool {
+        let mut inner = self.inner.lock();
+        if inner.idle {
+            inner.state = ThreadState::Ready;
+            return false;
+        }
+
+        inner.scheduled = false;
+        match inner.state {
+            ThreadState::Ready if !inner.queued => {
+                inner.queued = true;
+
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn start_idle(&self) {
+        let mut inner = self.inner.lock();
+
+        inner.scheduled = true;
+        inner.idle = true;
+        inner.state = ThreadState::Running;
+    }
+
+    pub(crate) fn resume_idle(&self) {
+        let mut inner = self.inner.lock();
+        assert!(inner.idle && inner.scheduled);
+
+        inner.state = ThreadState::Running;
+    }
+
+    pub(crate) fn context_for_switch(&self) -> RegisterFile {
+        let inner = self.inner.lock();
+        assert!(inner.scheduled && inner.state == ThreadState::Running);
+
+        inner.context
     }
 
     pub fn get_state(&self) -> ThreadState {
-        self.inner.read().state
+        self.inner.lock().state
     }
 
     pub fn set_priority(&self, priority: u8) {
-        self.inner.write().priority = priority;
+        self.inner.lock().priority = priority;
     }
 
+    /// access the saved context while holding the thread lock
+    ///
+    /// callbacks must not yield or reenter this thread
     pub fn with_ctx_mut<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut RegisterFile) -> R,
     {
-        let mut guard = self.inner.write();
+        let mut guard = self.inner.lock();
 
         assert_ne!(
             guard.state,
@@ -163,14 +277,17 @@ impl<'a> Thread<'a> {
     }
 
     pub(crate) fn save_running_context(&self, context: RegisterFile) {
-        self.inner.write().context = context;
+        self.inner.lock().context = context;
     }
 
+    /// access the saved context while holding the thread lock
+    ///
+    /// callbacks must not yield or reenter this thread
     pub fn with_ctx<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&RegisterFile) -> R,
     {
-        let guard = self.inner.read();
+        let guard = self.inner.lock();
 
         assert_ne!(
             guard.state,
@@ -182,10 +299,10 @@ impl<'a> Thread<'a> {
     }
 
     pub fn process(&self) -> Option<Arc<Process<'a>>> {
-        self.inner.read().process.upgrade()
+        self.inner.lock().process.upgrade()
     }
 
     pub fn thread_id(&self) -> ThreadId {
-        self.inner.read().thread_id
+        self.inner.lock().thread_id
     }
 }

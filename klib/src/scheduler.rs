@@ -1,9 +1,13 @@
-use core::{
-    sync::atomic::{AtomicU8, Ordering},
-    usize,
-};
+#[cfg(test)]
+mod tests;
+
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::cpu_interface::CpuIdLogical;
+
+mod ready_pool;
+
+use ready_pool::ReadyPool;
 
 use super::{
     context::RegisterFile,
@@ -14,31 +18,47 @@ use super::{
 use crate::{process::Process, vm::user::address_space::KERNEL_ADDRESS_SPACE};
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
-#[derive(Debug)]
 pub struct LocalScheduler<'a> {
-    thread_queue: VecDeque<Arc<Thread<'a>>>,
+    idle: Option<Arc<Thread<'a>>>,
     current_thread: Option<Arc<Thread<'a>>>,
-    retired_thread: Option<Arc<Thread<'a>>>,
+    deferred: Option<Arc<Thread<'a>>>,
     current_process: Option<Arc<Process<'a>>>,
+    deferred_process: Option<Arc<Process<'a>>>,
 }
 
 impl LocalScheduler<'_> {
     pub const fn new() -> Self {
         Self {
-            thread_queue: VecDeque::new(),
+            idle: None,
             current_thread: None,
-            retired_thread: None,
+            deferred: None,
             current_process: None,
+            deferred_process: None,
+        }
+    }
+}
+
+struct CpuScheduler<'a> {
+    ready: ReadyPool<Thread<'a>>,
+    local: UnfairSpinlock<LocalScheduler<'a>>,
+}
+
+impl CpuScheduler<'_> {
+    const fn new() -> Self {
+        Self {
+            ready: ReadyPool::new(),
+            local: UnfairSpinlock::new(LocalScheduler::new()),
         }
     }
 }
 
 pub static GLOBAL_SCHEDULER: Scheduler = Scheduler::new();
 
-#[derive(Debug)]
 pub struct Scheduler<'a> {
-    queues: RwLock<Vec<UnfairSpinlock<LocalScheduler<'a>>>>,
-    spawn_counter: AtomicU8,
+    queues: RwLock<Vec<CpuScheduler<'a>>>,
+    injector: UnfairSpinlock<VecDeque<Arc<Thread<'a>>>>,
+    spawn_counter: AtomicUsize,
+    dequeue_counter: AtomicUsize,
 }
 
 unsafe impl Send for Scheduler<'_> {}
@@ -48,147 +68,286 @@ impl<'a> Scheduler<'a> {
     pub const fn new() -> Self {
         Self {
             queues: RwLock::new(Vec::new()),
-            spawn_counter: AtomicU8::new(0),
+            injector: UnfairSpinlock::new(VecDeque::new()),
+            spawn_counter: AtomicUsize::new(0),
+            dequeue_counter: AtomicUsize::new(0),
         }
     }
 
-    /// wakes up a blocked thread and puts it in the ready queue
-    pub fn unblock(&self, thread: Arc<Thread<'a>>) {
-        self.spawn(thread);
-    }
-
-    /// puts current thread into `wait_queue` as blocked and switches out.
-    pub fn block_current(&self, wait_queue: &UnfairSpinlock<VecDeque<Arc<Thread<'a>>>>) {
-        let cpu_id = CpuIdLogical::current();
+    fn publish(&self, cpu: usize, thread: Arc<Thread<'a>>) {
+        let _interrupts = hal::interrupt::InterruptGuard::new();
         let queues = self.queues.read();
-        let local_queue = queues[cpu_id.to_usize()].lock();
 
-        let mut wait_qu = wait_queue.lock();
-
-        if let Some(current) = local_queue.current_thread.as_ref() {
-            current.set_state(ThreadState::Blocked);
-            wait_qu.push_back(current.clone());
+        if let Err(thread) = queues[cpu].ready.push(thread) {
+            self.injector.lock().push_back(thread);
         }
 
-        drop(wait_qu);
-        drop(local_queue);
         drop(queues);
+        hal::boot::notify();
+    }
 
-        Self::yield_now();
+    fn take_ready(&self, cpu: usize, queues: &[CpuScheduler<'a>]) -> Option<Arc<Thread<'a>>> {
+        if self.dequeue_counter.fetch_add(1, Ordering::Relaxed) & 1 != 0 {
+            if let Some(thread) = self.injector.lock().pop_front() {
+                return Some(thread);
+            }
+        }
+
+        if let Some(thread) = queues[cpu].ready.pop() {
+            return Some(thread);
+        }
+
+        for offset in 1..queues.len() {
+            let victim = (cpu + offset) % queues.len();
+            if let Some(thread) = queues[victim].ready.pop() {
+                return Some(thread);
+            }
+        }
+
+        self.injector.lock().pop_front()
+    }
+
+    /// wakes a blocked thread and puts it in the ready queue
+    pub fn unblock(&self, thread: Arc<Thread<'a>>) {
+        let _interrupts = hal::interrupt::InterruptGuard::new();
+
+        if thread.wake() {
+            let queues = self.queues.read();
+
+            assert!(!queues.is_empty(), "scheduler has no CPUs");
+            let cpu = self.spawn_counter.fetch_add(1, Ordering::Relaxed) % queues.len();
+            drop(queues);
+
+            self.publish(cpu, thread);
+        }
+    }
+
+    /// puts current thread into `wait_queue` as blocked and switches out
+    pub fn block_current(&self, waiters: &mut VecDeque<Arc<Thread<'a>>>) {
+        let interrupts = hal::interrupt::InterruptGuard::new();
+
+        assert_eq!(
+            crate::this_cpu!().exception_depth.load(Ordering::Acquire),
+            0,
+            "cannot block from an exception"
+        );
+
+        let cpu_id = CpuIdLogical::current().to_usize();
+        let queues = self.queues.read();
+        let local = queues[cpu_id].local.lock();
+        let current = local.current_thread.as_ref().expect("no running thread");
+
+        current.block_scheduled();
+        waiters.push_back(current.clone());
+
+        drop(local);
+        drop(queues);
+        drop(interrupts);
     }
 
     #[inline(always)]
     pub fn yield_now() {
+        assert_eq!(
+            crate::this_cpu!().exception_depth.load(Ordering::Acquire),
+            0,
+            "cannot yield from an exception"
+        );
+
         unsafe { hal::context::request_reschedule() }
     }
 
-    pub fn current_thread(&self) -> Option<Arc<Thread<'a>>> {
-        let cpu_id = CpuIdLogical::current();
+    /// finish deferred ownership on the pinned idle stack and report ready work
+    pub fn prepare_idle(&self) -> bool {
+        let _interrupts = hal::interrupt::InterruptGuard::new();
+        let cpu = CpuIdLogical::current().to_usize();
+
+        assert_eq!(
+            crate::this_cpu!().exception_depth.load(Ordering::Acquire),
+            0
+        );
+
         let queues = self.queues.read();
-        let local = queues[cpu_id.to_usize()].lock();
-        local.current_thread.clone()
+        let mut local = queues[cpu].local.lock();
+
+        assert!(
+            local
+                .idle
+                .as_ref()
+                .zip(local.current_thread.as_ref())
+                .is_some_and(|(idle, current)| Arc::ptr_eq(idle, current))
+        );
+
+        if let Some(deferred) = local.deferred.take() {
+            if deferred.finish_switch() {
+                if let Err(thread) = queues[cpu].ready.push(deferred) {
+                    self.injector.lock().push_back(thread);
+                }
+
+                hal::boot::notify();
+            }
+        }
+
+        local.deferred_process = None;
+        drop(local);
+
+        let ready =
+            queues.iter().any(|queue| queue.ready.has_work()) || !self.injector.lock().is_empty();
+
+        ready
     }
 
-    /// can be called any number of times.
-    /// must be called with at least the highest numbered `CpuIdLogical`.
+    pub fn current_thread(&self) -> Option<Arc<Thread<'a>>> {
+        let _interrupts = hal::interrupt::InterruptGuard::new();
+        let cpu_id = CpuIdLogical::current();
+        let queues = self.queues.read();
+
+        queues[cpu_id.to_usize()]
+            .local
+            .lock()
+            .current_thread
+            .clone()
+    }
+
+    /// can be called any number of times
+    /// must be called with at least the highest numbered `CpuIdLogical`
     pub fn register_cpu(&self, cpu_id: CpuIdLogical) {
+        let _interrupts = hal::interrupt::InterruptGuard::new();
         let mut queues = self.queues.write();
 
         if cpu_id.to_usize() >= queues.len() {
-            queues.resize_with(cpu_id.to_usize() + 1, || {
-                UnfairSpinlock::new(LocalScheduler::new())
-            });
+            queues.resize_with(cpu_id.to_usize() + 1, || CpuScheduler::new());
         }
     }
 
     /// bind the initial kernel thread to this processor
     ///
     /// safety:
-    /// keep interrupts masked until resuming the returned context
-    /// supply a fresh thread that no other processor or queue can run
+    /// - call with interrupts masked and keep them masked until resuming the returned context
+    /// - supply a fresh thread that no other processor or queue can run
     pub unsafe fn start_kernel(&self, thread: Arc<Thread<'a>>) -> RegisterFile {
         assert!(thread.is_kernel(), "initial thread must run in the kernel");
+
         let context = thread.with_ctx(|context| *context);
         let queues = self.queues.read();
-        let mut local = queues[CpuIdLogical::current().to_usize()].lock();
+        let mut local = queues[CpuIdLogical::current().to_usize()].local.lock();
+
         assert!(
             local.current_thread.is_none(),
             "processor already has a running thread"
         );
-        thread.set_state(ThreadState::Running);
+
+        thread.start_idle();
+        local.idle = Some(thread.clone());
         local.current_thread = Some(thread);
+
         context
     }
 
     pub fn spawn(&self, thread: Arc<Thread<'a>>) {
+        let _interrupts = hal::interrupt::InterruptGuard::new();
+        if !thread.schedule_fresh() {
+            return;
+        }
+
         let queues = self.queues.read();
         assert!(!queues.is_empty(), "scheduler has no CPUs");
 
-        let counter = self.spawn_counter.fetch_add(1, Ordering::AcqRel);
-        let cpu_i = counter as usize % queues.len();
-        let target_queue = &queues[cpu_i];
+        let cpu = self.spawn_counter.fetch_add(1, Ordering::Relaxed) % queues.len();
+        drop(queues);
 
-        thread.set_state(ThreadState::Ready);
-        target_queue.lock().thread_queue.push_back(thread);
+        self.publish(cpu, thread);
     }
 
     pub fn schedule(&self, ctx: &mut RegisterFile) {
-        let cpu_id = CpuIdLogical::current();
-        let queues_guard = self.queues.read();
-        let queue_mutex = &queues_guard[cpu_id.to_usize()];
-        let mut local_queue = queue_mutex.lock();
+        let _interrupts = hal::interrupt::InterruptGuard::new();
 
-        let prev_thread = local_queue.current_thread.take();
+        assert_eq!(
+            crate::this_cpu!().exception_depth.load(Ordering::Acquire),
+            1,
+            "scheduler requires a non-nested exception"
+        );
 
-        if let Some(ref prev) = prev_thread {
-            prev.save_running_context(*ctx);
+        let cpu = CpuIdLogical::current().to_usize();
+        let queues = self.queues.read();
+        let local_mutex = &queues[cpu].local;
+        let mut local = local_mutex.lock();
 
-            if prev.get_state() == ThreadState::Running {
-                prev.set_state(ThreadState::Ready);
-                local_queue.thread_queue.push_back(prev.clone());
-            }
-        }
-
-        let next_thread = local_queue
-            .thread_queue
-            .pop_front()
-            .or_else(|| prev_thread.clone());
-
-        if let Some(next) = next_thread {
-            if let Some(prev) = &prev_thread {
-                if Arc::ptr_eq(prev, &next) {
-                    next.set_state(ThreadState::Running);
-                    local_queue.current_thread = Some(next);
-                    return;
-                }
-            }
-
-            let next_context = next.with_ctx(|context| *context);
-            next.set_state(ThreadState::Running);
-
-            let next_process = next.process();
-            if let Some(process) = &next_process {
-                process.with_address_space(|space| unsafe {
-                    space
-                        .activate()
-                        .expect("uninitialized process address space");
+        if let Some(deferred) = local.deferred.take() {
+            if deferred.finish_switch() {
+                let _ = queues[cpu].ready.push(deferred.clone()).map_err(|thread| {
+                    self.injector.lock().push_back(thread);
                 });
-            } else {
-                unsafe {
-                    KERNEL_ADDRESS_SPACE
-                        .activate()
-                        .expect("uninitialized kernel address space")
-                };
+
+                hal::boot::notify();
             }
-
-            // retain the active process until this CPU has switched to another thread
-            local_queue.current_process = next_process;
-            // rust still runs on the outgoing stack until exception return
-            // release it at the next switch, after leaving that stack
-            local_queue.retired_thread = prev_thread;
-            local_queue.current_thread = Some(next.clone());
-
-            *ctx = next_context;
         }
+
+        local.deferred_process = None;
+
+        let previous = local
+            .current_thread
+            .take()
+            .expect("CPU has no current thread");
+
+        previous.save_running_context(*ctx);
+        if previous.get_state() == ThreadState::Running {
+            previous.set_state(ThreadState::Ready);
+        }
+
+        let mut next = None;
+        while let Some(candidate) = self.take_ready(cpu, &queues) {
+            if candidate.claim_queued() {
+                next = Some(candidate);
+                break;
+            }
+        }
+
+        if next.is_none() && previous.get_state() == ThreadState::Ready {
+            next = Some(previous.clone());
+        }
+
+        if next.is_none() {
+            next = local.idle.clone();
+        }
+
+        let next = next.expect("CPU has no idle thread");
+
+        if Arc::ptr_eq(&previous, &next) {
+            previous.set_state(ThreadState::Running);
+            local.current_thread = Some(previous);
+            return;
+        }
+
+        if local
+            .idle
+            .as_ref()
+            .is_some_and(|idle| Arc::ptr_eq(idle, &next))
+        {
+            next.resume_idle();
+        }
+
+        let next_context = next.context_for_switch();
+        let next_process = next.process();
+
+        if let Some(process) = &next_process {
+            process.with_address_space(|space| unsafe {
+                space
+                    .activate()
+                    .expect("uninitialized process address space");
+            });
+        } else {
+            unsafe {
+                KERNEL_ADDRESS_SPACE
+                    .activate()
+                    .expect("uninitialized kernel address space")
+            };
+        }
+
+        local.deferred = Some(previous);
+        local.deferred_process = local.current_process.take();
+        local.current_process = next_process;
+        local.current_thread = Some(next);
+
+        *ctx = next_context;
     }
 }

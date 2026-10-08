@@ -9,5 +9,4 @@ pub mod bio;
 pub mod descriptor;
 pub mod driver;
 pub mod op;
-pub mod ring;
 pub mod state;

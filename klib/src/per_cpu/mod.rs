@@ -14,6 +14,7 @@ pub struct PerCpuData {
     pub id: CpuIdLogical,
     /// for bootstrap only. owning core must set to true before BSP can continue.
     pub ready: AtomicBool,
+    pub exception_depth: AtomicUsize,
 }
 
 #[macro_export]
@@ -44,6 +45,7 @@ impl PerCpu {
             cpus.push(PerCpuData {
                 id: CpuIdLogical::new(i as _),
                 ready: AtomicBool::new(false),
+                exception_depth: AtomicUsize::new(0),
             });
         }
 
@@ -79,10 +81,19 @@ impl PerCpu {
         Ok(())
     }
 
+    /// return this cpu's registered data when cpu-local storage is available
+    pub fn try_local() -> Option<&'static PerCpuData> {
+        let ptr = hal::cpu::read_cpu_local::<PerCpuData>();
+        if ptr.is_null() {
+            return None;
+        }
+
+        // safety: registration stores a pointer to leaked registry data in this cpu's local slot
+        Some(unsafe { &*ptr })
+    }
+
     /// return this cpu's registered data
     pub fn local() -> &'static PerCpuData {
-        let ptr = hal::cpu::read_cpu_local::<PerCpuData>();
-        assert!(!ptr.is_null(), "cpu-local data is not registered");
-        unsafe { &*ptr }
+        Self::try_local().expect("cpu-local data is not registered")
     }
 }

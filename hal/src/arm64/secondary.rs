@@ -58,6 +58,8 @@ pub(crate) fn entry_address() -> usize {
     smp_trampoline as *const () as usize
 }
 
+// this cfg looks stupid, but it's to make `cargo test` work.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
 global_asm!(
     ".global smp_trampoline",
     ".section .text.smp_trampoline, \"ax\"",

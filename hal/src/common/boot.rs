@@ -35,6 +35,11 @@ pub fn wait() {
     crate::arch::boot::wait()
 }
 
+/// wake processors waiting in `wait`
+pub fn notify() {
+    crate::arch::boot::notify()
+}
+
 /// bind the kernel entry to the platform's startup trampoline
 #[macro_export]
 macro_rules! kernel_entry {

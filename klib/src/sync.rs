@@ -38,6 +38,8 @@ impl<'a, T: ?Sized> SleepingMutex<'a, T> {
     /// if locked, marks `current` as blocked and enqueues it.
     pub fn lock<'m>(&'m self, scheduler: &'m Scheduler<'a>) -> SleepingMutexGuard<'m, 'a, T> {
         loop {
+            let mut waiters = self.wait_queue.lock();
+
             if self
                 .locked
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -49,36 +51,21 @@ impl<'a, T: ?Sized> SleepingMutex<'a, T> {
                 };
             }
 
-            let _current = scheduler
-                .current_thread()
-                .expect("can't sleep mutex without a running thread!!");
-
-            {
-                let _queue = self.wait_queue.lock();
-
-                if self
-                    .locked
-                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    return SleepingMutexGuard {
-                        mutex: self,
-                        scheduler,
-                    };
-                }
-
-                scheduler.block_current(&self.wait_queue);
-            }
+            scheduler.block_current(&mut waiters);
+            drop(waiters);
 
             Scheduler::yield_now();
         }
     }
 
     fn unlock(&self, scheduler: &Scheduler<'a>) {
-        let mut queue = self.wait_queue.lock();
-        self.locked.store(false, Ordering::Release);
+        let next = {
+            let mut queue = self.wait_queue.lock();
+            self.locked.store(false, Ordering::Release);
+            queue.pop_front()
+        };
 
-        if let Some(next) = queue.pop_front() {
+        if let Some(next) = next {
             scheduler.unblock(next);
         }
     }
@@ -152,8 +139,9 @@ pub struct UnfairSpinlock<T: ?Sized> {
     data: UnsafeCell<T>,
 }
 
-// SAFETY: only 1 core can access `data` at a time
+// safety: atomic ownership and interrupt masking ensure exclusive access to `data`
 unsafe impl<T: ?Sized + Send> Sync for UnfairSpinlock<T> {}
+// safety: moving the lock transfers ownership of its protected value
 unsafe impl<T: ?Sized + Send> Send for UnfairSpinlock<T> {}
 
 pub struct UnfairSpinlockGuard<'a, T: ?Sized> {
@@ -226,12 +214,14 @@ impl<'a, T: ?Sized> Deref for UnfairSpinlockGuard<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
+        // safety: this guard owns the lock and prevents mutable access by other guards
         unsafe { &*self.mutex.data.get() }
     }
 }
 
 impl<'a, T: ?Sized> DerefMut for UnfairSpinlockGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // safety: this guard uniquely owns the lock
         unsafe { &mut *self.mutex.data.get() }
     }
 }

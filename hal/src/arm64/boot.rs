@@ -115,3 +115,7 @@ pub(crate) fn stack_pointer() -> usize {
 pub(crate) fn wait() {
     unsafe { asm!("wfe", options(nostack, preserves_flags)) }
 }
+
+pub(crate) fn notify() {
+    unsafe { asm!("dsb ishst", "sev", options(nostack, preserves_flags)) }
+}

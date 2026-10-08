@@ -4,8 +4,6 @@ use alloc::sync::Arc;
 use hal::interrupt::InterruptGuard;
 use klib::{scheduler::GLOBAL_SCHEDULER, stack::Stack, this_cpu, thread::Thread};
 
-use crate::busy_loop;
-
 /// call per-core
 pub fn idle_init() -> ! {
     let idle_stack = Stack::default();
@@ -26,5 +24,11 @@ extern "C" fn idle_entry(_: usize) -> ! {
     // device initialization installs interrupt delivery before entering idle
     unsafe { InterruptGuard::enable() };
 
-    busy_loop()
+    loop {
+        if GLOBAL_SCHEDULER.prepare_idle() {
+            klib::scheduler::Scheduler::yield_now();
+        } else {
+            hal::boot::wait();
+        }
+    }
 }
