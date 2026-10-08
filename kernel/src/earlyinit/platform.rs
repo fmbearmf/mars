@@ -31,7 +31,7 @@ use crate::{
         earlycon::{EARLYCON, EarlyCon, earlycon_write_impl},
         mem::{
             create_page_descriptors, populate_alloc_stage0, populate_alloc_stage1,
-            switch_to_new_page_tables,
+            reserve_page_descriptors, switch_to_new_page_tables, validate_page_descriptor_backing,
         },
         smp::boot_secondary,
     },
@@ -182,8 +182,11 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
     log::trace!("{:?}", uefi_mmap);
 
     rangekeeper::init_rangekeeper(uefi_mmap);
+    let descriptor_backing = reserve_page_descriptors();
 
     populate_alloc_stage0();
+
+    trace!("switching to new page tables");
 
     let context = unsafe { switch_to_new_page_tables(uefi_mmap.entries(), &KALLOCATOR) }
         .expect("failed to construct kernel address space");
@@ -192,8 +195,14 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
 
     populate_alloc_stage1();
 
-    let (page_descriptors, range) = create_page_descriptors();
+    trace!("creating page descriptors");
+
+    validate_page_descriptor_backing(&descriptor_backing, uefi_mmap.entries());
+    // safety: backing was validated against the final dmap and boot remains exclusive
+    let (page_descriptors, range) = unsafe { create_page_descriptors(descriptor_backing) };
     PAGE_DESCRIPTORS.init(page_descriptors, range.into());
+
+    trace!("initializing global mm kernel address space");
 
     unsafe { KERNEL_ADDRESS_SPACE.init_from_context(context) }
         .expect("kernel address space already initialized");

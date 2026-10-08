@@ -1,6 +1,6 @@
-use core::{alloc::GlobalAlloc, range::Range};
+use core::{alloc::GlobalAlloc, mem::MaybeUninit, range::Range};
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use hal::paging::{
     Access, AddressSpaceContext, GEOMETRY, MappingOptions, MemoryType as MappingMemoryType,
     PageTable,
@@ -49,22 +49,182 @@ impl AddressTranslator for IdentityTranslator {
     }
 }
 
-pub fn create_page_descriptors() -> (Box<[PageDescriptor]>, Range<usize>) {
+pub struct PageDescriptorReservation {
+    backing: Range<usize>,
+    coverage: Range<usize>,
+}
+
+pub fn reserve_page_descriptors() -> PageDescriptorReservation {
+    let mut bounds: Option<(usize, usize)> = None;
+    rangekeeper::for_each_range(|range| {
+        bounds = Some(match bounds {
+            Some((start, end)) => (start.min(range.start), end.max(range.end)),
+            None => (range.start, range.end),
+        });
+    });
+
+    let (start, end) = bounds.expect("no usable boot memory for page descriptors");
+
+    assert_eq!((start | end) & (PAGE_SIZE - 1), 0);
+
+    let coverage = Range { start, end };
+    let pages = end
+        .checked_sub(start)
+        .expect("invalid usable memory bounds")
+        / PAGE_SIZE;
+
+    let layout = core::alloc::Layout::array::<PageDescriptor>(pages)
+        .expect("page descriptor layout overflow");
+
+    assert!(
+        layout.size() <= isize::MAX as usize,
+        "descriptor slice too large"
+    );
+
+    let bytes = layout
+        .size()
+        .checked_add(PAGE_SIZE - 1)
+        .expect("page descriptor backing alignment overflow")
+        & !(PAGE_SIZE - 1);
+
+    let backing = rangekeeper::reserve(bytes, PAGE_SIZE);
+
+    PageDescriptorReservation { backing, coverage }
+}
+
+pub fn validate_page_descriptor_backing<'a>(
+    reservation: &PageDescriptorReservation,
+    descriptors: impl Iterator<Item = &'a MemoryDescriptor>,
+) {
+    let mut ranges = Vec::new();
+    let mut boundaries = Vec::new();
+
+    boundaries.extend([reservation.backing.start, reservation.backing.end]);
+
+    for descriptor in descriptors {
+        let start = usize::try_from(descriptor.phys_start).expect("physical address overflow");
+        let size = usize::try_from(descriptor.page_count)
+            .expect("memory descriptor size overflow")
+            .checked_mul(UEFI_PS)
+            .expect("memory descriptor size overflow");
+
+        let end = start
+            .checked_add(size)
+            .expect("memory descriptor end overflow");
+
+        let start = align_down(start, PAGE_SIZE).max(reservation.backing.start);
+        let end = end
+            .checked_add(PAGE_SIZE - 1)
+            .expect("memory descriptor alignment overflow")
+            & !(PAGE_SIZE - 1);
+
+        let end = end.min(reservation.backing.end);
+        if start < end {
+            ranges.push((start, end, descriptor_options(descriptor)));
+            boundaries.extend([start, end]);
+        }
+    }
+
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    for span in boundaries.windows(2) {
+        if span[0] < reservation.backing.start || span[1] > reservation.backing.end {
+            continue;
+        }
+
+        let mut covered = false;
+        for &(start, end, options) in &ranges {
+            if start <= span[0] && span[1] <= end {
+                assert_eq!(
+                    options.memory_type,
+                    MappingMemoryType::Normal,
+                    "descriptor backing is not normal memory"
+                );
+                assert!(options.access.writable(), "descriptor backing is readonly");
+
+                covered = true;
+            }
+        }
+
+        assert!(covered, "descriptor backing is not fully mapped");
+    }
+}
+
+/// initialize descriptors after the dmap has been activated
+///
+/// safety:
+/// - the dmap maps the full backing range as writable normal memory
+/// - the consumed reservation represents permanent, exclusive ownership of its backing, with no existing references to that memory
+/// - boot is still exclusive, and the allocator's physical coverage remains within the reserved coverage envelope
+pub unsafe fn create_page_descriptors(
+    reservation: PageDescriptorReservation,
+) -> (&'static [PageDescriptor], Range<usize>) {
     let allocator = KALLOCATOR.page_alloc();
     let start = KernelAddressTranslator.dmap_to_phys(allocator.min_address() as *mut u8);
     let end = KernelAddressTranslator.dmap_to_phys(allocator.max_address() as *mut u8);
-    let pages = (end - start) / PAGE_SIZE;
-    let mut descriptors = Box::<[PageDescriptor]>::new_uninit_slice(pages);
-    for slot in descriptors.iter_mut() {
-        slot.write(PageDescriptor {
-            lock: RwLock::new(PtState { meta: None }),
-        });
+
+    assert!(reservation.coverage.start <= start && end <= reservation.coverage.end);
+
+    let pages = reservation
+        .coverage
+        .end
+        .checked_sub(reservation.coverage.start)
+        .expect("invalid descriptor coverage")
+        / PAGE_SIZE;
+
+    let layout = core::alloc::Layout::array::<PageDescriptor>(pages)
+        .expect("page descriptor layout overflow");
+
+    assert!(
+        layout.size() <= isize::MAX as usize,
+        "descriptor slice too large"
+    );
+    assert!(
+        layout.size() <= reservation.backing.end - reservation.backing.start,
+        "page descriptor reservation too small"
+    );
+    assert_eq!(
+        reservation.backing.start & (core::mem::align_of::<PageDescriptor>() - 1),
+        0
+    );
+
+    let pointer = KernelAddressTranslator
+        .phys_to_dmap(reservation.backing.start)
+        .cast::<MaybeUninit<PageDescriptor>>();
+
+    assert!(!pointer.is_null());
+    assert_eq!(
+        pointer.addr() & (core::mem::align_of::<PageDescriptor>() - 1),
+        0
+    );
+    assert!(
+        reservation
+            .backing
+            .start
+            .checked_add(layout.size())
+            .is_some()
+    );
+
+    for index in 0..pages {
+        // safety: the consumed token represents a unique reserved backing, validated writable and mapped by the caller
+        unsafe {
+            pointer.add(index).write(MaybeUninit::new(PageDescriptor {
+                lock: RwLock::new(PtState { meta: None }),
+            }));
+        }
     }
-    (unsafe { descriptors.assume_init() }, Range { start, end })
+
+    // safety: all elements in the slice were initialized and the token keeps their backing exclusively reserved
+    let descriptors =
+        unsafe { core::slice::from_raw_parts(pointer.cast::<PageDescriptor>(), pages) };
+
+    (descriptors, reservation.coverage)
 }
 
 /// give the allocator an interim physical region while the identity map is active
 pub fn populate_alloc_stage0() {
+    rangekeeper::close_reservations();
     let allocator = unsafe { KALLOCATOR.page_alloc_mut() };
     rangekeeper::for_each_range(|range| {
         log::info!(

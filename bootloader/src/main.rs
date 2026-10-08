@@ -183,7 +183,11 @@ fn main() -> Status {
     };
 
     let uart_phys = match unsafe { mars_acpi_driver::acpi::discover_pl011_uart(rsdp) } {
-        Ok(address) if address.checked_add(0x1000).is_some() => address,
+        Ok(address) if address.checked_add(0x1000).is_some() => {
+            log::trace!("found PL011 at {:#x}", address);
+
+            address
+        }
         Ok(_) => {
             error!("SPCR UART physical range overflows");
             return Status::UNSUPPORTED;

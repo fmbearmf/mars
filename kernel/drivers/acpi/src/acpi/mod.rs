@@ -49,6 +49,7 @@ pub unsafe fn discover_pl011_uart(xsdp_addr: usize) -> Result<usize, &'static st
 
         return Ok(address);
     }
+
     Err("ACPI SPCR table not found")
 }
 

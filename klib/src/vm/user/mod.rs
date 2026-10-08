@@ -18,21 +18,28 @@ impl PageDescriptors {
     pub const fn new() -> Self {
         Self(RwLock::new(None))
     }
-    pub fn init(&self, descriptors: Box<[PageDescriptor]>, range: Range<usize>) {
+
+    pub fn init(&self, descriptors: &'static [PageDescriptor], range: Range<usize>) {
         assert!(range.start < range.end && (range.start | range.end) & PAGE_MASK == 0);
         assert_eq!(descriptors.len(), (range.end - range.start) >> PAGE_SHIFT);
+
         let mut guard = self.0.write();
+
         assert!(guard.is_none(), "page descriptors already initialized");
-        *guard = Some((Box::leak(descriptors), range));
+
+        *guard = Some((descriptors, range));
     }
+
     pub fn get_page_descriptor(&self, physical: usize) -> &'static PageDescriptor {
         let guard = self.0.read();
         let (descriptors, range) = guard.as_ref().expect("page descriptors not initialized");
+
         assert_eq!(physical & PAGE_MASK, 0, "unaligned table address");
         assert!(
             range.contains(&physical),
             "physical address outside descriptor range"
         );
+
         &descriptors[(physical - range.start) >> PAGE_SHIFT]
     }
 }
