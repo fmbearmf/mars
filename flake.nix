@@ -248,15 +248,74 @@
         {
           toolchain,
           stdenv,
+          pkgs,
           pkgsHax,
           verus,
-          naersk',
           ...
         }:
         rec {
-          kernel = naersk'.buildPackage {
-            src = ./.;
-          };
+          kernel =
+            (pkgs.makeRustPlatform {
+              cargo = toolchain;
+              rustc = toolchain;
+            }).buildRustPackage
+              {
+                pname = "mars-kernel";
+                version = "0.0.1";
+
+                src = ./.;
+
+                cargoLock = {
+                  lockFile = ./Cargo.lock;
+                  allowBuiltinFetchGit = true;
+                };
+
+                cargoBuildFlags = [
+                  "-p"
+                  "kernel"
+                  "-Z"
+                  "build-std=core,compiler_builtins,alloc"
+                  "--target"
+                  "aarch64-mars-none"
+                ];
+
+                RUST_TARGET_PATH = ./target-specs;
+                RUSTFLAGS = "-Z unstable-options -Z emit-stack-sizes";
+
+                preBuildPhases = [ "vendorPhase" ];
+
+                vendorPhase = ''
+                  if [ -d "$NIX_BUILD_TOP/cargo-vendor-dir" ]; then
+                      vendor_dir="$NIX_BUILD_TOP/cargo-vendor-dir"
+                      if [ -L "$vendor_dir" ]; then
+                          target_dir=$(readlink -f "$vendor_dir")
+                          rm "$vendor_dir"
+                          mkdir -p "$vendor_dir"
+                          ln -sv "$target_dir"/* "$vendor_dir/"
+                      fi
+                      rust_sysroot="$(rustc --print sysroot)"
+                      for v in "$rust_sysroot"/lib/rustlib/src/rust/library/vendor \
+                        "$rust_sysroot"/lib/rustlib/src/rust/vendor; do
+                            if [ -d "$v" ]; then
+                                ln -sv "$v"/* "$vendor_dir/" 2>/dev/null || true
+                            fi
+                      done
+                  fi
+                '';
+
+                installPhase = ''
+                  runHook preInstall
+
+                  mkdir -p $out/bin
+                  cp target/aarch64-mars-none/release/kernel $out/bin/kernel
+
+                  runHook postInstall
+                '';
+
+                doCheck = false;
+                auditable = false;
+              };
+
           inherit toolchain stdenv;
           inherit (pkgsHax) hax;
           inherit verus;
