@@ -23,8 +23,10 @@ fn hypervisor() -> bool {
 }
 
 fn physical() -> bool {
-    // CurrentEL.read(CurrentEL::EL) == 2
-    false
+    // false
+
+    // virtual timer isn't guaranteed at EL2 because... ACPI
+    hypervisor()
 }
 
 pub(crate) fn timer_frequency() -> u64 {
