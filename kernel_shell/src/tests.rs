@@ -20,11 +20,11 @@ fn help_and_echo_commands() {
     let n = send(&mut shell, b"help\r", &mut out);
     assert_eq!(
         &out[..n],
-        b"help\r\ncommands: help, echo <text>, uptime, cpu, memory, sched, cpus (thread details)\r\n> "
+        b"help\r\ncommands: help, echo <text>, uptime, cpu, memory, sched, cpus, work (CPU workload)\r\n-> "
     );
 
     let n = send(&mut shell, b"echo hi\n", &mut out);
-    assert_eq!(&out[..n], b"echo hi\r\nhi\r\n> ");
+    assert_eq!(&out[..n], b"echo hi\r\nhi\r\n-> ");
 }
 
 #[test]
@@ -35,7 +35,7 @@ fn crlf_executes_only_once() {
     let n = send(&mut shell, b"help\r\n", &mut out);
     assert_eq!(
         &out[..n],
-        b"help\r\ncommands: help, echo <text>, uptime, cpu, memory, sched, cpus (thread details)\r\n> "
+        b"help\r\ncommands: help, echo <text>, uptime, cpu, memory, sched, cpus, work (CPU workload)\r\n-> "
     );
 }
 
@@ -45,20 +45,20 @@ fn backspace_and_overflow_are_bounded() {
     let mut out = [0; OUTPUT_CAPACITY];
 
     let n = send(&mut shell, b"echox\x08o ok\r", &mut out);
-    assert_eq!(&out[..n], b"echox\x08 \x08o ok\r\nunknown command\r\n> ");
+    assert_eq!(&out[..n], b"echox\x08 \x08o ok\r\nunknown command\r\n-> ");
 
     let mut input = [b'a'; LINE_CAPACITY + 2];
     input[LINE_CAPACITY + 1] = b'\n';
 
     let n = send(&mut shell, &input, &mut out);
-    assert!(out[..n].ends_with(b"input too long\r\n> "));
+    assert!(out[..n].ends_with(b"input too long\r\n-> "));
 
     let mut input = [b'a'; LINE_CAPACITY + 3];
     input[LINE_CAPACITY + 1] = 8;
     input[LINE_CAPACITY + 2] = b'\n';
 
     let n = send(&mut shell, &input, &mut out);
-    assert!(out[..n].ends_with(b"input too long\r\n> "));
+    assert!(out[..n].ends_with(b"input too long\r\n-> "));
     assert!(
         !out[..n]
             .windows(b"unknown command".len())
@@ -81,7 +81,7 @@ fn input_error_discards_tail_and_recovers_from_crlf() {
     let n = send(&mut shell, b"tail\r\nhelp\r\n", &mut out);
     assert_eq!(
         &out[..n],
-        b"\r\n> help\r\ncommands: help, echo <text>, uptime, cpu, memory, sched, cpus (thread details)\r\n> "
+        b"\r\n-> help\r\ncommands: help, echo <text>, uptime, cpu, memory, sched, cpus, work (CPU workload)\r\n-> "
     );
 }
 
@@ -95,13 +95,13 @@ fn overflow_recovers_from_crlf_without_echoing_tail() {
     input[LINE_CAPACITY + 1] = b'\r';
 
     let n = send(&mut shell, &input, &mut out);
-    assert!(out[..n].ends_with(b"input too long\r\n> "));
+    assert!(out[..n].ends_with(b"input too long\r\n-> "));
     assert_eq!(&out[LINE_CAPACITY..LINE_CAPACITY + 2], b"\r\n");
 
     let n = send(&mut shell, b"\nhelp\r\n", &mut out);
     assert_eq!(
         &out[..n],
-        b"help\r\ncommands: help, echo <text>, uptime, cpu, memory, sched, cpus (thread details)\r\n> "
+        b"help\r\ncommands: help, echo <text>, uptime, cpu, memory, sched, cpus, work (CPU workload)\r\n-> "
     );
 }
 
@@ -123,7 +123,7 @@ fn capacity_control_and_empty_backspace_edges() {
     let mut out = [0; OUTPUT_CAPACITY];
 
     let n = send(&mut shell, b"\x01\x7f\x08\x1f\x7e\n", &mut out);
-    assert_eq!(&out[..n], b"~\r\nunknown command\r\n> ");
+    assert_eq!(&out[..n], b"~\r\nunknown command\r\n-> ");
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn exact_capacity_input_and_maximum_echo_render_safely() {
     assert_eq!(&out[..n], &input);
 
     let n = send(&mut shell, b"\n", &mut out);
-    assert_eq!(&out[..n], b"\r\nunknown command\r\n> ");
+    assert_eq!(&out[..n], b"\r\nunknown command\r\n-> ");
 
     let mut command = [b'a'; LINE_CAPACITY];
     command[..5].copy_from_slice(b"echo ");
@@ -146,10 +146,10 @@ fn exact_capacity_input_and_maximum_echo_render_safely() {
     assert_eq!(n, LINE_CAPACITY);
 
     let n = send(&mut shell, b"\n", &mut out);
-    assert_eq!(n, LINE_CAPACITY + 1);
+    assert_eq!(n, LINE_CAPACITY + 2);
     assert_eq!(&out[..2], b"\r\n");
     assert!(out[2..LINE_CAPACITY - 3].iter().all(|byte| *byte == b'a'));
-    assert_eq!(&out[LINE_CAPACITY - 3..n], b"\r\n> ");
+    assert_eq!(&out[LINE_CAPACITY - 3..n], b"\r\n-> ");
 }
 
 #[test]
@@ -160,6 +160,7 @@ fn monitoring_commands_are_parsed_as_distinct_commands() {
         (b"memory", CommandKind::Memory),
         (b"sched", CommandKind::Sched),
         (b"cpus", CommandKind::Cpus),
+        (b"work", CommandKind::Work),
     ] {
         let mut line = Line::<Editing>::new();
         for byte in input {
@@ -171,6 +172,22 @@ fn monitoring_commands_are_parsed_as_distinct_commands() {
 }
 
 #[test]
+fn work_command_emits_startup_before_invoking_telemetry() {
+    let mut shell = Shell::new();
+    let mut output = [0; OUTPUT_CAPACITY];
+    let mut telemetry = WorkTelemetry { called: false };
+
+    let n = send_streaming(&mut shell, b"work\n", &mut output, &mut telemetry);
+
+    assert_eq!(
+        &output[..n],
+        b"work\r\nwork: starting bounded CPU workload (CPU numbers are kernel logical IDs)\r\n-> "
+    );
+
+    assert!(telemetry.called);
+}
+
+#[test]
 fn monitor_commands_render_typed_snapshots() {
     let mut shell = Shell::new();
     let mut out = [0; OUTPUT_CAPACITY];
@@ -179,14 +196,14 @@ fn monitor_commands_render_typed_snapshots() {
     for (command, expected) in [
         (
             b"uptime\n".as_slice(),
-            b"uptime\r\nuptime: 42 seconds\r\n> ".as_slice(),
+            b"uptime\r\nuptime: 42 seconds\r\n-> ".as_slice(),
         ),
-        (b"cpu\n", b"cpu\r\ncpu: logical id 3\r\n> "),
+        (b"cpu\n", b"cpu\r\ncpu: logical id 3\r\n-> "),
         (
             b"memory\n",
-            b"memory\r\nmemory: heap used 12 bytes; pages used 34 bytes; capacity 56 bytes\r\n> ",
+            b"memory\r\nmemory: heap used 12 bytes; pages used 34 bytes; capacity 56 bytes\r\n-> ",
         ),
-        (b"sched\n", b"sched\r\nsched: ready 7; injector 2\r\n> "),
+        (b"sched\n", b"sched\r\nsched: ready 7; injector 2\r\n-> "),
     ] {
         let n = send_streaming(&mut shell, command, &mut out, &mut telemetry);
         assert_eq!(&out[..n], expected);
@@ -202,7 +219,7 @@ fn cpus_render_thread_metadata_and_all_statuses() {
     let n = send_streaming(&mut shell, b"cpus\n", &mut out, &mut telemetry);
     assert_eq!(
         &out[..n],
-        b"cpus\r\ncpu 0 idle; thread 11 running kernel idle\r\ncpu 1 active; thread 22 ready user\r\ncpu 2 not ready\r\ncpu 3 busy\r\n> "
+        b"cpus\r\ncpu 0 idle; thread 11 running kernel idle\r\ncpu 1 active; thread 22 ready user\r\ncpu 2 not ready\r\ncpu 3 busy\r\n-> "
     );
 }
 
@@ -251,6 +268,17 @@ fn send_streaming<T: Telemetry>(
     used
 }
 
+struct WorkTelemetry {
+    called: bool,
+}
+
+impl Telemetry for WorkTelemetry {
+    fn snapshot(&mut self, request: CommandRequest, _: usize) -> Option<Snapshot> {
+        self.called = request == CommandRequest::Work;
+        None
+    }
+}
+
 struct FixtureTelemetry;
 
 impl Telemetry for FixtureTelemetry {
@@ -267,6 +295,7 @@ impl Telemetry for FixtureTelemetry {
                 ready: 7,
                 injector: 2,
             },
+            CommandRequest::Work => return None,
             CommandRequest::Cpus => match index {
                 0 => Snapshot::CpuState {
                     logical_id: 0,

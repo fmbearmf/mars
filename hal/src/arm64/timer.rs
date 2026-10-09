@@ -5,6 +5,7 @@ use aarch64_cpu::registers::{
 };
 
 use crate::timer::TimerCapability;
+use core::sync::atomic::{Ordering, compiler_fence};
 
 pub(crate) fn timer_filter() -> impl Fn(&TimerCapability) -> bool {
     let expected_hypervisor = hypervisor();
@@ -39,6 +40,18 @@ pub(crate) fn timer_counter() -> u64 {
     } else {
         CNTVCT_EL0.get()
     }
+}
+
+pub(crate) fn ordered_counter() -> u64 {
+    compiler_fence(Ordering::SeqCst);
+
+    unsafe { core::arch::asm!("isb", options(nomem, nostack, preserves_flags)) };
+    let counter = timer_counter();
+    unsafe { core::arch::asm!("isb", options(nomem, nostack, preserves_flags)) };
+
+    compiler_fence(Ordering::SeqCst);
+
+    counter
 }
 
 pub(crate) fn timer_deadline() -> u64 {

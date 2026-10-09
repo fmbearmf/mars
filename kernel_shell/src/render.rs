@@ -8,6 +8,12 @@ pub(crate) fn render_command_stream<T: Telemetry>(
     telemetry: &mut T,
     emit: &mut impl FnMut(&[u8]),
 ) {
+    if parsed.command == CommandKind::Work {
+        emit(b"work: starting bounded CPU workload (CPU numbers are kernel logical IDs)\r\n");
+        let _ = telemetry.snapshot(CommandRequest::Work, 0);
+        return;
+    }
+
     if parsed.command != CommandKind::Cpus {
         let mut buffer = [0; OUTPUT_CAPACITY];
         let mut output = Rendered::new(&mut buffer);
@@ -44,7 +50,7 @@ pub(crate) fn render_command<T: Telemetry>(
 ) {
     match parsed.command {
         CommandKind::Help => {
-            output.bytes(b"commands: help, echo <text>, uptime, cpu, memory, sched, cpus\r\n")
+            output.bytes(b"commands: help, echo <text>, uptime, cpu, memory, sched, cpus, work (CPU workload)\r\n")
         }
         CommandKind::Echo(start) => {
             output.bytes(&parsed.line.bytes[start..parsed.line.len]);
@@ -58,7 +64,7 @@ pub(crate) fn render_command<T: Telemetry>(
             render_snapshot(telemetry.snapshot(CommandRequest::Memory, 0), output)
         }
         CommandKind::Sched => render_snapshot(telemetry.snapshot(CommandRequest::Sched, 0), output),
-        CommandKind::Cpus => unreachable!(),
+        CommandKind::Cpus | CommandKind::Work => unreachable!(),
         CommandKind::Empty => {}
         CommandKind::Unknown => output.bytes(b"unknown command\r\n"),
     }

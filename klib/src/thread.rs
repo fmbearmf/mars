@@ -130,13 +130,26 @@ impl<'a> Thread<'a> {
         priority: u8,
         // translator: &'a dyn AddressTranslator,
     ) -> Self {
+        Self::new_kernel_with_arg(stack, entry, priority, 0)
+    }
+
+    pub fn new_kernel_with_arg(
+        stack: Stack,
+        entry: extern "C" fn(usize) -> !,
+        priority: u8,
+        argument: usize,
+    ) -> Self {
         let stack_top = stack.top() as usize;
+
         assert_eq!(
             stack_top % hal::context::Context::stack_alignment(),
             0,
             "kernel stack top must satisfy the architecture stack alignment"
         );
-        let context = unsafe { hal::context::Context::kernel(entry as usize, stack_top) };
+
+        let mut context = unsafe { hal::context::Context::kernel(entry as usize, stack_top) };
+        unsafe { context.set_argument(argument) };
+
         Self::new_inner(Weak::new(), true, stack, context, priority)
     }
 
@@ -168,6 +181,14 @@ impl<'a> Thread<'a> {
         inner.queued = true;
 
         true
+    }
+
+    pub(crate) fn unschedule_fresh(&self) {
+        let mut inner = self.inner.lock();
+
+        assert!(inner.queued && !inner.scheduled);
+
+        inner.queued = false;
     }
 
     pub(crate) fn claim_queued(&self) -> bool {

@@ -7,7 +7,7 @@ use crate::cpu_interface::CpuIdLogical;
 
 mod ready_pool;
 
-use ready_pool::ReadyPool;
+use ready_pool::{READY_POOL_SIZE, ReadyPool};
 
 use super::{
     context::RegisterFile,
@@ -40,6 +40,7 @@ impl LocalScheduler<'_> {
 
 struct CpuScheduler<'a> {
     ready: ReadyPool<Thread<'a>>,
+    enqueue: UnfairSpinlock<()>,
     local: UnfairSpinlock<LocalScheduler<'a>>,
 }
 
@@ -47,6 +48,7 @@ impl CpuScheduler<'_> {
     const fn new() -> Self {
         Self {
             ready: ReadyPool::new(),
+            enqueue: UnfairSpinlock::new(()),
             local: UnfairSpinlock::new(LocalScheduler::new()),
         }
     }
@@ -59,6 +61,7 @@ pub struct Scheduler<'a> {
     injector: UnfairSpinlock<VecDeque<Arc<Thread<'a>>>>,
     spawn_counter: AtomicUsize,
     dequeue_counter: AtomicUsize,
+    steal_events: UnfairSpinlock<StealTrace>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -66,7 +69,22 @@ pub struct CpuSchedulerSnapshot {
     pub thread: ThreadMonitorSnapshot,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct StealEvent {
+    pub sequence: usize,
+    pub source_cpu: u16,
+    pub destination_cpu: u16,
+    pub thread_id: u32,
+}
+
+struct StealTrace {
+    next: usize,
+    events: [u64; 256],
+}
+
+// safety: all scheduler state is protected by locks or atomics, and queued threads are shared through `Arc`
 unsafe impl Send for Scheduler<'_> {}
+// safety: scheduler mutations use synchronized queues, locks, and atomics across processors
 unsafe impl Sync for Scheduler<'_> {}
 
 impl<'a> Scheduler<'a> {
@@ -76,6 +94,10 @@ impl<'a> Scheduler<'a> {
             injector: UnfairSpinlock::new(VecDeque::new()),
             spawn_counter: AtomicUsize::new(0),
             dequeue_counter: AtomicUsize::new(0),
+            steal_events: UnfairSpinlock::new(StealTrace {
+                next: 0,
+                events: [0; 256],
+            }),
         }
     }
 
@@ -83,8 +105,11 @@ impl<'a> Scheduler<'a> {
         let _interrupts = hal::interrupt::InterruptGuard::new();
         let queues = self.queues.read();
 
-        if let Err(thread) = queues[cpu].ready.push(thread) {
-            self.injector.lock().push_back(thread);
+        {
+            let _enqueue = queues[cpu].enqueue.lock();
+            if let Err(thread) = queues[cpu].ready.push(thread) {
+                self.injector.lock().push_back(thread);
+            }
         }
 
         drop(queues);
@@ -105,11 +130,104 @@ impl<'a> Scheduler<'a> {
         for offset in 1..queues.len() {
             let victim = (cpu + offset) % queues.len();
             if let Some(thread) = queues[victim].ready.pop() {
+                self.record_steal(victim, cpu, thread.thread_id());
                 return Some(thread);
             }
         }
 
         self.injector.lock().pop_front()
+    }
+
+    fn record_steal(&self, source: usize, destination: usize, thread_id: u32) {
+        if source > u16::MAX as usize || destination > u16::MAX as usize {
+            return;
+        }
+
+        let mut trace = self.steal_events.lock();
+
+        let sequence = trace.next;
+        let index = sequence % trace.events.len();
+        let packed = (u64::from(source as u16) << 48)
+            | (u64::from(destination as u16) << 32)
+            | u64::from(thread_id);
+
+        trace.events[index] = packed;
+        trace.next = sequence.wrapping_add(1);
+    }
+
+    pub fn steal_cursor(&self) -> usize {
+        self.steal_events.lock().next
+    }
+
+    /// copy recent successful local-queue steals after `cursor`
+    pub fn steal_events_since(&self, cursor: usize, output: &mut [StealEvent]) -> (usize, usize) {
+        let trace = self.steal_events.lock();
+
+        let end = trace.next;
+        let start = cursor.max(end.saturating_sub(trace.events.len()));
+
+        let mut written = 0;
+        for sequence in start..end {
+            if written == output.len() {
+                break;
+            }
+
+            let packed = trace.events[sequence % trace.events.len()];
+
+            output[written] = StealEvent {
+                sequence,
+                source_cpu: (packed >> 48) as u16,
+                destination_cpu: (packed >> 32) as u16,
+                thread_id: packed as u32,
+            };
+
+            written += 1;
+        }
+
+        (start + written, written)
+    }
+
+    /// enqueue a batch on one cpu's local queue without falling back to the injector
+    pub fn spawn_batch_on_cpu(&self, cpu: usize, threads: &[Arc<Thread<'a>>]) -> Result<(), ()> {
+        let _interrupts = hal::interrupt::InterruptGuard::new();
+
+        let queues = self.queues.read();
+        let Some(queue) = queues.get(cpu) else {
+            return Err(());
+        };
+
+        let _enqueue = queue.enqueue.lock();
+        if queue.ready.len().saturating_add(threads.len()) > READY_POOL_SIZE {
+            return Err(());
+        }
+
+        let mut scheduled = 0;
+        for thread in threads {
+            if !thread.schedule_fresh() {
+                for scheduled_thread in &threads[..scheduled] {
+                    scheduled_thread.unschedule_fresh();
+                }
+
+                return Err(());
+            }
+
+            scheduled += 1;
+        }
+
+        for thread in threads {
+            if let Err(thread) = queue.ready.push(thread.clone()) {
+                // capacity is reserved by the enqueue lock and the preceding length check
+                thread.unschedule_fresh();
+                return Err(());
+            }
+        }
+
+        drop(_enqueue);
+        drop(queues);
+
+        hal::boot::notify();
+
+        Ok(())
     }
 
     /// wakes a blocked thread and puts it in the ready queue
@@ -158,6 +276,7 @@ impl<'a> Scheduler<'a> {
             "cannot yield from an exception"
         );
 
+        // safety: the caller is outside exception context and this requests a deferred context switch
         unsafe { hal::context::request_reschedule() }
     }
 
@@ -184,6 +303,7 @@ impl<'a> Scheduler<'a> {
 
         if let Some(deferred) = local.deferred.take() {
             if deferred.finish_switch() {
+                let _enqueue = queues[cpu].enqueue.lock();
                 if let Err(thread) = queues[cpu].ready.push(deferred) {
                     self.injector.lock().push_back(thread);
                 }
@@ -273,6 +393,24 @@ impl<'a> Scheduler<'a> {
         Some(CpuSchedulerSnapshot { thread })
     }
 
+    /// terminate the current thread and switch away after dropping the caller's thread reference
+    pub fn exit_current() -> ! {
+        let interrupts = hal::interrupt::InterruptGuard::new();
+        let thread = GLOBAL_SCHEDULER
+            .current_thread()
+            .expect("no current thread to terminate");
+
+        thread.set_state(ThreadState::Dead);
+
+        drop(thread);
+        drop(interrupts);
+
+        Self::yield_now();
+        loop {
+            Self::yield_now();
+        }
+    }
+
     pub fn spawn(&self, thread: Arc<Thread<'a>>) {
         let _interrupts = hal::interrupt::InterruptGuard::new();
         if !thread.schedule_fresh() {
@@ -304,6 +442,7 @@ impl<'a> Scheduler<'a> {
 
         if let Some(deferred) = local.deferred.take() {
             if deferred.finish_switch() {
+                let _enqueue = queues[cpu].enqueue.lock();
                 let _ = queues[cpu].ready.push(deferred.clone()).map_err(|thread| {
                     self.injector.lock().push_back(thread);
                 });
@@ -360,12 +499,14 @@ impl<'a> Scheduler<'a> {
         let next_process = next.process();
 
         if let Some(process) = &next_process {
+            // safety: the selected process is initialized before its address space is activated
             process.with_address_space(|space| unsafe {
                 space
                     .activate()
                     .expect("uninitialized process address space");
             });
         } else {
+            // safety: the kernel address space is initialized before scheduled kernel threads run
             unsafe {
                 KERNEL_ADDRESS_SPACE
                     .activate()

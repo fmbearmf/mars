@@ -5,7 +5,7 @@ use core::{
 
 use alloc::sync::Arc;
 
-const READY_POOL_SIZE: usize = 256;
+pub(super) const READY_POOL_SIZE: usize = 256;
 
 /// bounded lockfree pool
 pub(super) struct ReadyPool<T> {

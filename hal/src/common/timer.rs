@@ -19,6 +19,15 @@ pub fn counter() -> u64 {
     crate::arch::timer::timer_counter()
 }
 
+/// read the timer counter with instruction and compiler ordering around the read
+///
+/// preceding and following instructions are separated from the counter read by
+/// the architecture's instruction synchronization barrier.
+/// the compiler is also prevented from moving operations across the read.
+pub fn ordered_counter() -> u64 {
+    crate::arch::timer::ordered_counter()
+}
+
 pub fn deadline() -> u64 {
     crate::arch::timer::timer_deadline()
 }

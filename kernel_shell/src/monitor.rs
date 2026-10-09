@@ -5,6 +5,7 @@ pub enum CommandRequest {
     Memory,
     Sched,
     Cpus,
+    Work,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

@@ -15,6 +15,7 @@ pub enum CommandKind {
     Memory,
     Sched,
     Cpus,
+    Work,
     Empty,
     Unknown,
 }
@@ -47,6 +48,8 @@ pub fn parse(line: Line<Complete>) -> ParsedLine {
         CommandKind::Sched
     } else if line.as_bytes() == b"cpus" {
         CommandKind::Cpus
+    } else if line.as_bytes() == b"work" {
+        CommandKind::Work
     } else if line.len == 0 {
         CommandKind::Empty
     } else {
