@@ -1,47 +1,72 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
-// TODO: support non-contiguous memory
-#[derive(Clone)]
-pub enum IoBuffer {
-    Unique(Vec<u8>),
-    Shared(Arc<Vec<u8>>),
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct BufferId {
+    pub slot: u32,
+    pub generation: u32,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BufferAccess {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+/// buffer descriptor. does not any carry ownership
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct IoBuffer {
+    pub id: BufferId,
+    pub offset: u64,
+    pub len: usize,
+    pub access: BufferAccess,
 }
 
 impl IoBuffer {
-    pub fn zeroed(size: usize) -> Self {
-        Self::Unique(vec![0u8; size])
-    }
+    pub fn slice(&self, offset: usize, len: usize) -> Option<Self> {
+        let end = offset.checked_add(len)?;
 
-    pub fn from_vec(data: Vec<u8>) -> Self {
-        Self::Unique(data)
-    }
-
-    pub fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Unique(v) => v.as_slice(),
-            Self::Shared(v) => v.as_slice(),
+        if end > self.len {
+            return None;
         }
+
+        Some(Self {
+            id: self.id,
+            offset: self.offset.checked_add(offset as u64)?,
+            len,
+            access: self.access,
+        })
     }
 
-    pub fn as_mut_slice(&mut self) -> Option<&mut [u8]> {
-        match self {
-            Self::Unique(v) => Some(v.as_mut_slice()),
-            Self::Shared(_) => None,
-        }
+    pub fn can_read(&self) -> bool {
+        matches!(self.access, BufferAccess::Read | BufferAccess::ReadWrite)
     }
 
-    pub fn to_shared(self) -> Self {
-        match self {
-            Self::Unique(v) => Self::Shared(Arc::new(v)),
-            Self::Shared(s) => Self::Shared(s),
-        }
+    pub fn can_write(&self) -> bool {
+        matches!(self.access, BufferAccess::Write | BufferAccess::ReadWrite)
+    }
+}
+
+/// keep the allocation alive
+#[derive(Clone)]
+pub struct BufferLease {
+    id: BufferId,
+    owner: Arc<dyn Send + Sync>,
+}
+
+impl BufferLease {
+    pub fn new<T>(id: BufferId, owner: Arc<T>) -> Self
+    where
+        T: Send + Sync + 'static,
+    {
+        Self { id, owner }
     }
 
-    pub fn len(&self) -> usize {
-        self.as_slice().len()
+    pub fn id(&self) -> BufferId {
+        self.id
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    pub fn owner_is_shared(&self) -> bool {
+        Arc::strong_count(&self.owner) > 1
     }
 }

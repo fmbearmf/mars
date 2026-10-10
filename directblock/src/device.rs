@@ -11,15 +11,65 @@ use crate::{
 pub struct DeviceInfo {
     pub block_size: u32,
     pub block_count: u64,
+
+    pub max_transfer_blocks: u32,
+    pub max_segments: u16,
+
+    pub read_only: bool,
+    pub flush: bool,
+    pub fua: bool,
+    pub discard: bool,
+    pub write_zeroes: bool,
+}
+
+impl DeviceInfo {
+    pub fn simple(block_size: u32, block_count: u64) -> Self {
+        Self {
+            block_size,
+            block_count,
+            max_transfer_blocks: u32::MAX,
+            max_segments: u16::MAX,
+            read_only: false,
+            flush: true,
+            fua: false,
+            discard: false,
+            write_zeroes: false,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ChannelRequest {
+    pub cpu_hint: Option<u32>,
+    pub poll: bool,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum RecoveryReason {
+    Timeout,
+    TransportFailure,
+    DeviceRemoval,
 }
 
 pub trait Device: Send + Sync {
     fn info(&self) -> DeviceInfo;
-    fn open_channel(&self) -> Result<Box<dyn Channel>, IoError>;
+    fn open_channel(&self, request: ChannelRequest) -> Result<Box<dyn Channel>, IoError>;
+
+    /// start/advance recovery
+    fn recover(&self, reason: RecoveryReason) -> IoResult {
+        let _ = reason;
+
+        Err(IoError::Unsupported)
+    }
 }
 
 pub trait Channel: Send {
     fn submit(&mut self, bio: Bio) -> Result<(), SubmitError>;
+
+    /// publish all staged requests
+    fn commit(&mut self) -> Result<(), IoError> {
+        Ok(())
+    }
 
     fn poll(&mut self, budget: usize) -> usize {
         let _ = budget;
@@ -28,14 +78,16 @@ pub trait Channel: Send {
     }
 }
 
+/// [0:3] = state
+/// [4:63] = outstanding accepted requests
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ProviderState {
     Created = 0,
-    Online,
-    Quiescing,
-    Offline,
-    Failed,
+    Online = 1,
+    Quiescing = 2,
+    Offline = 3,
+    Failed = 4,
 }
 
 const STATE_BITS: u64 = 3;
@@ -111,11 +163,11 @@ impl Provider {
 
         loop {
             match decode_state(old) {
-                ProviderState::Created | ProviderState::Online | ProviderState::Quiescing => {}
                 ProviderState::Failed => return Ok(()),
                 ProviderState::Offline => {
                     return Err(IoError::Offline);
                 }
+                _ => {}
             }
 
             let new = (old & !STATE_MASK) | ProviderState::Failed as u64;
@@ -155,24 +207,16 @@ impl Provider {
         }
     }
 
-    fn enter(self: &Arc<Self>) -> Result<Flight, IoError> {
+    fn admit(&self) -> IoResult {
         let mut old = self.word.load(Ordering::Acquire);
 
         loop {
             match decode_state(old) {
                 ProviderState::Online => {}
-                ProviderState::Created => {
-                    return Err(IoError::NotReady);
-                }
-                ProviderState::Quiescing => {
-                    return Err(IoError::Quiescing);
-                }
-                ProviderState::Offline => {
-                    return Err(IoError::Offline);
-                }
-                ProviderState::Failed => {
-                    return Err(IoError::DeviceFailed);
-                }
+                ProviderState::Created => return Err(IoError::NotReady),
+                ProviderState::Quiescing => return Err(IoError::Quiescing),
+                ProviderState::Offline => return Err(IoError::Offline),
+                ProviderState::Failed => return Err(IoError::DeviceFailed),
             }
 
             if old >> STATE_BITS == (u64::MAX >> STATE_BITS) {
@@ -185,28 +229,27 @@ impl Provider {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => {
-                    return Ok(Flight {
-                        provider: Arc::clone(self),
-                    });
-                }
+                Ok(_) => return Ok(()),
                 Err(actual) => old = actual,
             }
         }
     }
 
-    fn leave(&self) {
+    pub fn release(&self) {
         let old = self.word.fetch_sub(ONE_FLIGHT, Ordering::AcqRel);
 
-        debug_assert_ne!(old >> STATE_BITS, 0);
+        assert_ne!(old >> STATE_BITS, 0);
     }
 
-    pub fn open_channel(self: &Arc<Self>) -> Result<Box<dyn Channel>, IoError> {
+    pub fn open_channel(
+        self: &Arc<Self>,
+        request: ChannelRequest,
+    ) -> Result<Box<dyn Channel>, IoError> {
         if self.state() != ProviderState::Online {
             return Err(IoError::NotReady);
         }
 
-        let inner = self.device.open_channel()?;
+        let inner = self.device.open_channel(request)?;
 
         Ok(Box::new({
             ProviderChannel {
@@ -217,17 +260,6 @@ impl Provider {
     }
 }
 
-/// lease of one admitted request.
-pub(crate) struct Flight {
-    provider: Arc<Provider>,
-}
-
-impl Drop for Flight {
-    fn drop(&mut self) {
-        self.provider.leave();
-    }
-}
-
 struct ProviderChannel {
     provider: Arc<Provider>,
     inner: Box<dyn Channel>,
@@ -235,32 +267,35 @@ struct ProviderChannel {
 
 impl Channel for ProviderChannel {
     fn submit(&mut self, mut bio: Bio) -> Result<(), SubmitError> {
-        let lease = match self.provider.enter() {
-            Ok(lease) => lease,
-            Err(e) => {
-                return Err(SubmitError::Failed(e, bio));
-            }
-        };
-
-        if let Err(e) = bio.validate(self.provider.info()) {
-            drop(lease);
-
+        if let Err(e) = self.provider.admit() {
             return Err(SubmitError::Failed(e, bio));
         }
 
-        bio.completion.attach(lease);
+        if let Err(e) = bio.validate(self.provider.info()) {
+            self.provider.release();
+            return Err(SubmitError::Failed(e, bio));
+        }
+
+        if let Err(e) = bio.completion.push(Arc::clone(&self.provider)) {
+            self.provider.release();
+            return Err(SubmitError::Failed(e, bio));
+        }
 
         match self.inner.submit(bio) {
             Ok(()) => Ok(()),
             Err(SubmitError::Full(mut bio)) => {
-                bio.completion.detach();
+                bio.completion.pop();
                 Err(SubmitError::Full(bio))
             }
             Err(SubmitError::Failed(error, mut bio)) => {
-                bio.completion.detach();
+                bio.completion.pop();
                 Err(SubmitError::Failed(error, bio))
             }
         }
+    }
+
+    fn commit(&mut self) -> IoResult {
+        self.inner.commit()
     }
 
     fn poll(&mut self, budget: usize) -> usize {
