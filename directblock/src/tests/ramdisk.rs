@@ -1,16 +1,55 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+use alloc::{
+    boxed::Box,
+    sync::{Arc, Weak},
+    vec,
+    vec::Vec,
+};
 
 use crate::device::Provider;
 use crate::graph::{Graph, Layer};
 use crate::{
     Completion, IoError,
-    bio::{Bio, BioOp, SubmitError},
-    buffer::IoBuffer,
-    device::{Channel, Device, DeviceInfo},
+    bio::{Bio, BioFlags, BioOp, SubmitError},
+    buffer::{BufferAccess, BufferId, BufferLease, IoBuffer},
+    device::{Channel, ChannelRequest, Device, DeviceInfo},
 };
+
+type TestBuffer = Mutex<Vec<u8>>;
+static BUFFERS: Mutex<Vec<Weak<TestBuffer>>> = Mutex::new(Vec::new());
+
+fn buffer(data: Vec<u8>) -> (IoBuffer, BufferLease) {
+    let len = data.len();
+    let owner = Arc::new(Mutex::new(data));
+    let mut buffers = BUFFERS.lock().unwrap();
+
+    let id = BufferId {
+        slot: u32::try_from(buffers.len()).unwrap(),
+        generation: 0,
+    };
+
+    buffers.push(Arc::downgrade(&owner));
+
+    (
+        IoBuffer {
+            id,
+            offset: 0,
+            len,
+            access: BufferAccess::ReadWrite,
+        },
+        BufferLease::new(id, owner),
+    )
+}
+
+fn backing(buf: IoBuffer) -> Arc<TestBuffer> {
+    assert_eq!(buf.id.generation, 0);
+
+    BUFFERS.lock().unwrap()[buf.id.slot as usize]
+        .upgrade()
+        .expect("buffer lease must keep backing memroy alive")
+}
 
 struct Slice {
     pub start: u64,
@@ -45,8 +84,8 @@ impl Layer for Slice {
             parent,
             offset: self.start,
             info: DeviceInfo {
-                block_size: parent_info.block_size,
                 block_count: self.blocks,
+                ..parent_info
             },
         }))
     }
@@ -57,8 +96,8 @@ impl Device for SliceDevice {
         self.info
     }
 
-    fn open_channel(&self) -> Result<Box<dyn Channel>, IoError> {
-        let inner = self.parent.open_channel()?;
+    fn open_channel(&self, request: ChannelRequest) -> Result<Box<dyn Channel>, IoError> {
+        let inner = self.parent.open_channel(request)?;
 
         Ok(Box::new(SliceChannel {
             inner,
@@ -120,10 +159,7 @@ impl RamDisk {
     fn new(blocks: u64, block_size: u32) -> Self {
         Self {
             data: Arc::new(Mutex::new(vec![0; blocks as usize * block_size as usize])),
-            info: DeviceInfo {
-                block_size,
-                block_count: blocks,
-            },
+            info: DeviceInfo::simple(block_size, blocks),
         }
     }
 }
@@ -138,7 +174,10 @@ impl Device for RamDisk {
         self.info
     }
 
-    fn open_channel(&self) -> Result<alloc::boxed::Box<dyn Channel>, IoError> {
+    fn open_channel(
+        &self,
+        _request: ChannelRequest,
+    ) -> Result<alloc::boxed::Box<dyn Channel>, IoError> {
         Ok(Box::new(RamChannel {
             data: Arc::clone(&self.data),
             info: self.info,
@@ -147,38 +186,40 @@ impl Device for RamDisk {
 }
 
 impl Channel for RamChannel {
-    fn submit(&mut self, mut bio: Bio) -> Result<(), SubmitError> {
+    fn submit(&mut self, bio: Bio) -> Result<(), SubmitError> {
         if let Err(e) = bio.validate(self.info) {
             return Err(SubmitError::Failed(e, bio));
         }
 
         if bio.op == BioOp::Flush {
-            bio.completion.complete(Ok(()), None);
+            bio.complete(Ok(()));
             return Ok(());
         }
 
         let offset = bio.lba as usize * self.info.block_size as usize;
         let length = bio.blocks as usize * self.info.block_size as usize;
 
+        let descriptor = bio.data.unwrap();
+        let owner = backing(descriptor);
+        let mut bytes = owner.lock().unwrap();
+        let start = usize::try_from(descriptor.offset).unwrap();
+        let end = start.checked_add(length).unwrap();
+
+        let buffer = &mut bytes[start..end];
         let mut storage = self.data.lock().unwrap();
-        let mut buffer = bio.data.take().unwrap();
 
         match bio.op {
             BioOp::Read => {
-                buffer
-                    .as_mut_slice()
-                    .unwrap()
-                    .copy_from_slice(&storage[offset..offset + length]);
+                buffer.copy_from_slice(&storage[offset..offset + length]);
             }
-            BioOp::Write => {
-                storage[offset..offset + length].copy_from_slice(buffer.as_slice());
-            }
-            BioOp::Flush => unreachable!(),
+            BioOp::Write => storage[offset..offset + length].copy_from_slice(buffer),
+            BioOp::Flush | BioOp::Discard | BioOp::WriteZeroes => unreachable!(),
         }
 
         drop(storage);
+        drop(bytes);
 
-        bio.completion.complete(Ok(()), Some(buffer));
+        bio.complete(Ok(()));
 
         Ok(())
     }
@@ -188,14 +229,21 @@ fn bio(
     op: BioOp,
     lba: u64,
     blocks: u32,
-    buffer: Option<IoBuffer>,
+    buffer: Option<(IoBuffer, BufferLease)>,
     completed: Arc<AtomicUsize>,
 ) -> Bio {
+    let (data, lease) = match buffer {
+        Some((data, lease)) => (Some(data), Some(lease)),
+        None => (None, None),
+    };
+
     Bio {
         op,
         lba,
         blocks,
-        data: buffer,
+        data,
+        lease,
+        flags: BioFlags::default(),
         completion: Completion::new(move |result, _buffer| {
             assert_eq!(result, Ok(()));
             completed.fetch_add(1, Ordering::SeqCst);
@@ -221,26 +269,24 @@ fn read_write_through_slice() {
 
     let completed = Arc::new(AtomicUsize::new(0));
 
-    let mut ch = partition.open_channel().unwrap();
+    let mut ch = partition.open_channel(ChannelRequest::default()).unwrap();
 
     ch.submit(bio(
         BioOp::Write,
         0,
         1,
-        Some(IoBuffer::from_vec(vec![0xAB; 512])),
+        Some(buffer(vec![0xAB; 512])),
         Arc::clone(&completed),
     ))
     .unwrap_or_else(|_| panic!("write submit failed"));
 
-    ch.submit(bio(
-        BioOp::Read,
-        0,
-        1,
-        Some(IoBuffer::zeroed(512)),
-        Arc::clone(&completed),
-    ))
-    .unwrap_or_else(|_| panic!("read submit failed"));
+    let read = buffer(vec![0; 512]);
+    let read_bytes = backing(read.0);
 
+    ch.submit(bio(BioOp::Read, 0, 1, Some(read), Arc::clone(&completed)))
+        .unwrap_or_else(|_| panic!("read submit failed"));
+
+    assert_eq!(read_bytes.lock().unwrap().as_slice(), &[0xAB; 512]);
     assert_eq!(completed.load(Ordering::SeqCst), 2);
     assert_eq!(partition.in_flight(), 0);
 }
@@ -275,14 +321,14 @@ fn nested_slices_do_translate_lbas() {
         .unwrap();
 
     let completed = Arc::new(AtomicUsize::new(0));
-    let mut channel = second.open_channel().unwrap();
+    let mut channel = second.open_channel(ChannelRequest::default()).unwrap();
 
     channel
         .submit(bio(
             BioOp::Write,
             3,
             1,
-            Some(IoBuffer::from_vec(vec![0x5A; 512])),
+            Some(buffer(vec![0x5A; 512])),
             Arc::clone(&completed),
         ))
         .unwrap_or_else(|_| panic!("submission failed"));
