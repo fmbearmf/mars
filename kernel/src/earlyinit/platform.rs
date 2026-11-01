@@ -272,9 +272,9 @@ pub fn uefi_arm64_bootstrap(mut boot_info_token: BootInfoToken) {
         }
     }
 
-    shell::start();
-
     GLOBAL_SCHEDULER.register_cpu(this_cpu!().id);
+
+    shell::start();
 }
 
 pub fn filter_fundamental<T>(n: &T) -> bool
